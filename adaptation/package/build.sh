@@ -9,7 +9,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 ACCESS="$HERE/../access"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.9.0}"
+VER="${1:-0.9.1}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
@@ -129,6 +129,11 @@ fi
 # bluebinder: chip re-init takes ~65s after a stop; stock unit allows 60
 mkdir -p "$PKG/etc/systemd/system/bluebinder.service.d"
 printf '[Service]\nTimeoutStartSec=180\n' > "$PKG/etc/systemd/system/bluebinder.service.d/10-sfduo-timeout.conf"
+# bluebinder against a dead-ADSP system soft-locks the kernel
+# (queued_write_lock_slowpath) and takes all I/O down - make sure the
+# audio unit (which boots the ADSP) always runs first.
+printf '[Unit]\nAfter=sfduo-audio.service\nWants=sfduo-audio.service\n' \
+    > "$PKG/etc/systemd/system/bluebinder.service.d/20-sfduo-after-adsp.conf"
 
 # GPS (2026-07-12): the vendor GNSS stack works out of the box and the
 # droidian geoclue hybris source delivers ~4m fixes (TTFF ~100s cold, no
@@ -264,14 +269,20 @@ RULES
 # wake by long power press, WiFi re-attaches thanks to WoWLAN).
 cat > "$PKG/usr/local/sbin/sfduo-lid-daemon" <<'LID'
 #!/usr/bin/env python3
-# Surface Duo fold-to-lid bridge: the hall sensor on GPIO 121 reads 1 when
-# the device is open and 0 when fully closed. Expose it as a standard
-# SW_LID switch via uinput so logind/phosh get lid semantics for free.
+# Surface Duo fold-to-lid bridge v2: hall sensor on GPIO 121 (1 open,
+# 0 fully closed) exposed as a uinput SW_LID switch. On open it also
+# wakes the session (KEY_WAKEUP) and forces the panel backlights back
+# on. The poll loop times out every 2s and re-reads the sensor - GPIO
+# edges are lost while the system sleeps, so state is reconciled, not
+# just edge-triggered (unfold-while-asleep used to leave the system
+# convinced the lid was still closed).
 import os, struct, fcntl, select, time
 
 GPIO = "/sys/class/gpio/gpio121"
-UI_SET_EVBIT, UI_SET_SWBIT, UI_DEV_CREATE = 0x40045564, 0x4004556D, 0x5501
-EV_SW, SW_LID, EV_SYN = 0x05, 0x00, 0x00
+UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_SWBIT = 0x40045564, 0x40045565, 0x4004556D
+UI_DEV_CREATE = 0x5501
+EV_SYN, EV_KEY, EV_SW = 0x00, 0x01, 0x05
+SW_LID, KEY_WAKEUP = 0x00, 143
 
 def setup_gpio():
     if not os.path.isdir(GPIO):
@@ -287,6 +298,8 @@ def make_uinput():
     fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
     fcntl.ioctl(fd, UI_SET_EVBIT, EV_SW)
     fcntl.ioctl(fd, UI_SET_SWBIT, SW_LID)
+    fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
+    fcntl.ioctl(fd, UI_SET_KEYBIT, KEY_WAKEUP)
     dev = struct.pack("80sHHHHi", b"Surface Duo Lid Switch", 0x19, 0, 0, 0, 0)
     dev += b"\x00" * (64 * 4 * 4)
     os.write(fd, dev)
@@ -294,9 +307,23 @@ def make_uinput():
     time.sleep(0.2)
     return fd
 
-def emit(fd, closed):
-    for t, c, v in ((EV_SW, SW_LID, 1 if closed else 0), (EV_SYN, 0, 0)):
-        os.write(fd, struct.pack("qqHHi", 0, 0, t, c, v))
+def ev(fd, etype, code, value):
+    os.write(fd, struct.pack("qqHHi", 0, 0, etype, code, value))
+
+def emit_lid(fd, closed):
+    ev(fd, EV_SW, SW_LID, 1 if closed else 0)
+    ev(fd, EV_SYN, 0, 0)
+
+def screens_on(fd):
+    ev(fd, EV_KEY, KEY_WAKEUP, 1); ev(fd, EV_SYN, 0, 0)
+    ev(fd, EV_KEY, KEY_WAKEUP, 0); ev(fd, EV_SYN, 0, 0)
+    for p in ("panel0-backlight", "panel1-backlight"):
+        try:
+            with open("/sys/class/backlight/%s/bl_power" % p, "w") as f:
+                f.write("0")
+        except OSError:
+            pass
+    os.system("/usr/local/sbin/sfduo-brightness-sync.sh")
 
 def main():
     setup_gpio()
@@ -308,21 +335,30 @@ def main():
         return int(os.read(vfd, 8).strip())
 
     last = read_val()
-    emit(ufd, last == 0)
+    emit_lid(ufd, last == 0)
     po = select.poll()
     po.register(vfd, select.POLLPRI | select.POLLERR)
     while True:
-        po.poll()
-        time.sleep(0.05)  # debounce the magnet bounce on close
+        po.poll(2000)          # edge OR 2s reconcile tick
+        time.sleep(0.05)       # debounce the magnet bounce
         val = read_val()
         if val != last:
             last = val
-            emit(ufd, val == 0)
+            emit_lid(ufd, val == 0)
+            if val == 1:
+                screens_on(ufd)
 
 if __name__ == "__main__":
     main()
 LID
 chmod 755 "$PKG/usr/local/sbin/sfduo-lid-daemon"
+# Folding with a cable attached must NOT suspend: an aborted suspend
+# (dwc3 refuses with an active USB link) leaves the DSI panels dead
+# until a cold power cycle. On external power a fold just locks.
+mkdir -p "$PKG/etc/systemd/logind.conf.d"
+printf '[Login]\nHandleLidSwitchExternalPower=lock\n' \
+    > "$PKG/etc/systemd/logind.conf.d/50-sfduo-lid.conf"
+
 cat > "$PKG/usr/lib/systemd/system/sfduo-lid.service" <<'UNIT'
 [Unit]
 Description=sfduo: fold sensor (GPIO 121) to SW_LID bridge

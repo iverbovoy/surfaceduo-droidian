@@ -1,0 +1,15 @@
+--- a/scripts/halium
++++ b/scripts/halium
+@@ -824,7 +824,11 @@
+ 
+ 		# Mount the data partition to a temporary mount point
+ 		# FIXME: data=journal used on ext4 as a workaround for bug 1387214
+-		[ `blkid $path -o value -s TYPE` = "ext4" ] && OPTIONS="data=journal,"
++		# sfduo: data=journal (2014 workaround for lp#1387214) double-writes every
++		# loop-rootfs block through the outer journal and starves jbd2 under
++		# write bursts on msm-4.14 - failing bios on the loop device. Plain
++		# ordered mode is the modern ext4 default.
++		[ `blkid $path -o value -s TYPE` = "ext4" ] && OPTIONS="data=ordered,"
+ 		mount -o discard,$OPTIONS $path /tmpmnt
+ 
+ 		# Set $_syspart if it is specified as systempart= on the command line

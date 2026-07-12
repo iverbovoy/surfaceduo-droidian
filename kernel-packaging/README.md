@@ -45,7 +45,15 @@ docker run --rm \
   -v "$PWD/packages:/buildd" \
   -v "$PWD/surface-duo-oss-kernel.msm-4.14:/buildd/sources" \
   quay.io/droidian/build-essential:current-amd64 \
-  sh -c 'cd /buildd/sources && rm -f debian/control && debian/rules debian/control && RELENG_HOST_ARCH=arm64 releng-build-package'
+  sh -c 'apt-get update -qq && apt-get install -y -qq linux-packaging-snippets && cd /buildd/sources && rm -f debian/control && debian/rules debian/control && RELENG_HOST_ARCH=arm64 releng-build-package'
+```
+
+(Newer `build-essential` images no longer ship
+`linux-packaging-snippets`, and `debian/rules debian/control` needs it
+before the build-deps step can install anything - hence the explicit
+install.)
+
+```
 ```
 
 Debs land in `packages/` at the repo root. boot.img lives inside
@@ -126,3 +134,25 @@ find <kernel>/out/KERNEL_OBJ/techpack -name '*.ko' -exec cp {} out/audio-modules
   deep sleep (open item), and there is no autosleep governor yet.
 - `adsprpc.c`: `pr_info` → `pr_info_ratelimited` for the "bad ioctl"
   retry noise.
+- `initramfs` (0005, applies to `scripts/halium` INSIDE the boot
+  ramdisk, not to the kernel tree): the halium initramfs mounts an ext4
+  userdata with `data=journal` - a 2014 Ubuntu Touch workaround
+  (lp#1387214). With the rootfs being a loop-mounted image ON that
+  partition, every root write goes through the outer journal twice;
+  under write bursts (a plain `dpkg -i` is enough) jbd2 starves and the
+  loop device throws failing bios - the system stalls for minutes.
+  `data=ordered` (the modern ext4 default) fixes it: a 300MB fsync
+  burst runs clean at full UFS speed. To apply: unpack the ramdisk from
+  your droidian boot image (`gzip -dc ramdisk | cpio -idm`), apply the
+  patch, repack (`fakeroot sh -c 'find . | cpio -o -H newc | gzip -9'`)
+  and feed it to mkbootimg.
+- `ext4/super.c` (0004): remove the Android-only `umount_end` hook. It
+  fired on every user umount(2) while the superblock was still active
+  in another namespace - i.e. on every systemd sandbox teardown of the
+  loop-backed root - silently switched the error policy to remount-ro
+  and issued a synchronous `ext4_commit_super()` against the live
+  filesystem. Under systemd this escalates harmless journald write
+  hiccups into a read-only root ("the phone freezes but still pings").
+  Mainline ext4 has no such hook; droidian does not need Android's
+  skip-fsck-on-reboot semantics. Likely relevant to every
+  Droidian/Halium port on an msm-4.14 kernel.
