@@ -1,0 +1,29 @@
+{
+    "layer": "top",
+    "position": "top",
+    "height": 44,
+    "width": 0,
+    "margin-right": 717,
+    "spacing": 8,
+    "modules-left": ["custom/launcher", "custom/kbd"],
+    "modules-center": ["clock"],
+    "modules-right": ["network", "battery"],
+    "custom/launcher": {
+        "format": "  ☰ apps  ",
+        "on-click": "/usr/local/bin/sfduo-launcher-toggle"
+    },
+    "custom/kbd": {
+        "format": "  ⌨ kbd  ",
+        "on-click": "/usr/local/bin/sfduo-kbd-toggle"
+    },
+    "clock": {
+        "format": "{:%H:%M}"
+    },
+    "network": {
+        "format-wifi": "  {essid}",
+        "format-disconnected": "no net"
+    },
+    "battery": {
+        "format": "{capacity}%"
+    }
+}

@@ -8,8 +8,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 ACCESS="$HERE/../access"
+WAYFIRE="$HERE/../wayfire"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.9.5}"
+VER="${1:-0.10.0}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
@@ -512,6 +513,28 @@ Restart=on-failure
 WantedBy=multi-user.target
 UNIT
 
+# wayfire-duo (2026-07-13): optional dual-screen session - see
+# ../wayfire/README.md for the full story (hinge-aware tiler, waybar on
+# the left panel, patched wvkbd OSK). Phosh remains the default; the
+# unit is never enabled, start it manually.
+install -m644 "$WAYFIRE/wayfire-duo.service"     "$PKG/usr/lib/systemd/system/"
+install -m755 "$WAYFIRE/sfduo-tiler"             "$PKG/usr/local/sbin/"
+install -m755 "$WAYFIRE/sfduo-kbd-toggle"        "$PKG/usr/local/bin/"
+install -m755 "$WAYFIRE/sfduo-launcher-toggle"   "$PKG/usr/local/bin/"
+mkdir -p "$PKG/usr/share/sfduo/wayfire"
+install -m644 "$WAYFIRE/wayfire-duo.ini"    "$PKG/usr/share/sfduo/wayfire/"
+install -m644 "$WAYFIRE/waybar-config.jsonc" "$PKG/usr/share/sfduo/wayfire/"
+install -m644 "$WAYFIRE/waybar-style.css"   "$PKG/usr/share/sfduo/wayfire/"
+install -m644 "$WAYFIRE/fuzzel.ini"         "$PKG/usr/share/sfduo/wayfire/"
+# patched wvkbd: Debian's 0.15 segfaults under wayfire and stock 0.20
+# never draws - build recipe in ../wayfire/README.md; shipped like wlan.ko
+WVKBD="$ROOT/out/wvkbd-mobintl-0.20-patched-arm64"
+if [ -f "$WVKBD" ]; then
+    install -m755 "$WVKBD" "$PKG/usr/local/bin/wvkbd-mobintl"
+else
+    echo "NOTE: $WVKBD not found - wayfire session ships without the patched OSK"
+fi
+
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: adaptation-droidian-surfaceduo
 Version: $VER
@@ -519,6 +542,7 @@ Architecture: arm64
 Maintainer: Ivan Verbovoy <ivanverbovoy@gmail.com>
 Section: misc
 Priority: optional
+Recommends: wayfire, foot, waybar, fuzzel
 Description: Surface Duo 1 adaptation for Droidian (sfduo)
  USB RNDIS gadget access (172.16.42.1, telnet fallback) and, as bring-up
  progresses, touch / wifi / sensor plumbing for the Microsoft Surface Duo 1.
@@ -551,6 +575,16 @@ if [ ! -f /var/lib/bluetooth/board-address ]; then
         printf "%s\n" "$WMAC" | awk -F: "{printf \"%s:%s:%s:%s:%s:%02X\n\", toupper(\$1),toupper(\$2),toupper(\$3),toupper(\$4),toupper(\$5), strtonum(\"0x\" \$6)+1}" > /var/lib/bluetooth/board-address
         chmod 644 /var/lib/bluetooth/board-address
     fi
+fi
+# wayfire-duo user configs: seed once, never overwrite user edits
+if id droidian >/dev/null 2>&1; then
+    H=/home/droidian
+    mkdir -p "$H/.config/waybar" "$H/.config/fuzzel"
+    [ -f "$H/.config/wayfire-duo.ini" ] || cp /usr/share/sfduo/wayfire/wayfire-duo.ini "$H/.config/"
+    [ -f "$H/.config/waybar/config.jsonc" ] || cp /usr/share/sfduo/wayfire/waybar-config.jsonc "$H/.config/waybar/config.jsonc"
+    [ -f "$H/.config/waybar/style.css" ] || cp /usr/share/sfduo/wayfire/waybar-style.css "$H/.config/waybar/style.css"
+    [ -f "$H/.config/fuzzel/fuzzel.ini" ] || cp /usr/share/sfduo/wayfire/fuzzel.ini "$H/.config/fuzzel/"
+    chown -R droidian:droidian "$H/.config"
 fi
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload

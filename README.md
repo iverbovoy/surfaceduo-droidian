@@ -51,6 +51,11 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
   access, offline sshd bundle, touch udev rule, wlan/audio module
   loading with ADSP boot ordering, hinge sensor config, suspend hooks,
   bluetooth bring-up (timeout + board-address), geoclue/GPS drop-in.
+- `adaptation/wayfire/` - **wayfire-duo**: optional dual-screen Wayland
+  session (Phosh treats the Duo as one 2784x1800 slab and centers UI
+  into the hinge; this session tiles every window onto a single panel
+  via a hinge-aware auto-tiler, with waybar/fuzzel/patched-wvkbd on
+  touch). Own README inside.
 - `sensorfw-hinge-patch/` - hinge-angle sensor support for sensorfw
   (its own README covers build + install).
 - `docs/` - port guide + **the safety protocol**.

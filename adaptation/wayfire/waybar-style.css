@@ -1,0 +1,6 @@
+* { font-family: monospace; font-size: 16px; }
+window#waybar { background: rgba(20,20,25,0.92); color: #e0e0e0; }
+#custom-launcher, #custom-kbd {
+    background: #2a4a6a; border-radius: 8px; margin: 4px 2px; padding: 0 6px;
+}
+#clock, #battery, #network { padding: 0 10px; }

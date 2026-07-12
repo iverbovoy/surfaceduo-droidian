@@ -1,0 +1,31 @@
+[Unit]
+Description=Wayfire dual-screen session for Surface Duo (experiment)
+Conflicts=phosh.service
+#BindsTo=android-service@hwcomposer.service
+After=android-service@hwcomposer.service lxc@android.service systemd-user-sessions.service
+ConditionPathExists=/dev/tty0
+
+[Service]
+Environment=LANG=C.UTF-8
+Environment=XDG_CURRENT_DESKTOP=wlroots
+Environment=XDG_SESSION_DESKTOP=wayfire
+Environment=XDG_SESSION_TYPE=wayland
+Environment=WLR_BACKENDS=hwcomposer,libinput
+Environment=EGL_PLATFORM=hwcomposer
+Environment=WLR_HWC_SKIP_VERSION_CHECK=1
+ExecStart=/bin/sh -c "exec /usr/bin/wayfire -d -c /home/droidian/.config/wayfire-duo.ini > /tmp/wf.log 2>&1"
+ExecStartPost=+chvt 7
+User=droidian
+PAMName=phosh
+WorkingDirectory=~
+Restart=no
+TimeoutStartSec=30
+TTYPath=/dev/tty7
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty7
+UtmpMode=user

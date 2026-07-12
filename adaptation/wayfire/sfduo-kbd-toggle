@@ -1,0 +1,8 @@
+#!/bin/sh
+# Toggle the wvkbd on-screen keyboard; keeps its own visibility state.
+ST=/tmp/sfduo-kbd-visible
+if [ -f "$ST" ]; then
+    pkill -USR1 wvkbd-mobintl && rm -f "$ST"
+else
+    pkill -USR2 wvkbd-mobintl && touch "$ST"
+fi
