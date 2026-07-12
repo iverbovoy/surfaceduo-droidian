@@ -9,7 +9,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 ACCESS="$HERE/../access"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.9.4}"
+VER="${1:-0.9.5}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
@@ -61,7 +61,8 @@ ExecStart=/bin/sh -c 'grep -q ^wlan /proc/modules || insmod /usr/lib/sfduo/wlan.
 # (measured: 26 s of sleep on a home network). WARNING: never reconfigure
 # wowlan on a live driver - a runtime enable-mode switch soft-locked a
 # qcacld thread and took all block I/O down with it (2026-07-12).
-ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5; do iw phy phy0 wowlan enable magic-packet 2>/dev/null && break; sleep 1; done; true'
+# qcacld registers phy0 asynchronously (fw load can take 60s+) - wide retry
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 45); do iw phy phy0 wowlan enable magic-packet 2>/dev/null && break; sleep 2; done; true'
 RemainAfterExit=yes
 
 [Install]
@@ -236,6 +237,64 @@ cat > "$PKG/usr/lib/systemd/system-sleep/sfduo-brightness" <<'SLEEP'
 exit 0
 SLEEP
 chmod 755 "$PKG/usr/lib/systemd/system-sleep/sfduo-brightness"
+
+# The keypress/finger-touch that wakes the SoC is consumed during resume
+# and never reaches the compositor - phosh stays blanked and a short
+# power press "looks dead". Inject KEY_WAKEUP after every resume so the
+# lockscreen lights up regardless of what woke us.
+cat > "$PKG/usr/lib/systemd/system-sleep/sfduo-unblank" <<'SLEEP'
+#!/bin/sh
+[ "$1" = "post" ] || exit 0
+python3 - <<PY &
+from evdev import UInput, ecodes as e
+ui = UInput({e.EV_KEY: [e.KEY_WAKEUP]}, name="sfduo-wake-nudge")
+ui.write(e.EV_KEY, e.KEY_WAKEUP, 1); ui.syn()
+ui.write(e.EV_KEY, e.KEY_WAKEUP, 0); ui.syn()
+ui.close()
+PY
+exit 0
+SLEEP
+chmod 755 "$PKG/usr/lib/systemd/system-sleep/sfduo-unblank"
+
+# Wake-from-suspend sources (2026-07-12): short power press and the
+# fingerprint sensor. qpnp_pon input wakeup is default-disabled (only
+# the PMIC hardware long-press worked); fpc1020 arms enable_irq_wake at
+# probe unconditionally, its wakeup_enable knob just arms the ISR ttw
+# wakelock so the finger event survives the resume race. NOTE: a finger
+# resting on the sensor during suspend entry aborts it (wakeup pending,
+# EBUSY) - working as designed.
+cat > "$PKG/usr/local/sbin/sfduo-wakeup-sources.sh" <<'WAKE'
+#!/bin/sh
+# Devices appear asynchronously during boot - retry until both armed.
+i=0
+while [ $i -lt 30 ]; do
+    for d in /sys/class/input/input*/; do
+        [ "$(cat $d/name 2>/dev/null)" = "qpnp_pon" ] && echo enabled > $d/device/power/wakeup 2>/dev/null
+    done
+    echo enable  > /sys/bus/platform/devices/soc:fpc1020/wakeup_enable 2>/dev/null
+    echo enabled > /sys/bus/platform/devices/soc:fpc1020/power/wakeup  2>/dev/null
+    pon=$(grep -l qpnp_pon /sys/class/input/input*/name 2>/dev/null | head -1)
+    fpc=/sys/bus/platform/devices/soc:fpc1020/power/wakeup
+    [ -n "$pon" ] && [ "$(cat ${pon%name}device/power/wakeup 2>/dev/null)" = enabled ] \
+        && [ "$(cat $fpc 2>/dev/null)" = enabled ] && exit 0
+    i=$((i+1)); sleep 2
+done
+echo "sfduo-wakeup: some wake sources not armed after 60s" >&2
+exit 1
+WAKE
+chmod 755 "$PKG/usr/local/sbin/sfduo-wakeup-sources.sh"
+cat > "$PKG/usr/lib/systemd/system/sfduo-wakeup.service" <<'UNIT'
+[Unit]
+Description=sfduo: arm power-key and fingerprint wake-from-suspend sources
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sfduo-wakeup-sources.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
 
 # Android vendor init sets 10-minute laptop-mode writeback
 # (vm.dirty_writeback_centisecs=60000) and KEEPS re-setting it at runtime
@@ -500,6 +559,7 @@ if [ -d /run/systemd/system ]; then
     systemctl enable --now sfduo-tame-vendor.service || true
     systemctl enable --now sfduo-lid.service || true
     systemctl enable --now sfduo-writeback.timer || true
+    systemctl enable --now sfduo-wakeup.service || true
     udevadm control --reload 2>/dev/null || true
     udevadm trigger -s backlight -s leds 2>/dev/null || true
     # geoclue is a static unit; the drop-in adds [Install] so it can start at boot
