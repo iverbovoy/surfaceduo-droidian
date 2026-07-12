@@ -9,7 +9,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 ACCESS="$HERE/../access"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.8.0}"
+VER="${1:-0.9.0}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
@@ -55,6 +55,9 @@ Before=NetworkManager.service
 [Service]
 Type=oneshot
 ExecStart=/bin/sh -c 'grep -q ^wlan /proc/modules || insmod /usr/lib/sfduo/wlan.ko'
+# WoWLAN keeps the association alive through deep sleep, so WiFi (and ssh
+# over it) come back instantly on wake instead of rescanning.
+ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5; do iw phy phy0 wowlan enable any 2>/dev/null && break; sleep 1; done; true'
 RemainAfterExit=yes
 
 [Install]
@@ -227,6 +230,111 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 UNIT
 
+# Brightness (2026-07-12, sysfs paths spotted in Tygerpro's UT port): the
+# phosh slider drives /sys/class/backlight/backlight (WLED, 0-4095) but
+# the panels listen to panel0/1-backlight (0-255) - without the sync the
+# panels sit at a constant level forever. The change uevent fires on
+# every brightness store, verified on device.
+cat > "$PKG/usr/local/sbin/sfduo-brightness-sync.sh" <<'BRT'
+#!/bin/sh
+# Mirror the main WLED backlight (0-4095) onto the two panel backlights (0-255).
+B=$(cat /sys/class/backlight/backlight/brightness 2>/dev/null) || exit 0
+P=$((B * 255 / 4095))
+[ "$P" -gt 255 ] && P=255
+echo "$P" > /sys/class/backlight/panel0-backlight/brightness 2>/dev/null
+echo "$P" > /sys/class/backlight/panel1-backlight/brightness 2>/dev/null
+exit 0
+BRT
+chmod 755 "$PKG/usr/local/sbin/sfduo-brightness-sync.sh"
+cat > "$PKG/etc/udev/rules.d/98-sfduo-backlight.rules" <<'RULES'
+SUBSYSTEM=="backlight", GROUP="video", MODE="0664"
+SUBSYSTEM=="backlight", KERNEL=="backlight", ACTION=="change", RUN+="/usr/local/sbin/sfduo-brightness-sync.sh"
+RULES
+
+# Flashlight: let the video group drive the torch LEDs without root.
+cat > "$PKG/etc/udev/rules.d/60-sfduo-torch.rules" <<'RULES'
+SUBSYSTEM=="leds", KERNEL=="led:torch_*", ACTION=="add", RUN+="/bin/sh -c 'chgrp video /sys%p/brightness && chmod 0664 /sys%p/brightness'"
+SUBSYSTEM=="leds", KERNEL=="led:switch_*", ACTION=="add", RUN+="/bin/sh -c 'chgrp video /sys%p/brightness && chmod 0664 /sys%p/brightness'"
+RULES
+
+# Fold-to-sleep (2026-07-12, GPIO number from Tygerpro's port): the hall
+# sensor on GPIO 121 reads 1 open / 0 fully closed. A small daemon
+# bridges it to a uinput SW_LID switch and logind does the rest:
+# fold -> suspend (verified end-to-end: Lid closed -> deep sleep ->
+# wake by long power press, WiFi re-attaches thanks to WoWLAN).
+cat > "$PKG/usr/local/sbin/sfduo-lid-daemon" <<'LID'
+#!/usr/bin/env python3
+# Surface Duo fold-to-lid bridge: the hall sensor on GPIO 121 reads 1 when
+# the device is open and 0 when fully closed. Expose it as a standard
+# SW_LID switch via uinput so logind/phosh get lid semantics for free.
+import os, struct, fcntl, select, time
+
+GPIO = "/sys/class/gpio/gpio121"
+UI_SET_EVBIT, UI_SET_SWBIT, UI_DEV_CREATE = 0x40045564, 0x4004556D, 0x5501
+EV_SW, SW_LID, EV_SYN = 0x05, 0x00, 0x00
+
+def setup_gpio():
+    if not os.path.isdir(GPIO):
+        with open("/sys/class/gpio/export", "w") as f:
+            f.write("121")
+        time.sleep(0.2)
+    with open(GPIO + "/direction", "w") as f:
+        f.write("in")
+    with open(GPIO + "/edge", "w") as f:
+        f.write("both")
+
+def make_uinput():
+    fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+    fcntl.ioctl(fd, UI_SET_EVBIT, EV_SW)
+    fcntl.ioctl(fd, UI_SET_SWBIT, SW_LID)
+    dev = struct.pack("80sHHHHi", b"Surface Duo Lid Switch", 0x19, 0, 0, 0, 0)
+    dev += b"\x00" * (64 * 4 * 4)
+    os.write(fd, dev)
+    fcntl.ioctl(fd, UI_DEV_CREATE)
+    time.sleep(0.2)
+    return fd
+
+def emit(fd, closed):
+    for t, c, v in ((EV_SW, SW_LID, 1 if closed else 0), (EV_SYN, 0, 0)):
+        os.write(fd, struct.pack("qqHHi", 0, 0, t, c, v))
+
+def main():
+    setup_gpio()
+    ufd = make_uinput()
+    vfd = os.open(GPIO + "/value", os.O_RDONLY)
+
+    def read_val():
+        os.lseek(vfd, 0, os.SEEK_SET)
+        return int(os.read(vfd, 8).strip())
+
+    last = read_val()
+    emit(ufd, last == 0)
+    po = select.poll()
+    po.register(vfd, select.POLLPRI | select.POLLERR)
+    while True:
+        po.poll()
+        time.sleep(0.05)  # debounce the magnet bounce on close
+        val = read_val()
+        if val != last:
+            last = val
+            emit(ufd, val == 0)
+
+if __name__ == "__main__":
+    main()
+LID
+chmod 755 "$PKG/usr/local/sbin/sfduo-lid-daemon"
+cat > "$PKG/usr/lib/systemd/system/sfduo-lid.service" <<'UNIT'
+[Unit]
+Description=sfduo: fold sensor (GPIO 121) to SW_LID bridge
+
+[Service]
+ExecStart=/usr/local/sbin/sfduo-lid-daemon
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: adaptation-droidian-surfaceduo
 Version: $VER
@@ -272,6 +380,9 @@ if [ -d /run/systemd/system ]; then
     systemctl enable --now sfduo-usb.service || true
     systemctl enable bluebinder.service bluetooth.service 2>/dev/null || true
     systemctl enable --now sfduo-tame-vendor.service || true
+    systemctl enable --now sfduo-lid.service || true
+    udevadm control --reload 2>/dev/null || true
+    udevadm trigger -s backlight -s leds 2>/dev/null || true
     # geoclue is a static unit; the drop-in adds [Install] so it can start at boot
     systemctl enable --now geoclue.service 2>/dev/null || systemctl start geoclue.service || true
     [ -f /usr/lib/sfduo/wlan.ko ] && systemctl enable --now sfduo-wlan.service || true

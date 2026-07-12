@@ -32,7 +32,9 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
 | Camera | ✅ | droidian-camera (QT_QPA_PLATFORM=wayland) - full 11MP stills |
 | Fingerprint | ✅ | droidian-fpd + enroll; unlock-by-finger via fpd-unlockd |
 | Suspend | ✅ | dwc3-msm kernel patch + sleep hook + AllowSuspend override; wake = long power press; RTC-through-sleep pending |
-| Flashlight / vibration / pen | ✅ | sysfs LEDs; da7280 (FF_CONSTANT only); pen inks via the touchpen HAL |
+| Flashlight / vibration / pen | ✅ | sysfs LEDs (video group via udev); da7280 (FF_CONSTANT only); pen inks via the touchpen HAL |
+| Brightness | ✅ | the phosh slider drives both panels (udev change-event sync); auto-brightness pending (ALS already works) |
+| Fold-to-sleep | ✅ | hall sensor (GPIO 121) → SW_LID bridge → logind suspends on fold; WoWLAN keeps WiFi associated through sleep |
 | GPS | ✅ | vendor GNSS + geoclue hybris source, ~4 m fixes; needs the geoclue keepalive drop-in from the adaptation (see traps below) |
 | Modem (calls/SMS/LTE) | 🕓 | stack done - ModemManager sees the modem via ofono/binder; untested (no SIM yet) |
 | NFC | - | Duo 1 has no NFC hardware |
