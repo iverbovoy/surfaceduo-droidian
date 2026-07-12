@@ -9,7 +9,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 ACCESS="$HERE/../access"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.9.1}"
+VER="${1:-0.9.2}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
@@ -93,6 +93,12 @@ while [ $i -lt 15 ]; do
     grep -q ONLINE /sys/bus/msm_subsys/devices/subsys1/state 2>/dev/null && break
     i=$((i+1)); sleep 1
 done
+# HARD GATE: loading the audio chain (and letting bluebinder start)
+# against a dead ADSP soft-locks the kernel - fail loudly instead.
+grep -q ONLINE /sys/bus/msm_subsys/devices/subsys1/state 2>/dev/null || {
+    echo "sfduo-audio: ADSP did not come ONLINE - refusing to load audio chain" >&2
+    exit 1
+}
 for m in wglink_dlkm q6_pdr_dlkm q6_notifier_dlkm apr_dlkm q6_dlkm \
          native_dlkm pinctrl_wcd_dlkm swr_dlkm swr_ctrl_dlkm platform_dlkm \
          hdmi_dlkm wcd_spi_dlkm stub_dlkm wcd_core_dlkm wcd9xxx_dlkm \
@@ -115,6 +121,13 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 UNIT
+    # bluebinder against a dead-ADSP system soft-locks the kernel
+    # (queued_write_lock_slowpath) and takes ALL I/O down. Requires= (not
+    # just After=) - if the ADSP gate above fails, bluetooth stays off
+    # rather than wedging the kernel.
+    mkdir -p "$PKG/etc/systemd/system/bluebinder.service.d"
+    printf '[Unit]\nAfter=sfduo-audio.service\nRequires=sfduo-audio.service\n' \
+        > "$PKG/etc/systemd/system/bluebinder.service.d/20-sfduo-after-adsp.conf"
 else
     echo "NOTE: audio modules not found - building without audio"
 fi
@@ -129,11 +142,6 @@ fi
 # bluebinder: chip re-init takes ~65s after a stop; stock unit allows 60
 mkdir -p "$PKG/etc/systemd/system/bluebinder.service.d"
 printf '[Service]\nTimeoutStartSec=180\n' > "$PKG/etc/systemd/system/bluebinder.service.d/10-sfduo-timeout.conf"
-# bluebinder against a dead-ADSP system soft-locks the kernel
-# (queued_write_lock_slowpath) and takes all I/O down - make sure the
-# audio unit (which boots the ADSP) always runs first.
-printf '[Unit]\nAfter=sfduo-audio.service\nWants=sfduo-audio.service\n' \
-    > "$PKG/etc/systemd/system/bluebinder.service.d/20-sfduo-after-adsp.conf"
 
 # GPS (2026-07-12): the vendor GNSS stack works out of the box and the
 # droidian geoclue hybris source delivers ~4m fixes (TTFF ~100s cold, no
@@ -152,14 +160,8 @@ StartLimitIntervalSec=0
 [Service]
 Restart=on-success
 RestartSec=2
-# halium mount table + 4.14 RCU makes systemd mount-ns setup take ~40s;
-# without it the daemon is up in <1s (DBus activation timeout is 25s)
-ProtectSystem=no
-ProtectHome=no
-PrivateTmp=no
-ProtectKernelTunables=no
-ProtectControlGroups=no
-ProtectKernelModules=no
+# (with kernel patch 0004 the old 40s mount-ns sandbox stall is gone -
+# a resident geoclue is now just a GPS-latency nicety, not a bug fix)
 
 [Install]
 WantedBy=multi-user.target

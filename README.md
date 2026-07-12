@@ -97,14 +97,25 @@ Full walkthrough: [docs/PORT-GUIDE.md](docs/PORT-GUIDE.md).
   start timeout (chip re-init ≈65 s) and a pre-provided
   `/var/lib/bluetooth/board-address` (the Duo exposes no bdaddr
   property). Both ship in the adaptation package.
-- **systemd sandbox = 40 s startup stall** (likely affects every Halium
-  port on 4.14): any unit with mount-namespace sandboxing
-  (`ProtectSystem`, `PrivateTmp`, …) takes ~40 s to spawn - each
-  `umount2` in the namespace build stalls in `__wait_rcu_gp`
-  (`rcu_expedited` does not help). geoclue is the visible victim: DBus
-  activation times out at 25 s and it idle-exits after 60 s, so GPS
-  looks dead while the whole GNSS stack is fine. The adaptation ships a
-  geoclue drop-in (drop the sandbox options + keep the daemon resident).
+- **The Android ext4 `umount_end` hook** (patches/0004; likely affects
+  every Halium port with a loop rootfs on an msm-4.14 kernel) - ONE
+  downstream hook, TWO symptom classes. On every user umount(2) with
+  the superblock still active in another namespace (i.e. on every
+  systemd mount-namespace teardown of the root) it synchronously
+  rewrote the live superblock and flipped the error policy to
+  remount-ro. Symptom A: any unit with mount-namespace sandboxing
+  (`ProtectSystem`, `PrivateTmp`, …) took ~40 s to spawn (geoclue was
+  the visible victim - DBus activation times out at 25 s, so GPS looked
+  dead while the GNSS stack was fine); with the hook removed the same
+  unit spawns in 0.2 s. Symptom B: harmless journald write hiccups
+  escalated into a read-only root - the phone "freezes" but still
+  pings. Full evidence: `docs/FREEZE-FORENSICS.md`.
+- **`data=journal` on userdata** (patches/0005): the halium initramfs
+  mounts the ext4 userdata with `data=journal` (a 2014 UT workaround).
+  With a loop rootfs on top, every root write double-writes through
+  the outer journal; under bursts (`dpkg -i` is enough) jbd2 starves
+  and the system stalls for minutes. `data=ordered` survives a 300 MB
+  fsync burst with zero errors.
 
 ## Credits
 

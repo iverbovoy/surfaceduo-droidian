@@ -53,9 +53,6 @@ docker run --rm \
 before the build-deps step can install anything - hence the explicit
 install.)
 
-```
-```
-
 Debs land in `packages/` at the repo root. boot.img lives inside
 `linux-bootimage-4.14-190-microsoft-surfaceduo_*.deb` (`dpkg -x`), copy
 it to `out/boot-duo1-droidian.img` and run
@@ -142,10 +139,14 @@ find <kernel>/out/KERNEL_OBJ/techpack -name '*.ko' -exec cp {} out/audio-modules
   under write bursts (a plain `dpkg -i` is enough) jbd2 starves and the
   loop device throws failing bios - the system stalls for minutes.
   `data=ordered` (the modern ext4 default) fixes it: a 300MB fsync
-  burst runs clean at full UFS speed. To apply: unpack the ramdisk from
-  your droidian boot image (`gzip -dc ramdisk | cpio -idm`), apply the
-  patch, repack (`fakeroot sh -c 'find . | cpio -o -H newc | gzip -9'`)
-  and feed it to mkbootimg.
+  burst runs clean at full UFS speed. `tools/make-boot-image.sh`
+  applies this patch automatically when assembling the boot image.
+  Trade-off, stated honestly: lp#1387214 was about data loss on dirty
+  power-offs of 2014-era eMMC devices. With `data=ordered` a sudden
+  power cut can lose recently written file *content* (not filesystem
+  consistency - the journal still covers metadata). If you see
+  userdata damage after hard power cuts, this is the knob you traded.
+  Evidence for both fixes: `docs/FREEZE-FORENSICS.md`.
 - `ext4/super.c` (0004): remove the Android-only `umount_end` hook. It
   fired on every user umount(2) while the superblock was still active
   in another namespace - i.e. on every systemd sandbox teardown of the

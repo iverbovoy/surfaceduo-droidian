@@ -42,21 +42,17 @@ boot.img assembly step fails - the flight image is packed manually:
 
 ```
 tools/extract-stock-dtb.sh boot_b.img stock.dtb   # from YOUR backup
-python3 tools/mkbootimg/mkbootimg.py --header_version 2 \
-  --kernel Image.gz --ramdisk <droidian-initramfs> --dtb stock.dtb \
-  --pagesize 4096 --base 0x0 --kernel_offset 0x8000 \
-  --ramdisk_offset 0x1000000 --second_offset 0xf00000 --tags_offset 0x100 \
-  --dtb_offset 0x1f00000 --os_version 11.0.0 --os_patch_level 2023-08 \
-  --cmdline "<stock cmdline> console=tty0 datapart=/dev/sda6 droidian.lvm.prefer" \
-  -o boot-duo1-droidian.img
-tools/flash-safely.sh validate boot-duo1-droidian.img
+tools/make-boot-image.sh Image.gz <droidian-boot.img-or-initramfs> stock.dtb
 ```
 
-The DTB **must** be the generic wildcard extracted from your stock
-image (see SAFETY.md, "DTB scheme" - this was our silent-death root
-cause). The ramdisk comes from the droidian kernel deb / nightly.
-The full working cmdline (stock + droidian additions) is in
-`kernel-packaging/debian/kernel-info.mk` (`KERNEL_BOOTIMAGE_CMDLINE`).
+`make-boot-image.sh` patches the halium initramfs in flight
+(data=ordered instead of the 2014 data=journal workaround - without it
+the phone stalls under write bursts, see docs/FREEZE-FORENSICS.md),
+packs the v2 header with the right offsets/cmdline and validates the
+result. The DTB **must** be the generic wildcard extracted from your
+stock image (see SAFETY.md, "DTB scheme" - this was our silent-death
+root cause). The ramdisk comes from the droidian kernel deb / nightly
+boot image.
 
 ## 3. Rootfs
 
