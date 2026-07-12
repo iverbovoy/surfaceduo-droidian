@@ -32,9 +32,14 @@ Apply the kernel patches once per fresh clone (what they do: see
 ```
 git -C ../surface-duo-oss-kernel.msm-4.14 apply \
   "$PWD"/patches/0001-dwc3-msm-force-suspend-when-not-in-lpm.patch \
-  "$PWD"/patches/0002-adsprpc-ratelimit-bad-ioctl-log.patch
+  "$PWD"/patches/0002-adsprpc-ratelimit-bad-ioctl-log.patch \
+  "$PWD"/patches/0004-ext4-remove-android-umount_end-hook.patch
 # 0003 applies inside techpack/audio - see "Audio modules" below
+# 0005 applies to the boot ramdisk - tools/make-boot-image.sh does it
 ```
+
+Skipping 0004 gets you a phone that freezes under I/O load and 40 s
+GPS/geoclue startups - see `docs/FREEZE-FORENSICS.md`.
 
 Then:
 

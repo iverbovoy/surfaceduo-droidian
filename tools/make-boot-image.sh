@@ -55,16 +55,33 @@ else
     echo "ERROR: patch does not apply and initramfs is not already patched"
     exit 1
 fi
-(cd "$WORK/rd" && fakeroot sh -c 'find . | cpio -o -H newc --quiet' | gzip -9) > "$WORK/ramdisk.gz"
+# Deterministic repack: initramfs mtimes are meaningless, so normalize
+# them (extraction dirs and patched files carry build-time stamps),
+# sort the file list, renumber inodes/devices (newc records both and
+# they vary per checkout), and strip gzip's timestamp - same inputs,
+# same bytes. --reproducible = GNU cpio >= 2.12.
+(cd "$WORK/rd" && fakeroot sh -c '
+    find . -print0 | xargs -0 touch -h -d "@1" 2>/dev/null || true
+    find . | LC_ALL=C sort | cpio -o -H newc --quiet --reproducible' | gzip -9 -n) > "$WORK/ramdisk.gz"
 
-# 3. pack (header v2, offsets/os_version mirror the stock MS boot.img -
-# same values kernel-packaging/debian/kernel-info.mk encodes)
-CMDLINE="console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0xa90000 androidboot.hardware=surfaceduo androidboot.hardware.platform=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=2048 loop.max_part=7 androidboot.usbcontroller=a600000.dwc3 kpti=off buildvariant=user console=tty0 datapart=/dev/sda6 droidian.lvm.prefer"
-python3 "$HERE/mkbootimg/mkbootimg.py" --header_version 2 \
+# 3. pack. Header fields come from kernel-packaging/debian/kernel-info.mk -
+# the single source of truth the deb build uses too.
+MK="$ROOT/kernel-packaging/debian/kernel-info.mk"
+mk_get() { sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$MK" | head -1; }
+CMDLINE="$(mk_get KERNEL_BOOTIMAGE_CMDLINE)"
+[ -n "$CMDLINE" ] || { echo "ERROR: KERNEL_BOOTIMAGE_CMDLINE not found in $MK"; exit 1; }
+python3 "$HERE/mkbootimg/mkbootimg.py" \
+    --header_version "$(mk_get KERNEL_BOOTIMAGE_VERSION)" \
     --kernel "$KERNEL" --ramdisk "$WORK/ramdisk.gz" --dtb "$DTB" \
-    --pagesize 4096 --base 0x0 --kernel_offset 0x8000 \
-    --ramdisk_offset 0x1000000 --second_offset 0xf00000 --tags_offset 0x100 \
-    --dtb_offset 0x1f00000 --os_version 11.0.0 --os_patch_level 2023-08 \
+    --pagesize   "$(mk_get KERNEL_BOOTIMAGE_PAGE_SIZE)" \
+    --base       "$(mk_get KERNEL_BOOTIMAGE_BASE_OFFSET)" \
+    --kernel_offset  "$(mk_get KERNEL_BOOTIMAGE_KERNEL_OFFSET)" \
+    --ramdisk_offset "$(mk_get KERNEL_BOOTIMAGE_INITRAMFS_OFFSET)" \
+    --second_offset  "$(mk_get KERNEL_BOOTIMAGE_SECONDIMAGE_OFFSET)" \
+    --tags_offset    "$(mk_get KERNEL_BOOTIMAGE_TAGS_OFFSET)" \
+    --dtb_offset     "$(mk_get KERNEL_BOOTIMAGE_DTB_OFFSET)" \
+    --os_version     "$(mk_get KERNEL_BOOTIMAGE_OS_VERSION)" \
+    --os_patch_level "$(mk_get KERNEL_BOOTIMAGE_PATCH_LEVEL)" \
     --cmdline "$CMDLINE" -o "$OUT"
 
 echo "== packed: $OUT"

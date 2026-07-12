@@ -9,7 +9,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 ACCESS="$HERE/../access"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.9.2}"
+VER="${1:-0.9.3}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
@@ -105,7 +105,22 @@ for m in wglink_dlkm q6_pdr_dlkm q6_notifier_dlkm apr_dlkm q6_dlkm \
          mbhc_dlkm wsa881x_dlkm wcd934x_dlkm machine_dlkm; do
     modprobe $m 2>/dev/null
 done
-exit 0
+# Verify the chain actually landed. Failing here also keeps bluebinder
+# off (Requires=) - a half-dead audio/ADSP state is exactly when a
+# bluetooth init soft-locks the kernel, so silence is the safe mode.
+for m in apr_dlkm q6_dlkm wcd934x_dlkm machine_dlkm; do
+    grep -q "^$m " /proc/modules || {
+        echo "sfduo-audio: critical module $m failed to load" >&2
+        exit 1
+    }
+done
+i=0
+while [ $i -lt 10 ]; do
+    grep -q sm8150 /proc/asound/cards 2>/dev/null && exit 0
+    i=$((i+1)); sleep 1
+done
+echo "sfduo-audio: sound card did not register" >&2
+exit 1
 AUDIO
     chmod 755 "$PKG/usr/local/sbin/sfduo-audio-up.sh"
     cat > "$PKG/usr/lib/systemd/system/sfduo-audio.service" <<'UNIT'
@@ -145,13 +160,10 @@ printf '[Service]\nTimeoutStartSec=180\n' > "$PKG/etc/systemd/system/bluebinder.
 
 # GPS (2026-07-12): the vendor GNSS stack works out of the box and the
 # droidian geoclue hybris source delivers ~4m fixes (TTFF ~100s cold, no
-# xtra assistance - container has no DNS). Two startup defects made GPS
-# look dead: (1) systemd's mount-namespace sandbox setup (ProtectSystem
-# etc.) takes ~40s on this system - every umount2 in the namespace build
-# stalls in __wait_rcu_gp on the 4.14 kernel (rcu_expedited does NOT
-# help) - while DBus activation gives up at 25s; (2) geoclue exits after
-# 60s idle, so the next client hits (1) again. Fix: drop the mount-ns
-# sandbox options (daemon up in 2s) and keep it resident.
+# xtra assistance - container has no DNS). geoclue idle-exits after 60s,
+# so every fix pays DBus-activation startup again; keep it resident.
+# (The 40s sandbox stall that once made activation time out entirely is
+# fixed at the root by kernel patch 0004 - see docs/FREEZE-FORENSICS.md.)
 mkdir -p "$PKG/etc/systemd/system/geoclue.service.d"
 cat > "$PKG/etc/systemd/system/geoclue.service.d/99-sfduo-keepalive.conf" <<'GCLUE'
 [Unit]
