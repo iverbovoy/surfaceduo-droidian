@@ -9,7 +9,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 ACCESS="$HERE/../access"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.9.3}"
+VER="${1:-0.9.4}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
@@ -56,8 +56,12 @@ Before=NetworkManager.service
 Type=oneshot
 ExecStart=/bin/sh -c 'grep -q ^wlan /proc/modules || insmod /usr/lib/sfduo/wlan.ko'
 # WoWLAN keeps the association alive through deep sleep, so WiFi (and ssh
-# over it) come back instantly on wake instead of rescanning.
-ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5; do iw phy phy0 wowlan enable any 2>/dev/null && break; sleep 1; done; true'
+# over it) come back instantly after a deliberate wake (wakeonlan <mac>).
+# magic-packet, NOT any: "any" means every LAN broadcast wakes the phone
+# (measured: 26 s of sleep on a home network). WARNING: never reconfigure
+# wowlan on a live driver - a runtime enable-mode switch soft-locked a
+# qcacld thread and took all block I/O down with it (2026-07-12).
+ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5; do iw phy phy0 wowlan enable magic-packet 2>/dev/null && break; sleep 1; done; true'
 RemainAfterExit=yes
 
 [Install]
@@ -180,7 +184,12 @@ WantedBy=multi-user.target
 GCLUE
 
 mkdir -p "$PKG/etc/systemd/sleep.conf.d"
-printf '[Sleep]\nAllowSuspend=yes\n' > "$PKG/etc/systemd/sleep.conf.d/99-sfduo.conf"
+# SuspendState=mem ONLY: systemd's default list (mem standby freeze) falls
+# back to s2idle when deep suspend returns EBUSY (e.g. a wakeup arriving
+# mid-entry) - and s2idle races UFS runtime PM on this platform: the host
+# controller never resumes ("parent (1d84000.ufshc) is not active") and
+# every write to sda6 hangs forever. A failed suspend beats a dead disk.
+printf '[Sleep]\nAllowSuspend=yes\nSuspendState=mem\n' > "$PKG/etc/systemd/sleep.conf.d/99-sfduo.conf"
 
 mkdir -p "$PKG/usr/lib/systemd/system-sleep"
 cat > "$PKG/usr/lib/systemd/system-sleep/sfduo-usb" <<'SLEEP'
@@ -203,6 +212,62 @@ esac
 exit 0
 SLEEP
 chmod 755 "$PKG/usr/lib/systemd/system-sleep/sfduo-usb"
+
+# Panels re-init at resume and can reset their DCS brightness register
+# to hardware default (max) while gsd-power still holds the user value -
+# screen at full blast, indicator unchanged. Nudge gsd after resume:
+# re-setting its Brightness property to its own value makes it rewrite
+# both panel backlights.
+cat > "$PKG/usr/lib/systemd/system-sleep/sfduo-brightness" <<'SLEEP'
+#!/bin/sh
+[ "$1" = "post" ] || exit 0
+(
+  ENV="XDG_RUNTIME_DIR=/run/user/32011 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/32011/bus"
+  for i in 1 2 3 4 5; do
+    B=$(sudo -u droidian env $ENV busctl --user get-property \
+        org.gnome.SettingsDaemon.Power /org/gnome/SettingsDaemon/Power \
+        org.gnome.SettingsDaemon.Power.Screen Brightness 2>/dev/null | awk '{print $2}')
+    [ -n "$B" ] && { sudo -u droidian env $ENV busctl --user set-property \
+        org.gnome.SettingsDaemon.Power /org/gnome/SettingsDaemon/Power \
+        org.gnome.SettingsDaemon.Power.Screen Brightness i "$B" && break; }
+    sleep 2
+  done
+) &
+exit 0
+SLEEP
+chmod 755 "$PKG/usr/lib/systemd/system-sleep/sfduo-brightness"
+
+# Android vendor init sets 10-minute laptop-mode writeback
+# (vm.dirty_writeback_centisecs=60000) and KEEPS re-setting it at runtime
+# (power HAL, charge events). Dirty pages then pile up for 10 minutes and
+# hit the loop-backed rootfs as one giant burst - the exact load pattern
+# behind the I/O stalls docs/FREEZE-FORENSICS.md describes. /etc/sysctl.d
+# alone loses the race (it runs before lxc@android), so a timer re-asserts.
+mkdir -p "$PKG/etc/sysctl.d"
+cat > "$PKG/etc/sysctl.d/99-sfduo-writeback.conf" <<'SYSCTL'
+vm.laptop_mode = 0
+vm.dirty_writeback_centisecs = 500
+vm.dirty_expire_centisecs = 3000
+SYSCTL
+cat > "$PKG/usr/lib/systemd/system/sfduo-writeback.service" <<'UNIT'
+[Unit]
+Description=sfduo: keep sane writeback sysctls (android init sets 10-minute laptop-mode values)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/sysctl -w vm.laptop_mode=0 vm.dirty_writeback_centisecs=500 vm.dirty_expire_centisecs=3000
+UNIT
+cat > "$PKG/usr/lib/systemd/system/sfduo-writeback.timer" <<'UNIT'
+[Unit]
+Description=sfduo: re-assert writeback sysctls (android side rewrites them at runtime)
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+UNIT
 
 # Hinge (posture) sensor: our patched sensorfw adds hybrishingeadaptor +
 # hingesensor (android.sensor.hinge_angle, type 36, degrees 0..360, via
@@ -249,14 +314,18 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 UNIT
 
-# Brightness (2026-07-12, sysfs paths spotted in Tygerpro's UT port): the
-# phosh slider drives /sys/class/backlight/backlight (WLED, 0-4095) but
-# the panels listen to panel0/1-backlight (0-255) - without the sync the
-# panels sit at a constant level forever. The change uevent fires on
-# every brightness store, verified on device.
+# Brightness: gsd-power writes BOTH panel backlights (panel0/1-backlight,
+# 0-255) directly - measured on device 2026-07-12; the WLED node
+# (/sys/class/backlight/backlight) drives nothing visible on these OLED
+# panels. The 0.9.0-0.9.3 udev rule that mirrored WLED onto the panels
+# was a SECOND writer: anything poking WLED (android side at resume /
+# unblank leaves it at 4095) slammed the panels to max while the phosh
+# indicator kept gsd's value. One writer only - the rule is gone; the
+# resume-time panel reset is handled by the sfduo-brightness sleep hook.
 cat > "$PKG/usr/local/sbin/sfduo-brightness-sync.sh" <<'BRT'
 #!/bin/sh
-# Mirror the main WLED backlight (0-4095) onto the two panel backlights (0-255).
+# Manual/debug helper ONLY (not hooked to udev - see build.sh comment):
+# mirror the WLED node (0-4095) onto the two panel backlights (0-255).
 B=$(cat /sys/class/backlight/backlight/brightness 2>/dev/null) || exit 0
 P=$((B * 255 / 4095))
 [ "$P" -gt 255 ] && P=255
@@ -267,7 +336,6 @@ BRT
 chmod 755 "$PKG/usr/local/sbin/sfduo-brightness-sync.sh"
 cat > "$PKG/etc/udev/rules.d/98-sfduo-backlight.rules" <<'RULES'
 SUBSYSTEM=="backlight", GROUP="video", MODE="0664"
-SUBSYSTEM=="backlight", KERNEL=="backlight", ACTION=="change", RUN+="/usr/local/sbin/sfduo-brightness-sync.sh"
 RULES
 
 # Flashlight: let the video group drive the torch LEDs without root.
@@ -431,6 +499,7 @@ if [ -d /run/systemd/system ]; then
     systemctl enable bluebinder.service bluetooth.service 2>/dev/null || true
     systemctl enable --now sfduo-tame-vendor.service || true
     systemctl enable --now sfduo-lid.service || true
+    systemctl enable --now sfduo-writeback.timer || true
     udevadm control --reload 2>/dev/null || true
     udevadm trigger -s backlight -s leds 2>/dev/null || true
     # geoclue is a static unit; the drop-in adds [Install] so it can start at boot
