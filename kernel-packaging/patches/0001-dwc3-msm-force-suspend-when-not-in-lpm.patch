@@ -1,0 +1,48 @@
+diff --git a/drivers/usb/dwc3/dwc3-msm.c b/drivers/usb/dwc3/dwc3-msm.c
+index 504907765..38eaebecb 100644
+--- a/drivers/usb/dwc3/dwc3-msm.c
++++ b/drivers/usb/dwc3/dwc3-msm.c
+@@ -5145,8 +5145,19 @@ static int dwc3_msm_pm_suspend(struct device *dev)
+ 	 */
+ 	if (!dwc->ignore_wakeup_src_in_hostmode || !mdwc->in_host_mode) {
+ 		if (!atomic_read(&dwc->in_lpm)) {
+-			dev_err(mdwc->dev, "Abort PM suspend!! (USB is outside LPM)\n");
+-			return -EBUSY;
++			/* sfduo/droidian: in peripheral mode nothing drives the
++			 * OTG state machine to IDLE (no Android usbd), so the
++			 * controller never reaches LPM by itself and every
++			 * system suspend would abort here. Force it down
++			 * instead; if the controller genuinely cannot suspend
++			 * (pending events, enumerated host), keep the abort.
++			 */
++			dev_info(mdwc->dev, "USB outside LPM, forcing controller suspend\n");
++			ret = dwc3_msm_suspend(mdwc, false, false);
++			if (ret) {
++				dev_err(mdwc->dev, "Abort PM suspend!! (forced dwc3_msm_suspend: %d)\n", ret);
++				return -EBUSY;
++			}
+ 		}
+ 
+ 		atomic_set(&mdwc->pm_suspended, 1);
+@@ -5212,8 +5223,19 @@ static int dwc3_msm_pm_freeze(struct device *dev)
+ 	 */
+ 	if (!dwc->ignore_wakeup_src_in_hostmode || !mdwc->in_host_mode) {
+ 		if (!atomic_read(&dwc->in_lpm)) {
+-			dev_err(mdwc->dev, "Abort PM suspend!! (USB is outside LPM)\n");
+-			return -EBUSY;
++			/* sfduo/droidian: in peripheral mode nothing drives the
++			 * OTG state machine to IDLE (no Android usbd), so the
++			 * controller never reaches LPM by itself and every
++			 * system suspend would abort here. Force it down
++			 * instead; if the controller genuinely cannot suspend
++			 * (pending events, enumerated host), keep the abort.
++			 */
++			dev_info(mdwc->dev, "USB outside LPM, forcing controller suspend\n");
++			ret = dwc3_msm_suspend(mdwc, false, false);
++			if (ret) {
++				dev_err(mdwc->dev, "Abort PM suspend!! (forced dwc3_msm_suspend: %d)\n", ret);
++				return -EBUSY;
++			}
+ 		}
+ 
+ 		atomic_set(&mdwc->pm_suspended, 1);

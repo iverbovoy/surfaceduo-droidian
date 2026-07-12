@@ -1,0 +1,72 @@
+Source: linux-android-microsoft-surfaceduo
+Section: kernel
+Priority: optional
+Maintainer: Ivan Verbovoy <ivanverbovoy@gmail.com>
+XS-Droidian-Host-Arch: arm64
+XS-Droidian-Build-On: amd64
+Build-Depends: build-essential,
+               dpkg-dev,
+               findutils,
+               android-platform-prebuilts-python-linux-x86-2.7.5,
+               debhelper (>= 13),
+               bc,
+               rsync,
+               kmod,
+               cpio,
+               bison,
+               flex,
+               libssl-dev,
+               linux-initramfs-halium-generic,
+               linux-packaging-snippets,
+               android-sdk-ufdt-tests,
+               mkbootimg (>= 10.0.0),
+               mkdtboimg,
+               avbtool,
+               linux-initramfs-halium-generic:arm64, binutils-aarch64-linux-gnu, clang-android-9.0-r353983c, gcc-4.9-aarch64-linux-android, g++-4.9-aarch64-linux-android, libgcc-4.9-dev-aarch64-linux-android-cross
+Standards-Version: 4.5.0.3
+
+Package: linux-image-4.14-190-microsoft-surfaceduo
+Architecture: arm64
+Depends: ${misc:Depends}
+Description: Linux kernel for Microsoft Surface Duo
+ This package contains the Linux kernel for the Microsoft Surface Duo device.
+ .
+ Note: This package only ships the kernel image and modules, you should probably
+ look at the linux-bootimage-4.14-190-microsoft-surfaceduo package for a bootimage
+ suitable for Android boot loaders.
+
+Package: linux-bootimage-4.14-190-microsoft-surfaceduo
+Architecture: arm64
+Pre-Depends: flash-bootimage (>= 4)
+Depends: ${misc:Depends},
+         linux-image-4.14-190-microsoft-surfaceduo (= ${binary:Version})
+Description: Linux kernel for Microsoft Surface Duo - Android Boot Image
+ This package contains the Linux kernel for the Microsoft Surface Duo device.
+ .
+ Note: This package ships an Android Boot Image bundled with Halium's
+ initramfs.
+
+Package: linux-headers-4.14-190-microsoft-surfaceduo
+Architecture: arm64
+Depends: ${misc:Depends},
+         linux-image-4.14-190-microsoft-surfaceduo (= ${binary:Version})
+Description: Linux kernel for Microsoft Surface Duo - Headers
+ This package contains the Linux kernel headers for the Microsoft Surface Duo device.
+
+Package: linux-image-microsoft-surfaceduo
+Architecture: arm64
+Depends: linux-image-4.14-190-microsoft-surfaceduo (= ${binary:Version})
+Description: Linux kernel for Microsoft Surface Duo (latest)
+ This package depends on the latest kernel image available for the Microsoft Surface Duo.
+
+Package: linux-bootimage-microsoft-surfaceduo
+Architecture: arm64
+Depends: linux-bootimage-4.14-190-microsoft-surfaceduo (= ${binary:Version})
+Description: Linux kernel for Microsoft Surface Duo - Android Boot Image (latest)
+ This package depends on the latest kernel bootimage available for the Microsoft Surface Duo.
+
+Package: linux-headers-microsoft-surfaceduo
+Architecture: arm64
+Depends: linux-headers-4.14-190-microsoft-surfaceduo (= ${binary:Version})
+Description: Linux kernel for Microsoft Surface Duo - Headers (latest)
+ This package depends on the latest kernel headers available for the Microsoft Surface Duo.

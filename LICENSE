@@ -1,0 +1,8 @@
+This repository is multi-licensed:
+
+- Kernel packaging and kernel patches: GPL-2.0 (see LICENSES/GPL-2.0.txt)
+- Scripts and the adaptation package: MIT (see LICENSES/MIT.txt)
+- Documentation (docs/, README files): CC BY-SA 4.0 (see LICENSES/CC-BY-SA-4.0.txt)
+- tools/mkbootimg/ is vendored from AOSP: Apache-2.0 (see LICENSES/Apache-2.0.txt)
+
+See the License section of README.md for details.

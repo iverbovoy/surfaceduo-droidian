@@ -1,0 +1,59 @@
+diff --git a/adaptors/adaptors.pro b/adaptors/adaptors.pro
+index efbbf8c..b8922fb 100644
+--- a/adaptors/adaptors.pro
++++ b/adaptors/adaptors.pro
+@@ -7,6 +7,7 @@ HYBRIS_SUBDIRS = hybrisaccelerometer \
+                  hybrisgyroscopeadaptor \
+                  hybrismagnetometeradaptor \
+                  hybrispressureadaptor \
++                 hybrishingeadaptor \
+                  hybrisproximityadaptor \
+                  hybrisorientationadaptor \
+                  hybrisrotationadaptor \
+diff --git a/core/hybrisadaptor.cpp b/core/hybrisadaptor.cpp
+index be93493..b64762c 100644
+--- a/core/hybrisadaptor.cpp
++++ b/core/hybrisadaptor.cpp
+@@ -102,6 +102,7 @@ sensorTypeName(int type)
+     case SENSOR_TYPE_TILT_DETECTOR:               return "TILT_DETECTOR";
+     case SENSOR_TYPE_WAKE_GESTURE:                return "WAKE_GESTURE";
+     case SENSOR_TYPE_GLANCE_GESTURE:              return "GLANCE_GESTURE";
++    case SENSOR_TYPE_HINGE_ANGLE:                 return "HINGE_ANGLE";
+     case SENSOR_TYPE_PICK_UP_GESTURE:             return "PICK_UP_GESTURE";
+     case SENSOR_TYPE_WRIST_TILT_GESTURE:          return "WRIST_TILT_GESTURE";
+     }
+diff --git a/core/hybrisadaptor.h b/core/hybrisadaptor.h
+index 45e335b..1e82a04 100644
+--- a/core/hybrisadaptor.h
++++ b/core/hybrisadaptor.h
+@@ -126,6 +126,9 @@
+ #ifndef SENSOR_TYPE_WRIST_TILT_GESTURE
+ #define SENSOR_TYPE_WRIST_TILT_GESTURE              (26)
+ #endif
++#ifndef SENSOR_TYPE_HINGE_ANGLE
++#define SENSOR_TYPE_HINGE_ANGLE                     (36)
++#endif
+ 
+ #define GRAVITY_RECIPROCAL_THOUSANDS 101.971621298
+ #define RADIANS_TO_DEGREESECONDS 57295.7795
+diff --git a/debian/libsensorfw-qt6-plugins.install b/debian/libsensorfw-qt6-plugins.install
+index b2dc1ef..2a124ee 100644
+--- a/debian/libsensorfw-qt6-plugins.install
++++ b/debian/libsensorfw-qt6-plugins.install
+@@ -23,3 +23,4 @@
+ /usr/lib/*/sensord-qt6/libpressuresensor-qt6.so
+ /usr/lib/*/sensord-qt6/libstepcountersensor-qt6.so
+ /usr/lib/*/sensord-qt6/libtemperaturesensor-qt6.so
++/usr/lib/*/sensord-qt6/libhingesensor-qt6.so
+diff --git a/sensors/sensors.pro b/sensors/sensors.pro
+index 6afdb7d..a9435a3 100644
+--- a/sensors/sensors.pro
++++ b/sensors/sensors.pro
+@@ -15,6 +15,7 @@ SUBDIRS  = accelerometersensor \
+            lidsensor \
+            humiditysensor \
+            pressuresensor \
++           hingesensor \
+            temperaturesensor \
+            stepcountersensor
+ 

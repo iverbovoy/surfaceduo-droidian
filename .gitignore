@@ -1,0 +1,10 @@
+out/
+*.img
+*.deb
+__pycache__/
+*.pyc
+# clones expected at the repo root by kernel-packaging/setup.sh & README
+surface-duo-oss-kernel.msm-4.14/
+common_fragments/
+wlan/
+packages/

@@ -1,0 +1,17 @@
+--- a/soc/Kbuild	2026-07-11 15:54:37.958825837 +0300
++++ b/soc/Kbuild	2026-07-11 16:12:14.210825665 +0300
+@@ -118,6 +118,14 @@
+ 
+ LINUX_INC +=	-Iinclude/linux
+ 
++# out-of-android build: private kernel headers used by pinctrl-wcd (core.h)
++# and regmap-swr (soc/internal.h -> drivers/base/regmap/internal.h)
++LINUX_INC +=	-I$(srctree)/drivers/pinctrl \
++		-I$(srctree)/drivers/base/regmap \
++		-I$(srctree)/drivers/base \
++		-I$(srctree)/techpack/audio/include
++INCS += $(LINUX_INC)
++
+ INCS +=		$(COMMON_INC) \
+ 		$(UAPI_INC)
+ 

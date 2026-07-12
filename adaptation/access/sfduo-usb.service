@@ -1,0 +1,13 @@
+[Unit]
+Description=sfduo USB RNDIS gadget (debug access)
+DefaultDependencies=no
+After=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sfduo-usb-gadget.sh
+RemainAfterExit=yes
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

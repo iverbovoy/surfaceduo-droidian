@@ -1,0 +1,28 @@
+name: checks
+on: [push, pull_request]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n on every shell script
+        run: |
+          find . -name '*.sh' -not -path './tools/mkbootimg/*' -print0 \
+            | xargs -0 -n1 bash -n
+
+      - name: internal markdown links resolve
+        run: |
+          fail=0
+          while IFS=: read -r file link; do
+            case "$link" in http*|mailto*|\#*) continue ;; esac
+            target="$(dirname "$file")/${link%%#*}"
+            if [ ! -e "$target" ]; then
+              echo "broken link in $file -> $link"
+              fail=1
+            fi
+          done < <(grep -RnoE '\]\([^)]+\)' --include='*.md' . \
+                     | grep -v './tools/mkbootimg/' \
+                     | sed -E 's/^([^:]+):[0-9]+:\]\((.*)\)$/\1:\2/')
+          exit $fail

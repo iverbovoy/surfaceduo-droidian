@@ -1,0 +1,13 @@
+[Unit]
+Description=sfduo: install openssh-server from the offline deb bundle (one-shot)
+ConditionPathExists=!/var/lib/sfduo-ssh-installed
+After=local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/sfduo-ssh-firstboot.sh
+
+[Install]
+WantedBy=multi-user.target

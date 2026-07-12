@@ -1,0 +1,13 @@
+diff --git a/drivers/char/adsprpc.c b/drivers/char/adsprpc.c
+index 54b4c0c0b..44bbc9dfa 100644
+--- a/drivers/char/adsprpc.c
++++ b/drivers/char/adsprpc.c
+@@ -4008,7 +4008,7 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int ioctl_num,
+ 		break;
+ 	default:
+ 		err = -ENOTTY;
+-		pr_info("bad ioctl: %d\n", ioctl_num);
++		pr_info_ratelimited("bad ioctl: %d\n", ioctl_num);
+ 		break;
+ 	}
+  bail:
