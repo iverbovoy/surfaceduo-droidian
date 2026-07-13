@@ -17,6 +17,7 @@ single panel.
 | `sfduo-powerkey` + `.service` | `/usr/local/sbin/`, systemd | power button = screen toggle; runs only with the wayfire session (Phosh owns the key itself) |
 | `sfduo-osk` | `/usr/local/bin/` | launch wvkbd on a single panel (off the hinge); falls back to full-width on an un-patched binary |
 | `sfduo-kbd-toggle` | `/usr/local/bin/` | show/hide the wvkbd on-screen keyboard |
+| `sfduo-swap` | `/usr/local/bin/` | move the focused window to the other panel (waybar ⇄ button) |
 | `sfduo-launcher-toggle` | `/usr/local/bin/` | open/close the fuzzel launcher |
 | `waybar-config.jsonc` + `waybar-style.css` | `~droidian/.config/waybar/` | top bar on the LEFT panel: apps, kbd, clock, wifi, battery |
 | `fuzzel.ini` | `~droidian/.config/fuzzel/` | launcher anchored to the left panel |
@@ -115,4 +116,4 @@ same disease. Session debug log: `/tmp/wf.log`.
 - Volume keys are dead at the kernel level on this port (vol-down's PMIC
   RESIN irq fires but qpnp-pon emits no input event; vol-up's PMIC GPIO
   irq never fires) - hence on-screen buttons instead of key bindings.
-- No swap-window-between-panels gesture yet; close and reopen instead.
+- Window swap is a waybar button (⇄), not a gesture yet.
