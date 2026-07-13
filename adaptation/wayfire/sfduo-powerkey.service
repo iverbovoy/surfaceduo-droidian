@@ -1,0 +1,14 @@
+[Unit]
+Description=sfduo: power-button screen toggle for the wayfire session
+# Lives and dies with the wayfire session - under Phosh the shell itself
+# owns the power key and this daemon must not fight it.
+PartOf=wayfire-duo.service
+After=wayfire-duo.service
+
+[Service]
+ExecStart=/usr/local/sbin/sfduo-powerkey
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=wayfire-duo.service

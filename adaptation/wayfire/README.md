@@ -13,6 +13,8 @@ single panel.
 | `wayfire-duo.service` | `/usr/lib/systemd/system/` | session unit (Phosh launch recipe: hwcomposer backend, PAM, tty7) |
 | `wayfire-duo.ini` | `~droidian/.config/` (via postinst) | wayfire config: output 2784x1800@scale2, autostart |
 | `sfduo-tiler` | `/usr/local/sbin/` | hinge-aware auto-tiler (wayfire IPC, python3 stdlib) |
+| `sfduo-screens` | `/usr/local/sbin/` | panel power on/off/toggle via sysfs `bl_power` (do NOT use `wlr-randr --off` - disabling the sole output crashes wayfire) |
+| `sfduo-powerkey` + `.service` | `/usr/local/sbin/`, systemd | power button = screen toggle; runs only with the wayfire session (Phosh owns the key itself) |
 | `sfduo-osk` | `/usr/local/bin/` | launch wvkbd on a single panel (off the hinge); falls back to full-width on an un-patched binary |
 | `sfduo-kbd-toggle` | `/usr/local/bin/` | show/hide the wvkbd on-screen keyboard |
 | `sfduo-launcher-toggle` | `/usr/local/bin/` | open/close the fuzzel launcher |
@@ -105,9 +107,11 @@ same disease. Session debug log: `/tmp/wf.log`.
   surgery, not just a width, so single-panel is the shipped answer.
 - Because of the forced `-non-exclusive` (see above), windows do not
   auto-shrink above the OSK - it overlays their bottom 260 px.
-- The power button does nothing in this session (no dpms/wake binding;
-  Phosh handles it via gnome-session). If the panels look dead, check
-  ssh before assuming a freeze - and see the composer-restart note.
+- The power button toggles the screens via `sfduo-powerkey` (short
+  press; long-press PMIC hard-reset untouched). It does NOT lock or
+  suspend - fold-to-sleep remains the suspend path. If the panels look
+  dead anyway, check ssh before assuming a freeze - and see the
+  composer-restart note.
 - Volume keys are dead at the kernel level on this port (vol-down's PMIC
   RESIN irq fires but qpnp-pon emits no input event; vol-up's PMIC GPIO
   irq never fires) - hence on-screen buttons instead of key bindings.

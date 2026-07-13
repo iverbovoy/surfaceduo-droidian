@@ -10,7 +10,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 ACCESS="$HERE/../access"
 WAYFIRE="$HERE/../wayfire"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.10.1}"
+VER="${1:-0.10.2}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
@@ -518,7 +518,10 @@ UNIT
 # the left panel, patched wvkbd OSK). Phosh remains the default; the
 # unit is never enabled, start it manually.
 install -m644 "$WAYFIRE/wayfire-duo.service"     "$PKG/usr/lib/systemd/system/"
+install -m644 "$WAYFIRE/sfduo-powerkey.service"  "$PKG/usr/lib/systemd/system/"
 install -m755 "$WAYFIRE/sfduo-tiler"             "$PKG/usr/local/sbin/"
+install -m755 "$WAYFIRE/sfduo-screens"           "$PKG/usr/local/sbin/"
+install -m755 "$WAYFIRE/sfduo-powerkey"          "$PKG/usr/local/sbin/"
 install -m755 "$WAYFIRE/sfduo-osk"               "$PKG/usr/local/bin/"
 install -m755 "$WAYFIRE/sfduo-kbd-toggle"        "$PKG/usr/local/bin/"
 install -m755 "$WAYFIRE/sfduo-launcher-toggle"   "$PKG/usr/local/bin/"
@@ -601,6 +604,8 @@ if [ -d /run/systemd/system ]; then
     systemctl enable --now geoclue.service 2>/dev/null || systemctl start geoclue.service || true
     [ -f /usr/lib/sfduo/wlan.ko ] && systemctl enable --now sfduo-wlan.service || true
     [ -x /usr/local/sbin/sfduo-audio-up.sh ] && systemctl enable sfduo-audio.service || true
+    # ties to wayfire-duo.service.wants - inert unless the wayfire session runs
+    systemctl enable sfduo-powerkey.service 2>/dev/null || true
 else
     ln -sf /usr/lib/systemd/system/sfduo-usb.service \
        /etc/systemd/system/multi-user.target.wants/sfduo-usb.service
