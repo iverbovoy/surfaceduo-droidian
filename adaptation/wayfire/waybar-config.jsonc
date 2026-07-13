@@ -4,7 +4,7 @@
     "height": 44,
     "width": 0,
     "spacing": 8,
-    "modules-left": ["custom/launcher", "custom/kbd", "custom/swap", "wlr/taskbar"],
+    "modules-left": ["custom/launcher", "custom/kbd", "custom/swap", "custom/bg", "wlr/taskbar"],
     "modules-right": ["custom/hinge", "network", "clock", "battery"],
     "custom/launcher": {
         "format": "  ☰ apps  ",
@@ -17,6 +17,10 @@
     "custom/swap": {
         "format": "  ⇄ swap  ",
         "on-click": "/usr/local/bin/sfduo-swap"
+    },
+    "custom/bg": {
+        "format": "  ◐ bg  ",
+        "on-click": "/usr/local/bin/sfduo-bg-toggle"
     },
     "wlr/taskbar": {
         "format": "{icon} {title:.10}",

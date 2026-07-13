@@ -18,7 +18,8 @@ single panel.
 | `sfduo-osk` | `/usr/local/bin/` | launch wvkbd on a single panel (off the hinge); falls back to full-width on an un-patched binary |
 | `sfduo-kbd-toggle` | `/usr/local/bin/` | show/hide the wvkbd on-screen keyboard |
 | `sfduo-swap` | `/usr/local/bin/` | exchange the two panels' windows (waybar ⇄ button) |
-| `sfduo-livebg` | `/usr/local/bin/` | hinge-reactive live wallpaper (see below) |
+| `sfduo-livebg` | `/usr/local/bin/` | hinge-reactive live wallpaper, 6 styles (see below) |
+| `sfduo-bg-toggle` | `/usr/local/bin/` | cycle wallpaper styles (waybar ◐ button, SIGUSR1) |
 | `sfduo-hinge-monitor` | `/usr/local/bin/` | waybar hinge-angle bridge: follows the file sfduo-livebg writes, throttled to 2 Hz |
 | `sfduo-launcher-toggle` | `/usr/local/bin/` | open/close the fuzzel launcher |
 | `waybar-config.jsonc` + `waybar-style.css` | `~droidian/.config/waybar/` | top bar on the LEFT panel: apps, kbd, clock, wifi, battery |
@@ -36,10 +37,17 @@ re-snapped to its nearest panel within half a second. Watch it work:
 
 ## The live wallpaper (and a display-pipeline lesson)
 
-`sfduo-livebg` draws the monochrome dual-glow background parametrically
-(GTK3 layer-shell + cairo, no image files) and lets the hinge angle
-drive it: glows huddle at the hinge when closed, sit one per panel when
-open, merge into a single right-panel glow when folded back. It owns
+`sfduo-livebg` draws the monochrome background parametrically (GTK3
+layer-shell + cairo, no image files) and lets the hinge angle drive it.
+Two focal points (one per panel) move and fade with the angle: they
+huddle at the hinge when closed, sit one per panel when open, merge on
+the right (visible) panel when folded back. Six styles share that
+parametrization - `glow` (soft gradients + dither grain), `topo`
+(contour rings), `field` (bowing arcs), `waves` (terrain hairlines),
+`grid` (lensing dot lattice), `rays` (starbursts). The waybar ◐ button
+cycles them (SIGUSR1); the choice persists in ~/.config/sfduo-bg-style.
+Line styles render at full resolution and cannot band; only `glow`
+needs the grain overlay. It owns
 one sensorfw session (DBus dance + the raw data socket for push
 samples; pass your REAL pid to requestSensor - sensorfwd reaps sessions
 whose pid is dead) and publishes the angle to
