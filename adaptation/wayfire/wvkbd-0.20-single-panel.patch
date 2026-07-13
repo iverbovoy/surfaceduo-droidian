@@ -1,0 +1,55 @@
+--- main.c
++++ main.c
+@@ -62,6 +62,10 @@
+ static uint32_t anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
+                          ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
+                          ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
++/* Surface Duo dual-panel: pin the OSK to ONE panel instead of stretching it
++   across the 84 px hinge. 0 = full width (stock behaviour), unchanged. */
++static uint32_t panel_width = 0;
++static bool panel_right = false;
+ 
+ /* application state */
+ static bool run_display = true;
+@@ -502,7 +506,7 @@
+         height = normal_height;
+     }
+ 
+-    keyboard.w = available_width;
++    keyboard.w = panel_width ? panel_width : available_width;
+     keyboard.h = height;
+     keyboard.layout = &keyboard.layouts[layer];
+     keyboard.layer_index = 0;
+@@ -729,8 +733,14 @@
+     layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+         layer_shell, draw_surf.surf, current_output_data, layer, namespace);
+ 
+-    zwlr_layer_surface_v1_set_size(layer_surface, 0, height);
+-    zwlr_layer_surface_v1_set_anchor(layer_surface, anchor);
++    /* panel_width == 0 keeps the stock (0, height) full-width request */
++    zwlr_layer_surface_v1_set_size(layer_surface, panel_width, height);
++    zwlr_layer_surface_v1_set_anchor(layer_surface,
++        panel_width
++            ? (ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
++               (panel_right ? ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT
++                            : ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT))
++            : anchor);
+     if (keyboard.exclusive) {
+         zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, height);
+     }
+@@ -966,6 +976,15 @@
+                 exit(1);
+             }
+             rounding = atoi(argv[++i]);
++        } else if (!strcmp(argv[i], "-w")) {
++            if (i >= argc - 1) {
++                usage(argv[0]);
++                exit(1);
++            }
++            panel_width = atoi(argv[++i]);
++        } else if ((!strcmp(argv[i], "-panel-right")) ||
++                   (!strcmp(argv[i], "--panel-right"))) {
++            panel_right = true;
+         } else if (!strcmp(argv[i], "-D")) {
+             keyboard.debug = true;
+         } else if ((!strcmp(argv[i], "-fn")) || (!strcmp(argv[i], "--fn"))) {

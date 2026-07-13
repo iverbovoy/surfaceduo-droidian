@@ -10,7 +10,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 ACCESS="$HERE/../access"
 WAYFIRE="$HERE/../wayfire"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.10.0}"
+VER="${1:-0.10.1}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
@@ -519,6 +519,7 @@ UNIT
 # unit is never enabled, start it manually.
 install -m644 "$WAYFIRE/wayfire-duo.service"     "$PKG/usr/lib/systemd/system/"
 install -m755 "$WAYFIRE/sfduo-tiler"             "$PKG/usr/local/sbin/"
+install -m755 "$WAYFIRE/sfduo-osk"               "$PKG/usr/local/bin/"
 install -m755 "$WAYFIRE/sfduo-kbd-toggle"        "$PKG/usr/local/bin/"
 install -m755 "$WAYFIRE/sfduo-launcher-toggle"   "$PKG/usr/local/bin/"
 mkdir -p "$PKG/usr/share/sfduo/wayfire"
