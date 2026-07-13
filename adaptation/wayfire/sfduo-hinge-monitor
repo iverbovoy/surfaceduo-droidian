@@ -1,0 +1,39 @@
+#!/bin/sh
+# sfduo-hinge-monitor: stream the hinge angle for the waybar custom module
+# (continuous exec: every printed line replaces the module text).
+# sensorfw dance: loadPlugin -> requestSensor(id,pid)=sessionId -> start(sid)
+# -> Properties.Get local.HingeSensor hinge (uint32 degrees). dbus-send opens
+# a fresh connection per call, so the session is not tied to our lifetime;
+# we release and re-request once a minute to avoid leaking sessions in
+# sensorfwd anyway.
+BUS="dbus-send --system --print-reply --dest=com.nokia.SensorService"
+MGR=/SensorManager
+SNS=/SensorManager/hingesensor
+
+dance() {
+    $BUS $MGR local.SensorManager.loadPlugin string:hingesensor >/dev/null 2>&1
+    SID=$($BUS $MGR local.SensorManager.requestSensor \
+          string:hingesensor int64:$$ 2>/dev/null | awk '/int32/{print $2}')
+    [ -n "$SID" ] && $BUS $SNS local.HingeSensor.start "int32:$SID" >/dev/null 2>&1
+}
+
+release() {
+    [ -n "$SID" ] && $BUS $MGR local.SensorManager.releaseSensor \
+        string:hingesensor "int32:$SID" int64:$$ >/dev/null 2>&1
+}
+
+trap release EXIT
+dance
+n=0
+while :; do
+    A=$($BUS $SNS org.freedesktop.DBus.Properties.Get \
+        string:local.HingeSensor string:hinge 2>/dev/null | awk '/uint32/{print $2}')
+    if [ -n "$A" ]; then
+        echo "${A}°"
+    else
+        echo "--"
+    fi
+    n=$((n + 1))
+    if [ "$n" -ge 60 ]; then release; dance; n=0; fi
+    sleep 1
+done

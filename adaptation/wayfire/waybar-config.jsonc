@@ -7,7 +7,7 @@
     "spacing": 8,
     "modules-left": ["custom/launcher", "custom/kbd", "custom/swap"],
     "modules-center": ["clock"],
-    "modules-right": ["network", "battery"],
+    "modules-right": ["custom/hinge", "network", "battery"],
     "custom/launcher": {
         "format": "  ☰ apps  ",
         "on-click": "/usr/local/bin/sfduo-launcher-toggle"
@@ -22,6 +22,10 @@
     },
     "clock": {
         "format": "{:%H:%M}"
+    },
+    "custom/hinge": {
+        "exec": "/usr/local/bin/sfduo-hinge-monitor",
+        "format": "⌒ {}"
     },
     "network": {
         "format-wifi": "  {essid}",
