@@ -10,7 +10,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 ACCESS="$HERE/../access"
 WAYFIRE="$HERE/../wayfire"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.10.3}"
+VER="${1:-0.11.0}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
