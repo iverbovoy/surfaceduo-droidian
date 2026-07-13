@@ -8,7 +8,7 @@ import socket, json, struct, os, sys, time
 
 SOCK = os.environ.get("WAYFIRE_SOCKET", "/run/user/32011/wayfire-wayland-0-.socket")
 LEFT  = {"x": 0,   "y": 44, "width": 675, "height": 856}  # y offset: waybar
-RIGHT = {"x": 717, "y": 0, "width": 675, "height": 900}
+RIGHT = {"x": 717, "y": 44, "width": 675, "height": 856}  # bar spans both panels
 HINGE_L, HINGE_R = 675, 717
 HINGE_MID = (HINGE_L + HINGE_R) // 2
 LOG = os.path.expanduser("~/.cache/sfduo-tiler.log")

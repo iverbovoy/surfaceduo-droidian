@@ -3,11 +3,9 @@
     "position": "top",
     "height": 44,
     "width": 0,
-    "margin-right": 717,
     "spacing": 8,
-    "modules-left": ["custom/launcher", "custom/kbd", "custom/swap"],
-    "modules-center": ["clock"],
-    "modules-right": ["custom/hinge", "network", "battery"],
+    "modules-left": ["custom/launcher", "custom/kbd", "custom/swap", "wlr/taskbar"],
+    "modules-right": ["custom/hinge", "network", "clock", "battery"],
     "custom/launcher": {
         "format": "  ☰ apps  ",
         "on-click": "/usr/local/bin/sfduo-launcher-toggle"
@@ -19,6 +17,12 @@
     "custom/swap": {
         "format": "  ⇄ swap  ",
         "on-click": "/usr/local/bin/sfduo-swap"
+    },
+    "wlr/taskbar": {
+        "format": "{icon} {title:.10}",
+        "icon-size": 22,
+        "on-click": "activate",
+        "on-click-right": "close"
     },
     "clock": {
         "format": "{:%H:%M}"
