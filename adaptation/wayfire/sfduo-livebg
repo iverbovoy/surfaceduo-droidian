@@ -1,0 +1,278 @@
+#!/usr/bin/python3
+# sfduo-livebg: hinge-reactive live wallpaper for the wayfire-duo session.
+# A GTK3 layer-shell surface on the background layer draws the monochrome
+# dual-glow gradient parametrically (cairo, no image files); the hinge
+# angle drives it:
+#   ~0    closed      - glows huddle at the hinge, dim
+#   ~180  flat open   - one glow per panel (the static wallpaper look)
+#   ~360  folded back - a single glow on the right (visible) panel
+#
+# Data path is PUSH, not poll: after the DBus dance (loadPlugin ->
+# requestSensor -> start) we connect to sensorfwd's data socket
+# (/run/sensord.sock), write the raw int32 session id, read the 1-byte
+# tag, then every hinge change arrives as a raw 16-byte TimedUnsigned
+# (uint64 ts + uint32 degrees + pad) the moment the SLPI reports it.
+#
+# Rendering: gradients are drawn into a 1/8-scale offscreen surface and
+# blitted scaled (soft gradients survive this untouched, cost drops
+# ~64x), so the 60 fps spring tween stays cheap. Idle = zero redraws.
+import math
+import os
+import socket
+import struct
+
+import cairo
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("GtkLayerShell", "0.1")
+from gi.repository import Gio, GLib, Gtk, GtkLayerShell  # noqa: E402
+
+W, H = 1392, 900          # logical output size (2784x1800 @ scale 2)
+DS = 8                    # offscreen downscale factor
+LP = (W * 0.25, H * 0.62)  # left-panel glow home
+RP = (W * 0.75, H * 0.30)  # right-panel glow home
+HINGE_X = W * 0.5
+SOCK = os.environ.get("SENSORFW_SOCKET", "/run/sensord.sock")
+PAYLOAD = struct.Struct("<QI4x")  # TimedUnsigned: u64 ts, u32 value, pad
+COUNT = struct.Struct("<I")       # frames arrive as [u32 count][payload*count]
+COMMIT_US = 90000         # min µs between frames inside a transition burst
+ANIM_S = 0.35             # per-step transition animation length, seconds
+QSTEP = 15.0              # angle quantization step, degrees
+QHYST = 4.0               # extra margin before a step boundary flips
+BURST_MAX_US = 1500000    # after this much continuous animation...
+BREATHER_US = 400000      # ...insert a commit gap so the dual-DSI
+                          # pipeline never accumulates backlog (it blinks
+                          # and desyncs the panels when it does)
+ANGLE_FILE = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-hinge")
+
+
+class Hinge:
+    """DBus dance for the session, then the raw data socket for push.
+    sensorfwd is observed to close data sockets after a while; on EOF we
+    simply run the whole dance again (logged with timestamps so the
+    periodicity is visible in /tmp/livebg.log)."""
+
+    def __init__(self, on_angle):
+        self.on_angle = on_angle
+        self.bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        self.initial = self._connect() or 180
+
+    def _call(self, path, iface, method, params, reply):
+        return self.bus.call_sync(
+            "com.nokia.SensorService", path, iface, method, params,
+            GLib.VariantType(reply), Gio.DBusCallFlags.NONE, 2000, None)
+
+    def _connect(self):
+        self._call("/SensorManager", "local.SensorManager", "loadPlugin",
+                   GLib.Variant("(s)", ["hingesensor"]), "(b)")
+        sid = self._call("/SensorManager", "local.SensorManager",
+                         "requestSensor",
+                         GLib.Variant("(sx)", ["hingesensor",
+                                               os.getpid()]), "(i)")[0]
+        v = self._call("/SensorManager/hingesensor",
+                       "org.freedesktop.DBus.Properties", "Get",
+                       GLib.Variant("(ss)", ["local.HingeSensor",
+                                             "hinge"]), "(v)")
+        initial = int(v.unpack()[0][1])
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(SOCK)
+        self.sock.recv(1)                    # tag byte FIRST: only after it
+        # is the server's readyRead handler installed; sending the session
+        # id before that can race and leave the session unmapped (silent)
+        self.sock.sendall(struct.pack("<i", sid))
+        self._call("/SensorManager/hingesensor", "local.HingeSensor",
+                   "start", GLib.Variant("(i)", [sid]), "()")
+        self.sock.setblocking(False)
+        self.buf = b""
+        GLib.io_add_watch(self.sock.fileno(), GLib.PRIORITY_DEFAULT,
+                          GLib.IO_IN, self._readable)
+        print(f"livebg: session {sid} connected at "
+              f"{GLib.DateTime.new_now_local().format('%H:%M:%S')}",
+              flush=True)
+        return initial
+
+    def _reconnect(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        try:
+            self._connect()
+        except (GLib.Error, OSError) as e:
+            print(f"livebg: reconnect failed ({e}), retrying in 5s",
+                  flush=True)
+            GLib.timeout_add_seconds(5, lambda: self._reconnect() and False)
+        return False
+
+    def _readable(self, _fd, _cond):
+        try:
+            chunk = self.sock.recv(4096)
+        except BlockingIOError:
+            return True
+        if not chunk:
+            print(f"livebg: socket EOF at "
+                  f"{GLib.DateTime.new_now_local().format('%H:%M:%S')}, "
+                  f"re-dancing", flush=True)
+            GLib.timeout_add(500, self._reconnect)
+            return False                     # drop this watch; new one comes
+        if os.environ.get("SFDUO_LIVEBG_DEBUG"):
+            print(f"livebg: {len(chunk)}b {chunk[:24].hex()}", flush=True)
+        self.buf += chunk
+        latest = None
+        while len(self.buf) >= COUNT.size:
+            (count,) = COUNT.unpack_from(self.buf, 0)
+            need = COUNT.size + count * PAYLOAD.size
+            if count == 0 or count > 64:      # desync guard
+                self.buf = self.buf[1:]
+                continue
+            if len(self.buf) < need:
+                break
+            _ts, val = PAYLOAD.unpack_from(self.buf, need - PAYLOAD.size)
+            self.buf = self.buf[need:]
+            if val <= 360:
+                latest = float(val)
+        if latest is not None:
+            self.on_angle(latest)
+        return True
+
+
+def params_for(angle):
+    """angle -> (left glow x,y,alpha, right glow x,y,alpha)."""
+    a = max(0.0, min(360.0, angle))
+    if a <= 180:
+        t = a / 180.0                       # 0 closed .. 1 flat
+        e = t * t * (3 - 2 * t)             # smoothstep
+        lx = HINGE_X + (LP[0] - HINGE_X) * e
+        rx = HINGE_X + (RP[0] - HINGE_X) * e
+        ly, ry = LP[1], RP[1]
+        la = ra = 0.15 + 0.85 * e           # dim when closed
+    else:
+        t = (a - 180) / 180.0               # 0 flat .. 1 folded back
+        e = t * t * (3 - 2 * t)
+        lx = LP[0] + (RP[0] - LP[0]) * e    # left glow migrates right
+        ly = LP[1] + (RP[1] - LP[1]) * e
+        rx, ry = RP
+        la = 1.0 - e                        # and fades out
+        ra = 1.0
+    return lx, ly, la, rx, ry, ra
+
+
+class LiveBg(Gtk.Window):
+    def __init__(self):
+        super().__init__()
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.BACKGROUND)
+        for edge in (GtkLayerShell.Edge.LEFT, GtkLayerShell.Edge.RIGHT,
+                     GtkLayerShell.Edge.TOP, GtkLayerShell.Edge.BOTTOM):
+            GtkLayerShell.set_anchor(self, edge, True)
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        self.area = Gtk.DrawingArea()
+        self.area.connect("draw", self.on_draw)
+        self.add(self.area)
+        self.off = cairo.ImageSurface(cairo.FORMAT_RGB24, W // DS, H // DS)
+        self.hinge = Hinge(self.set_target)
+        self.q = round(float(self.hinge.initial) / QSTEP)
+        self.pos = self.q * QSTEP
+        self.tick_id = None
+        self.anim_t0 = None
+        self.anim_from = self.anim_to = self.pos
+        self.last_commit = 0
+        self.burst_t0 = None
+        self.render_offscreen()
+        self.write_angle(float(self.hinge.initial))
+        self.connect("destroy", Gtk.main_quit)
+
+    @staticmethod
+    def write_angle(angle):
+        # atomic replace: the waybar tail -F bridge must never observe a
+        # truncated-empty file (an empty line hides the module for good)
+        try:
+            tmp = ANGLE_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(f"{int(round(angle))}°\n")
+            os.replace(tmp, ANGLE_FILE)
+        except OSError:
+            pass
+
+    def set_target(self, angle):
+        # Quantized steps, not continuous tracking: the dual-DSI vendor
+        # composer cannot take a sustained full-screen commit stream
+        # (panels drift out of sync and blink, worse the longer it runs).
+        # The wallpaper follows the hinge in QSTEP-degree steps; each step
+        # is one short burst (~4 frames over 350 ms), retargetable while
+        # running, silent otherwise. Hysteresis keeps sensor jitter from
+        # flapping a step boundary.
+        self.write_angle(angle)
+        q = round(angle / QSTEP)
+        if q != self.q and abs(angle - self.q * QSTEP) > QSTEP / 2 + QHYST:
+            self.q = q
+            self.anim_from = self.pos
+            self.anim_to = q * QSTEP
+            self.anim_t0 = None
+            if self.tick_id is None:
+                self.tick_id = self.area.add_tick_callback(self.tick)
+                self.last_commit = 0
+                self.burst_t0 = None
+
+    def tick(self, _widget, clock):
+        now = clock.get_frame_time()
+        if self.anim_t0 is None:
+            self.anim_t0 = now
+        if self.burst_t0 is None:
+            self.burst_t0 = now
+        t = min((now - self.anim_t0) / (ANIM_S * 1e6), 1.0)
+        e = t * t * (3 - 2 * t)                 # smoothstep ease
+        self.pos = self.anim_from + (self.anim_to - self.anim_from) * e
+        if t >= 1.0:
+            self.render_offscreen()
+            self.area.queue_draw()
+            self.area.remove_tick_callback(self.tick_id)
+            self.tick_id = None
+            return GLib.SOURCE_REMOVE
+        # breather: if steps chain into a long continuous burst, insert a
+        # commit gap so the display pipeline drains before we continue
+        if now - self.burst_t0 >= BURST_MAX_US:
+            self.burst_t0 = None
+            self.last_commit = now + BREATHER_US - COMMIT_US
+        if now - self.last_commit >= COMMIT_US:
+            self.last_commit = now
+            self.render_offscreen()
+            self.area.queue_draw()
+        return GLib.SOURCE_CONTINUE
+
+    def render_offscreen(self):
+        w, h = W // DS, H // DS
+        cr = cairo.Context(self.off)
+        cr.set_source_rgb(0.047, 0.047, 0.047)   # #0c0c0c base
+        cr.paint()
+        lx, ly, la, rx, ry, ra = params_for(self.pos)
+        r = math.hypot(W * 0.55, H * 0.75) / DS
+        for cx, cy, alpha in ((lx, ly, la), (rx, ry, ra)):
+            if alpha <= 0.01:
+                continue
+            g = 0.18 * alpha
+            grad = cairo.RadialGradient(cx / DS, cy / DS, 0,
+                                        cx / DS, cy / DS, r)
+            grad.add_color_stop_rgba(0, g, g, g, 1)
+            grad.add_color_stop_rgba(1, 0, 0, 0, 0)
+            cr.set_source(grad)
+            cr.paint()
+        self.off.flush()
+
+    def on_draw(self, _area, cr):
+        w = self.area.get_allocated_width() or W
+        h = self.area.get_allocated_height() or H
+        cr.scale(w / (W // DS), h / (H // DS))
+        cr.set_source_surface(self.off, 0, 0)
+        src = cr.get_source()
+        src.set_filter(cairo.FILTER_GOOD)
+        src.set_extend(cairo.EXTEND_PAD)   # no transparent fringe at edges
+        cr.paint()
+
+
+if __name__ == "__main__":
+    win = LiveBg()
+    win.show_all()
+    Gtk.main()

@@ -527,6 +527,7 @@ install -m755 "$WAYFIRE/sfduo-kbd-toggle"        "$PKG/usr/local/bin/"
 install -m755 "$WAYFIRE/sfduo-launcher-toggle"   "$PKG/usr/local/bin/"
 install -m755 "$WAYFIRE/sfduo-swap"              "$PKG/usr/local/bin/"
 install -m755 "$WAYFIRE/sfduo-hinge-monitor"     "$PKG/usr/local/bin/"
+install -m755 "$WAYFIRE/sfduo-livebg"            "$PKG/usr/local/bin/"
 mkdir -p "$PKG/usr/share/sfduo/wayfire"
 install -m644 "$WAYFIRE/sfduo-wallpaper.png"     "$PKG/usr/share/sfduo/wallpaper.png"
 install -m644 "$WAYFIRE/wayfire-duo.ini"    "$PKG/usr/share/sfduo/wayfire/"
@@ -549,7 +550,7 @@ Architecture: arm64
 Maintainer: Ivan Verbovoy <ivanverbovoy@gmail.com>
 Section: misc
 Priority: optional
-Recommends: wayfire, foot, waybar, fuzzel, swaybg
+Recommends: wayfire, foot, waybar, fuzzel, swaybg, python3-gi-cairo, gir1.2-gtklayershell-0.1
 Description: Surface Duo 1 adaptation for Droidian (sfduo)
  USB RNDIS gadget access (172.16.42.1, telnet fallback) and, as bring-up
  progresses, touch / wifi / sensor plumbing for the Microsoft Surface Duo 1.

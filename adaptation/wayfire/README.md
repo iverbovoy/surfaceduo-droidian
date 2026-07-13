@@ -17,7 +17,9 @@ single panel.
 | `sfduo-powerkey` + `.service` | `/usr/local/sbin/`, systemd | power button = screen toggle; runs only with the wayfire session (Phosh owns the key itself) |
 | `sfduo-osk` | `/usr/local/bin/` | launch wvkbd on a single panel (off the hinge); falls back to full-width on an un-patched binary |
 | `sfduo-kbd-toggle` | `/usr/local/bin/` | show/hide the wvkbd on-screen keyboard |
-| `sfduo-swap` | `/usr/local/bin/` | move the focused window to the other panel (waybar ⇄ button) |
+| `sfduo-swap` | `/usr/local/bin/` | exchange the two panels' windows (waybar ⇄ button) |
+| `sfduo-livebg` | `/usr/local/bin/` | hinge-reactive live wallpaper (see below) |
+| `sfduo-hinge-monitor` | `/usr/local/bin/` | waybar hinge-angle bridge: follows the file sfduo-livebg writes, throttled to 2 Hz |
 | `sfduo-launcher-toggle` | `/usr/local/bin/` | open/close the fuzzel launcher |
 | `waybar-config.jsonc` + `waybar-style.css` | `~droidian/.config/waybar/` | top bar on the LEFT panel: apps, kbd, clock, wifi, battery |
 | `fuzzel.ini` | `~droidian/.config/fuzzel/` | launcher anchored to the left panel |
@@ -31,6 +33,28 @@ Every new window goes to the emptier panel; any window that later
 covers the hinge (self-maximizing apps, fullscreen requests) is
 re-snapped to its nearest panel within half a second. Watch it work:
 `tail -f ~droidian/.cache/sfduo-tiler.log`.
+
+## The live wallpaper (and a display-pipeline lesson)
+
+`sfduo-livebg` draws the monochrome dual-glow background parametrically
+(GTK3 layer-shell + cairo, no image files) and lets the hinge angle
+drive it: glows huddle at the hinge when closed, sit one per panel when
+open, merge into a single right-panel glow when folded back. It owns
+one sensorfw session (DBus dance + the raw data socket for push
+samples; pass your REAL pid to requestSensor - sensorfwd reaps sessions
+whose pid is dead) and publishes the angle to
+`$XDG_RUNTIME_DIR/sfduo-hinge` for the waybar indicator.
+
+The hard-won rule baked into it: **on this dual-DSI stack, animate in
+short bursts, never streams.** A sustained full-screen commit stream -
+even 10 fps - accumulates backlog in the vendor composer; the two
+panels drift out of sync and visibly blink, worse the longer it runs.
+sfduo-livebg therefore follows the hinge in 15-degree quantized steps
+(one ~4-frame burst per step, hysteresis against sensor jitter, a
+forced 400 ms breather if bursts chain longer than 1.5 s) and draws
+nothing at rest. The SLPI hinge sensor jitters a few degrees at rest,
+so a deadband is mandatory - without it the animation never stops and
+the display never calms down.
 
 ## wvkbd must be patched
 
