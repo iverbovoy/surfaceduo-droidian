@@ -2,9 +2,9 @@
 
 The Surface Duo 1 has **no public EDL (emergency download) loader**.
 If the bootloader chain stops accepting images, no software can revive
-the device - chip-off UFS reprogramming is the only remaining path. One
-of our units is a permanent brick for exactly this reason. Every rule
-below was paid for.
+the device - chip-off UFS reprogramming is the only remaining path.
+This failure mode is real, not theoretical. Every rule below exists
+because of it.
 
 ## The golden rules
 

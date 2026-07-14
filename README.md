@@ -7,8 +7,8 @@ July 2026.
 
 > **⚠️ READ THE SAFETY GUIDE FIRST.** The Surface Duo has **no public
 > emergency-download (EDL) loader** - a bad flash can permanently brick
-> it, and one of our units died that way in February 2026. This port was
-> built around that lesson: everything goes through gated tooling
+> it, with no software recovery path. This port is built around that
+> constraint: everything goes through gated tooling
 > (`tools/flash-safely.sh`), RAM-boot before any flash, one change per
 > boot cycle. See [docs/SAFETY.md](docs/SAFETY.md). If you skip it, you
 > accept the risk of a paperweight.
@@ -16,7 +16,7 @@ July 2026.
 Cold RAM-boot to a fully working system (both panels, touch, WiFi
 auto-connect, sshd) takes ~75 seconds, hands-off.
 
-## Status (2026-07-12)
+## Status (2026-07-13)
 
 | Subsystem | Status | Notes |
 |---|---|---|
@@ -36,9 +36,9 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
 | Brightness | ✅ | the phosh slider drives both panels (udev change-event sync); auto-brightness pending (ALS already works) |
 | Fold-to-sleep | ✅ | hall sensor (GPIO 121) → SW_LID bridge → logind suspends on fold; WoWLAN keeps WiFi associated through sleep |
 | GPS | ✅ | vendor GNSS + geoclue hybris source, ~4 m fixes; needs the geoclue keepalive drop-in from the adaptation (see traps below) |
-| Modem (calls/SMS/LTE) | 🕓 | stack done - ModemManager sees the modem via ofono/binder; untested (no SIM yet) |
+| Modem (calls/SMS/LTE) | 🕓 | stack done - ModemManager sees the modem via ofono/binder; calls/SMS/data not tested yet |
 | NFC | - | Duo 1 has no NFC hardware |
-| Dual-screen aware UI | ❌ | Phosh treats both panels as one span (content falls into the hinge gap) |
+| Dual-screen aware UI | ✅ | wayfire-duo session (`adaptation/wayfire/`): hinge-aware auto-tiler, taskbar, single-panel OSK, hinge-reactive live wallpaper. Phosh itself still spans both panels |
 
 ## Repository layout
 
@@ -54,8 +54,8 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
 - `adaptation/wayfire/` - **wayfire-duo**: optional dual-screen Wayland
   session (Phosh treats the Duo as one 2784x1800 slab and centers UI
   into the hinge; this session tiles every window onto a single panel
-  via a hinge-aware auto-tiler, with waybar/fuzzel/patched-wvkbd on
-  touch). Own README inside.
+  via a hinge-aware auto-tiler, with a taskbar, launcher, single-panel
+  OSK and a hinge-reactive live wallpaper engine). Own README inside.
 - `sensorfw-hinge-patch/` - hinge-angle sensor support for sensorfw
   (its own README covers build + install).
 - `docs/` - port guide + **the safety protocol**.
