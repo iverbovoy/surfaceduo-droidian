@@ -1,4 +1,0 @@
-#!/bin/sh
-# Cycle the sfduo-livebg wallpaper style (glow -> topo -> field -> ...).
-# The daemon persists the choice in ~/.config/sfduo-bg-style.
-exec pkill -USR1 -x sfduo-livebg

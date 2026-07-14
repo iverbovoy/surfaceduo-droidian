@@ -1,8 +1,0 @@
-#!/bin/sh
-# Toggle fuzzel: second tap (or tap while open) closes it instead of stacking
-if pgrep -x fuzzel >/dev/null; then
-    pkill -x fuzzel
-else
-    cd /home/droidian && exec sudo -u droidian env WAYLAND_DISPLAY=wayland-0 \
-        XDG_RUNTIME_DIR=/run/user/32011 HOME=/home/droidian fuzzel
-fi
