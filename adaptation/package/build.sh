@@ -10,7 +10,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 ACCESS="$HERE/../access"
 WAYFIRE="$HERE/../wayfire"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.11.0}"
+VER="${1:-0.11.1}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
@@ -374,6 +374,83 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 UNIT
 
+# DRM-master watchdog. Failure mode (hit on two consecutive boots,
+# 2026-07-14): an early client takes DRM master on /dev/dri/card0 and
+# exits; the vendor composer, which opened the device meanwhile, is left
+# non-master forever. Every atomic commit then fails with EACCES
+# ("DRMAtomicReq::Validate ... Permission denied" in logcat), phoc spams
+# "validate failed for display 0: 2", both panels stay black with the
+# backlight on, and the power key appears dead. A fresh composer
+# instance acquires master cleanly, so the cure is to kill it (android
+# init respawns it) and restart phosh. ctl.restart via setprop does NOT
+# restart it - kill is required (verified on device).
+cat > "$PKG/usr/local/sbin/sfduo-composer-watchdog" <<'WDOG'
+#!/bin/sh
+# Check that the vendor hwcomposer ended up as DRM master; bounce it if not.
+CLIENTS=/sys/kernel/debug/dri/0/clients
+
+composer_pid() { pgrep -f 'composer@2\.4-service' | head -n1; }
+# clients columns: command pid dev master a uid magic ("composer@2.4-se ... y ...")
+master_ok() {
+    awk '$1 ~ /composer/ && $4 == "y" {found=1} END {exit !found}' "$CLIENTS" 2>/dev/null
+}
+
+[ -r "$CLIENTS" ] || { echo "no $CLIENTS (debugfs?) - cannot judge, skipping"; exit 0; }
+
+# wait for the container to bring the composer up at all
+i=0; while [ $i -lt 60 ]; do
+    [ -n "$(composer_pid)" ] && break
+    sleep 2; i=$((i+1))
+done
+PID=$(composer_pid)
+[ -n "$PID" ] || { echo "composer never appeared - nothing to watch"; exit 0; }
+
+# grace period: a healthy composer takes master within seconds of starting
+i=0; while [ $i -lt 10 ]; do
+    master_ok && { echo "composer (pid $PID) is DRM master - healthy"; exit 0; }
+    sleep 2; i=$((i+1))
+done
+
+echo "composer (pid $PID) holds no DRM master - bouncing it"
+cat "$CLIENTS"
+kill -9 "$PID" 2>/dev/null
+
+i=0; while [ $i -lt 15 ]; do
+    NEW=$(composer_pid)
+    [ -n "$NEW" ] && [ "$NEW" != "$PID" ] && break
+    sleep 2; i=$((i+1))
+done
+i=0; while [ $i -lt 10 ]; do
+    master_ok && break
+    sleep 2; i=$((i+1))
+done
+
+if master_ok; then
+    echo "composer reacquired DRM master - restarting phosh"
+    systemctl try-restart phosh.service 2>/dev/null || true
+    exit 0
+fi
+echo "composer still has no DRM master - manual attention needed"
+cat "$CLIENTS"
+exit 1
+WDOG
+chmod 755 "$PKG/usr/local/sbin/sfduo-composer-watchdog"
+
+cat > "$PKG/usr/lib/systemd/system/sfduo-composer-watchdog.service" <<'UNIT'
+[Unit]
+Description=sfduo: DRM-master watchdog for the vendor hwcomposer
+After=lxc@android.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sfduo-composer-watchdog
+RemainAfterExit=yes
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 # Brightness: gsd-power writes BOTH panel backlights (panel0/1-backlight,
 # 0-255) directly - measured on device 2026-07-12; the WLED node
 # (/sys/class/backlight/backlight) drives nothing visible on these OLED
@@ -600,6 +677,7 @@ if [ -d /run/systemd/system ]; then
     systemctl enable --now sfduo-usb.service || true
     systemctl enable bluebinder.service bluetooth.service 2>/dev/null || true
     systemctl enable --now sfduo-tame-vendor.service || true
+    systemctl enable sfduo-composer-watchdog.service || true
     systemctl enable --now sfduo-lid.service || true
     systemctl enable --now sfduo-writeback.timer || true
     systemctl enable --now sfduo-wakeup.service || true
