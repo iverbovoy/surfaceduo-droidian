@@ -115,6 +115,18 @@ Full walkthrough: [docs/PORT-GUIDE.md](docs/PORT-GUIDE.md).
   unit spawns in 0.2 s. Symptom B: harmless journald write hiccups
   escalated into a read-only root - the phone "freezes" but still
   pings. Full evidence: `docs/FREEZE-FORENSICS.md`.
+- **plymouth vs the vendor composer**: droidian ships plymouth; on this
+  port it draws nothing visible but still takes DRM master on
+  /dev/dri/card0 at boot. When the boot is slow enough that the android
+  container brings the composer up while plymouthd is still alive, the
+  composer opens the device non-master and stays that way after
+  plymouth quits: both panels black with the backlight on, phoc spams
+  "validate failed for display 0: 2", logcat shows EACCES on
+  drmModeAtomicCommit, the power key seems dead. The adaptation ships
+  `sfduo-composer-watchdog` (detects the state and bounces the
+  composer; note `setprop ctl.restart` does not restart it, only a
+  kill does). On unencrypted installs `systemctl mask
+  plymouth-start.service` removes the race entirely.
 - **`data=journal` on userdata** (patches/0005): the halium initramfs
   mounts the ext4 userdata with `data=journal` (a 2014 UT workaround).
   With a loop rootfs on top, every root write double-writes through
