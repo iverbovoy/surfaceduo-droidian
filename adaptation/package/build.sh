@@ -8,9 +8,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 ACCESS="$HERE/../access"
-WAYFIRE="$HERE/../wayfire"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.11.1}"
+VER="${1:-0.12.0}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
@@ -590,37 +589,6 @@ Restart=on-failure
 WantedBy=multi-user.target
 UNIT
 
-# wayfire-duo (2026-07-13): optional dual-screen session - see
-# ../wayfire/README.md for the full story (hinge-aware tiler, waybar on
-# the left panel, patched wvkbd OSK). Phosh remains the default; the
-# unit is never enabled, start it manually.
-install -m644 "$WAYFIRE/wayfire-duo.service"     "$PKG/usr/lib/systemd/system/"
-install -m644 "$WAYFIRE/sfduo-powerkey.service"  "$PKG/usr/lib/systemd/system/"
-install -m755 "$WAYFIRE/sfduo-tiler"             "$PKG/usr/local/sbin/"
-install -m755 "$WAYFIRE/sfduo-screens"           "$PKG/usr/local/sbin/"
-install -m755 "$WAYFIRE/sfduo-powerkey"          "$PKG/usr/local/sbin/"
-install -m755 "$WAYFIRE/sfduo-osk"               "$PKG/usr/local/bin/"
-install -m755 "$WAYFIRE/sfduo-kbd-toggle"        "$PKG/usr/local/bin/"
-install -m755 "$WAYFIRE/sfduo-launcher-toggle"   "$PKG/usr/local/bin/"
-install -m755 "$WAYFIRE/sfduo-swap"              "$PKG/usr/local/bin/"
-install -m755 "$WAYFIRE/sfduo-bg-toggle"         "$PKG/usr/local/bin/"
-install -m755 "$WAYFIRE/sfduo-hinge-monitor"     "$PKG/usr/local/bin/"
-install -m755 "$WAYFIRE/sfduo-livebg"            "$PKG/usr/local/bin/"
-mkdir -p "$PKG/usr/share/sfduo/wayfire"
-install -m644 "$WAYFIRE/sfduo-wallpaper.png"     "$PKG/usr/share/sfduo/wallpaper.png"
-install -m644 "$WAYFIRE/wayfire-duo.ini"    "$PKG/usr/share/sfduo/wayfire/"
-install -m644 "$WAYFIRE/waybar-config.jsonc" "$PKG/usr/share/sfduo/wayfire/"
-install -m644 "$WAYFIRE/waybar-style.css"   "$PKG/usr/share/sfduo/wayfire/"
-install -m644 "$WAYFIRE/fuzzel.ini"         "$PKG/usr/share/sfduo/wayfire/"
-# patched wvkbd: Debian's 0.15 segfaults under wayfire and stock 0.20
-# never draws - build recipe in ../wayfire/README.md; shipped like wlan.ko
-WVKBD="$ROOT/out/wvkbd-mobintl-0.20-patched-arm64"
-if [ -f "$WVKBD" ]; then
-    install -m755 "$WVKBD" "$PKG/usr/local/bin/wvkbd-mobintl"
-else
-    echo "NOTE: $WVKBD not found - wayfire session ships without the patched OSK"
-fi
-
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: adaptation-droidian-surfaceduo
 Version: $VER
@@ -628,7 +596,6 @@ Architecture: arm64
 Maintainer: Ivan Verbovoy <ivanverbovoy@gmail.com>
 Section: misc
 Priority: optional
-Recommends: wayfire, foot, waybar, fuzzel, swaybg, python3-gi-cairo, gir1.2-gtklayershell-0.1
 Description: Surface Duo 1 adaptation for Droidian (sfduo)
  USB RNDIS gadget access (172.16.42.1, telnet fallback) and, as bring-up
  progresses, touch / wifi / sensor plumbing for the Microsoft Surface Duo 1.
@@ -662,16 +629,10 @@ if [ ! -f /var/lib/bluetooth/board-address ]; then
         chmod 644 /var/lib/bluetooth/board-address
     fi
 fi
-# wayfire-duo user configs: seed once, never overwrite user edits
-if id droidian >/dev/null 2>&1; then
-    H=/home/droidian
-    mkdir -p "$H/.config/waybar" "$H/.config/fuzzel"
-    [ -f "$H/.config/wayfire-duo.ini" ] || cp /usr/share/sfduo/wayfire/wayfire-duo.ini "$H/.config/"
-    [ -f "$H/.config/waybar/config.jsonc" ] || cp /usr/share/sfduo/wayfire/waybar-config.jsonc "$H/.config/waybar/config.jsonc"
-    [ -f "$H/.config/waybar/style.css" ] || cp /usr/share/sfduo/wayfire/waybar-style.css "$H/.config/waybar/style.css"
-    [ -f "$H/.config/fuzzel/fuzzel.ini" ] || cp /usr/share/sfduo/wayfire/fuzzel.ini "$H/.config/fuzzel/"
-    chown -R droidian:droidian "$H/.config"
-fi
+# pre-0.12 installs shipped an experimental wayfire session; its units
+# are gone from the package - drop the leftover enable symlink
+rm -f /etc/systemd/system/multi-user.target.wants/sfduo-powerkey.service \
+      /etc/systemd/system/graphical.target.wants/wayfire-duo.service
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     systemctl enable --now sfduo-usb.service || true
@@ -687,8 +648,6 @@ if [ -d /run/systemd/system ]; then
     systemctl enable --now geoclue.service 2>/dev/null || systemctl start geoclue.service || true
     [ -f /usr/lib/sfduo/wlan.ko ] && systemctl enable --now sfduo-wlan.service || true
     [ -x /usr/local/sbin/sfduo-audio-up.sh ] && systemctl enable sfduo-audio.service || true
-    # ties to wayfire-duo.service.wants - inert unless the wayfire session runs
-    systemctl enable sfduo-powerkey.service 2>/dev/null || true
 else
     ln -sf /usr/lib/systemd/system/sfduo-usb.service \
        /etc/systemd/system/multi-user.target.wants/sfduo-usb.service

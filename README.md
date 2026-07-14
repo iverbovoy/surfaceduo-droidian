@@ -38,7 +38,7 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
 | GPS | ✅ | vendor GNSS + geoclue hybris source, ~4 m fixes; needs the geoclue keepalive drop-in from the adaptation (see traps below) |
 | Modem (calls/SMS/LTE) | 🕓 | stack done - ModemManager sees the modem via ofono/binder; calls/SMS/data not tested yet |
 | NFC | - | Duo 1 has no NFC hardware |
-| Dual-screen aware UI | ✅ | wayfire-duo session (`adaptation/wayfire/`): hinge-aware auto-tiler, taskbar, single-panel OSK, hinge-reactive live wallpaper. Phosh itself still spans both panels |
+| Dual-screen aware UI | ❌ | Phosh treats both panels as one span (content falls into the hinge gap); a hinge-aware shell is out of scope for this port |
 
 ## Repository layout
 
@@ -51,11 +51,6 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
   access, offline sshd bundle, touch udev rule, wlan/audio module
   loading with ADSP boot ordering, hinge sensor config, suspend hooks,
   bluetooth bring-up (timeout + board-address), geoclue/GPS drop-in.
-- `adaptation/wayfire/` - **wayfire-duo**: optional dual-screen Wayland
-  session (Phosh treats the Duo as one 2784x1800 slab and centers UI
-  into the hinge; this session tiles every window onto a single panel
-  via a hinge-aware auto-tiler, with a taskbar, launcher, single-panel
-  OSK and a hinge-reactive live wallpaper engine). Own README inside.
 - `sensorfw-hinge-patch/` - hinge-angle sensor support for sensorfw
   (its own README covers build + install).
 - `docs/` - port guide + **the safety protocol**.

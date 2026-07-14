@@ -1,6 +1,0 @@
-#!/bin/sh
-# Toggle the wvkbd on-screen keyboard. wvkbd 0.20 treats SIGRTMIN as a real
-# visibility toggle, so no state file is needed. (The old state-file variant
-# desynced whenever wvkbd restarted or a different user poked it - an ssh
-# root toggle left the waybar button permanently sending "hide".)
-exec pkill -RTMIN wvkbd-mobintl
