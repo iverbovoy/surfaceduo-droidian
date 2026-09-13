@@ -65,6 +65,41 @@ it to `out/boot-duo1-droidian.img` and run
 device. FLASH_ENABLED is 0 on purpose: apt must never flash boot -
 only `tools/flash-safely.sh` does.
 
+## Back into the container for the modules
+
+The WiFi and audio modules below are built against this kernel, but
+they are NOT a continuation of the shell above: `--rm` deletes that
+container the moment the kernel build finishes. Nothing is lost by
+that. `/buildd/sources` is a bind mount of the kernel tree, so
+`out/KERNEL_OBJ` and the rest of the build output stay on the host and
+the kernel never needs rebuilding.
+
+Start a fresh container instead, interactive, with the `wlan` clone
+mounted as well - it lives outside the kernel tree and is invisible
+otherwise:
+
+```
+docker run --rm -it \
+  -v "$PWD/packages:/buildd" \
+  -v "$PWD/surface-duo-oss-kernel.msm-4.14:/buildd/sources" \
+  -v "$PWD/wlan:/buildd/wlan" \
+  quay.io/droidian/build-essential:current-amd64 bash
+```
+
+The image carries no cross toolchain of its own: the kernel build
+pulled `clang-android-9.0-r353983c`, `gcc-4.9-aarch64-linux-android`
+and friends in as build-deps, and they left with the container.
+Restore them inside the new one before building anything:
+
+```
+apt-get update -qq
+apt-get install -y -qq linux-packaging-snippets
+cd /buildd/sources && apt-get -y build-dep ./
+```
+
+`techpack/audio` is cloned inside the kernel tree, so it rides along in
+the existing mount; only `wlan` needs the extra one.
+
 ## Choices that need re-checking on hardware
 
 - `datapart=/dev/sda6` in the cmdline (userdata, confirmed on device).
@@ -86,7 +121,8 @@ for r in qcacld-3..0 qca-wifi-host-cmn fw-api; do
     https://github.com/microsoft/surface-duo-oss-platform.vendor.qcom-opensource.wlan.$r \
     wlan/${r/qcacld-3..0/qcacld-3.0}
 done
-# in the droidian build container, after the kernel build:
+# in a fresh droidian build container (see "Back into the container
+# for the modules" above - the kernel build's container is gone):
 make -C <kernel> O=out/KERNEL_OBJ ARCH=arm64 CC=clang \
   CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- \
   M=<abs>/wlan/qcacld-3.0 WLAN_ROOT=<abs>/wlan/qcacld-3.0 \
@@ -107,7 +143,9 @@ The Android container's ueventd serves the firmware requests
 
 Clone microsoft/surface-duo-oss-platform.vendor.opensource.audio-kernel
 (same branch) INTO the kernel tree as `techpack/audio`, then a plain
-`make ... AUDIO_BLD_DIR=/src modules` builds 23 `*_dlkm.ko`. Two fixups
+`make ... AUDIO_BLD_DIR=/src modules` builds 23 `*_dlkm.ko`. Same
+container story as WiFi: build it in a fresh one, toolchain restored.
+Two fixups
 (see patches/0003-audio-kernel-build-fixups.patch): add private-header include paths to
 `soc/Kbuild`, and repoint the dangling `include/soc/internal.h` symlink
 (it assumes the repo-manifest layout) to
