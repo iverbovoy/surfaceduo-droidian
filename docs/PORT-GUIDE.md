@@ -124,3 +124,34 @@ gap - a compositor-level fix is future work.
    droidian's `10-journald-volatile.conf` - name it `99-*`).
 3. TWRP + loop-mount of rootfs.img - post-mortem file inspection.
 4. pstore/ramoops after a crash (needs the ramoops DT node variant).
+5. The initramfs panic shell, for when the boot dies before any of the
+   above exist. See below.
+
+## When the boot dies before the rootfs
+
+Symptom: no Debian logo at all, no ssh, the phone just sits there.
+Plymouth lives in the rootfs, not in the initramfs, so if even the logo
+is missing the rootfs was never mounted.
+
+The halium initramfs does not die quietly in that case. It brings up a
+USB RNDIS gadget, runs a DHCP server on it (`192.168.2.20-90`) and
+starts telnetd with a root shell. Note the address is **not** the
+172.16.42.1 the adaptation uses later:
+
+```
+telnet 192.168.2.15
+```
+
+Inside, two commands explain almost everything:
+
+```
+ls /tmpmnt          # userdata as the initramfs sees it
+dmesg | tail -40    # the initramfs logs each decision it makes
+```
+
+`/tmpmnt` is the mounted userdata. `identify_file_layout()` looks there
+for `rootfs.img`, then `ubuntu.img`, then a `halium-rootfs` directory,
+and if none of them exist it falls through to assuming the rootfs sits
+on the system partition, which on this device it does not. That
+fall-through is silent, and it is the usual cause of a boot with no
+logo: the image is missing, misnamed, or landed somewhere else.
