@@ -88,8 +88,17 @@ tools/flash-safely.sh ram-boot boot-duo1-droidian.img
 ```
 
 ~60-90 s later both panels show the Phosh lock screen (PIN 1234) and a
-new RNDIS interface appears on the host. Tell NetworkManager to leave
-it alone, then ssh in:
+new RNDIS interface appears on the host.
+
+If instead the screens go black right after the Debian logo and the
+power key looks dead, the system underneath is almost certainly fine:
+plymouth has taken DRM master away from the vendor composer. See the
+plymouth trap in the top-level README. The short cure is `systemctl
+mask plymouth-start.service`, and the adaptation's
+`sfduo-composer-watchdog` covers the cases it can detect. Get in over
+ssh first, the network comes up regardless of what the panels do.
+
+Tell NetworkManager to leave the RNDIS interface alone, then ssh in:
 
 ```
 nmcli device set <iface> managed no

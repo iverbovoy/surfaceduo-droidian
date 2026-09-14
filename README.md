@@ -39,7 +39,6 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
 | GPS | ✅ | vendor GNSS + geoclue hybris source, ~4 m fixes; needs the geoclue keepalive drop-in from the adaptation (see traps below) |
 | Modem (calls/SMS/LTE) | 🕓 | stack done - ModemManager sees the modem via ofono/binder; calls/SMS/data not tested yet |
 | Video out (USB-C DP) | ❓ | the whole DisplayPort path sits in the stock device tree and probes cleanly; whether the lanes reach the connector has never been tested - see below |
-| NFC | - | Duo 1 has no NFC hardware |
 | Dual-screen aware UI | ❌ | Phosh treats both panels as one span (content falls into the hinge gap); a hinge-aware shell is out of scope for this port |
 
 ## Repository layout
@@ -112,12 +111,14 @@ Full walkthrough: [docs/PORT-GUIDE.md](docs/PORT-GUIDE.md).
   unit spawns in 0.2 s. Symptom B: harmless journald write hiccups
   escalated into a read-only root - the phone "freezes" but still
   pings. Full evidence: `docs/FREEZE-FORENSICS.md`.
-- **plymouth vs the vendor composer**: droidian ships plymouth; on this
-  port it draws nothing visible but still takes DRM master on
-  /dev/dri/card0 at boot. When the boot is slow enough that the android
-  container brings the composer up while plymouthd is still alive, the
-  composer opens the device non-master and stays that way after
-  plymouth quits: both panels black with the backlight on, phoc spams
+- **plymouth vs the vendor composer** (the classic first-boot failure:
+  black screens right after the Debian logo): droidian ships plymouth.
+  Depending on the install it may draw its splash or nothing at all,
+  but either way it takes DRM master on /dev/dri/card0 at boot. When
+  the boot is slow enough that the android container brings the
+  composer up while plymouthd is still alive, the composer opens the
+  device non-master and stays that way after plymouth quits: both
+  panels black with the backlight on, phoc spams
   "validate failed for display 0: 2", logcat shows EACCES on
   drmModeAtomicCommit, the power key seems dead. The adaptation ships
   `sfduo-composer-watchdog` (detects the state and bounces the
