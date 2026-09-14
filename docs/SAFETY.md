@@ -23,7 +23,7 @@ because of it.
    device, per-serial attempt counters, health baselines, battery gates,
    brick-signature detection.
 
-## The three failure mechanisms we know
+## The three known failure mechanisms
 
 ### 1. BCB poison (reversible - but only if you know it exists)
 
@@ -56,16 +56,17 @@ slot boots fine.
 
 This is why rule 3 exists: consecutive crash-retries can wedge both
 slots, and a device with both slots wedged is indistinguishable from
-our permanently dead unit.
+a permanently dead one.
 
 Also note: TWRP sessions / reboots tend to flip the active slot -
 **verify `fastboot getvar current-slot` before every RAM-boot.**
 
 ### 3. The unrecoverable state (what an actual brick looks like)
 
-On our dead unit, LUN 4 partition *content* never loads (GPT is
-readable, content access fails) on both slots, with both stock and TWRP
-images, before and after misc/metadata hygiene. If you reach a state
+On the dead unit behind this document, LUN 4 partition *content* never
+loads (GPT is readable, content access fails) on both slots, with both
+stock and TWRP images, before and after misc/metadata hygiene. If you
+reach a state
 where the wedge does not clear by switching slots and clean misc does
 not help - STOP. Do not cycle lock/unlock. Do not flash anything.
 Collect getvar output and ask the community first.
@@ -81,6 +82,36 @@ fastboot flash misc misc-brake.img    # re-arm the parking brake
 # ... session ...
 # the moment the device lands back in fastboot: re-arm the brake FIRST
 ```
+
+## If flashing is attempted anyway: three confusing behaviours
+
+Rule 1 stands: RAM-boot is the only mode this port recommends, and
+nothing below is an invitation to flash. But flashing does get
+attempted eventually, and these three behaviours cost real time to
+work out. Meeting them for the first time mid-session, on a device
+with no EDL escape, is the wrong moment to start guessing.
+
+**`fastboot flash boot_a` can answer "Device Error" and write
+nothing.** This is not a bad image and not a lock problem: the
+bootloader on this device can refuse to write that UFS LUN at all.
+The same image written with `dd` from a booted system goes in without
+complaint. Reading the fastboot failure as "the image must be broken"
+and rebuilding images from scratch is chasing a ghost.
+
+**A flashed boot has to satisfy AVB; a RAM-booted one does not.**
+`fastboot boot` bypasses verification entirely, so an image that
+RAM-boots perfectly well can refuse to boot once flashed, with vbmeta
+left untouched. That gap makes a clean RAM-boot a weaker proof than it
+feels like.
+
+**The active slot can drift back on its own.** Two non-obvious causes.
+First, `lxc-attach` on this device swallows the last argument, so every
+`bootctl` call made through it silently receives an empty command and
+does nothing at all; `touch /var/lib/droidian/lxc_attach_workaround`
+restores it. Second, the bootloader takes its slot from the vendor
+bootctrl HAL's own storage rather than from `fastboot set_active`, so a
+slot chosen in fastboot can be quietly overruled on the next boot.
+Verify `fastboot getvar current-slot` instead of assuming.
 
 ## Bootloader facts that save time
 
