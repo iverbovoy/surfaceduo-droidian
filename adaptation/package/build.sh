@@ -110,9 +110,10 @@ for m in wglink_dlkm q6_pdr_dlkm q6_notifier_dlkm apr_dlkm q6_dlkm \
          mbhc_dlkm wsa881x_dlkm wcd934x_dlkm machine_dlkm; do
     modprobe $m 2>/dev/null
 done
-# Verify the chain actually landed. Failing here also keeps bluebinder
-# off (Requires=) - a half-dead audio/ADSP state is exactly when a
-# bluetooth init soft-locks the kernel, so silence is the safe mode.
+# Verify the chain actually landed. A half-dead audio/ADSP state is
+# exactly when a bluetooth init soft-locks the kernel; bluebinder has
+# its own ADSP gate (sfduo-adsp-gate) for that, so silence is the safe
+# mode on both sides.
 for m in apr_dlkm q6_dlkm wcd934x_dlkm machine_dlkm; do
     grep -q "^$m " /proc/modules || {
         echo "sfduo-audio: critical module $m failed to load" >&2
@@ -141,16 +142,61 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 UNIT
-    # bluebinder against a dead-ADSP system soft-locks the kernel
-    # (queued_write_lock_slowpath) and takes ALL I/O down. Requires= (not
-    # just After=) - if the ADSP gate above fails, bluetooth stays off
-    # rather than wedging the kernel.
-    mkdir -p "$PKG/etc/systemd/system/bluebinder.service.d"
-    printf '[Unit]\nAfter=sfduo-audio.service\nRequires=sfduo-audio.service\n' \
-        > "$PKG/etc/systemd/system/bluebinder.service.d/20-sfduo-after-adsp.conf"
 else
-    echo "NOTE: audio modules not found - building without audio"
+    cat >&2 <<'NOAUDIO'
+ERROR: no audio modules found in out/audio-modules.
+
+They are not optional, and this costs far more than sound.
+sfduo-audio.service is the only thing that boots the ADSP (via
+adsp_loader sysfs). Measured on hardware without it: the ADSP never
+leaves OFFLINING, and the two adsprpcd daemons burn ~24% CPU each
+forever because of it (with a live ADSP they sit at 0%). Bluetooth
+against a dead ADSP then soft-locks the kernel and takes all I/O with
+it, which looks exactly like a dead phone.
+
+Build them per kernel-packaging/README.md, then build this package.
+
+If you understand all of the above and want the package anyway, set
+SFDUO_ALLOW_NO_AUDIO=1. Bluetooth will refuse to start on the result.
+NOAUDIO
+    [ "${SFDUO_ALLOW_NO_AUDIO:-0}" = "1" ] || exit 1
 fi
+
+# The ADSP gate, shipped ALWAYS and deliberately not tied to the audio
+# build. bluebinder against a dead ADSP soft-locks the kernel
+# (queued_write_lock_slowpath) and takes all I/O down. The old drop-in
+# gated on Requires=sfduo-audio.service, so a package built without the
+# audio modules carried no protection at all - exactly the build that
+# needs it most. Gate on the real precondition instead: the ADSP being
+# ONLINE.
+install -m755 /dev/stdin "$PKG/usr/local/sbin/sfduo-adsp-gate" <<'GATE'
+#!/bin/sh
+# Exit 0 once the ADSP subsystem reports ONLINE, non-zero if it never
+# does. Used as ExecStartPre for bluebinder: better no bluetooth than a
+# soft-locked kernel.
+find_adsp() {
+    for d in /sys/bus/msm_subsys/devices/*/; do
+        [ "$(cat "$d/name" 2>/dev/null)" = "adsp" ] && { echo "${d%/}/state"; return; }
+    done
+    echo /sys/bus/msm_subsys/devices/subsys1/state   # historical fallback
+}
+STATE="$(find_adsp)"
+i=0
+while [ $i -lt 30 ]; do
+    grep -q ONLINE "$STATE" 2>/dev/null && exit 0
+    i=$((i+1)); sleep 1
+done
+echo "sfduo: ADSP is not ONLINE ($STATE) - refusing to start bluetooth," >&2
+echo "sfduo: it soft-locks the kernel in this state. Fix the ADSP first." >&2
+exit 1
+GATE
+mkdir -p "$PKG/etc/systemd/system/bluebinder.service.d"
+# ExecCondition=, not ExecStartPre=: a failing condition makes systemd
+# SKIP the unit rather than fail it, so bluebinder's Restart=always does
+# not turn the refusal into an endless retry loop (measured on device:
+# 6 restarts in 4 minutes with ExecStartPre, 0 with ExecCondition).
+printf '[Unit]\nAfter=sfduo-audio.service\n\n[Service]\nExecCondition=/usr/local/sbin/sfduo-adsp-gate\n' \
+    > "$PKG/etc/systemd/system/bluebinder.service.d/20-sfduo-after-adsp.conf"
 
 # Suspend hook (2026-07-11 night): dwc3-msm in peripheral mode never
 # reaches LPM by itself and aborts every system suspend (see kernel patch
@@ -637,7 +683,6 @@ if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     systemctl enable --now sfduo-usb.service || true
     systemctl enable bluebinder.service bluetooth.service 2>/dev/null || true
-    systemctl enable --now sfduo-tame-vendor.service || true
     systemctl enable sfduo-composer-watchdog.service || true
     systemctl enable --now sfduo-lid.service || true
     systemctl enable --now sfduo-writeback.timer || true
@@ -647,12 +692,32 @@ if [ -d /run/systemd/system ]; then
     # geoclue is a static unit; the drop-in adds [Install] so it can start at boot
     systemctl enable --now geoclue.service 2>/dev/null || systemctl start geoclue.service || true
     [ -f /usr/lib/sfduo/wlan.ko ] && systemctl enable --now sfduo-wlan.service || true
-    [ -x /usr/local/sbin/sfduo-audio-up.sh ] && systemctl enable sfduo-audio.service || true
+    # sfduo-tame-vendor kills adsprpcd, and sfduo-audio.service is what
+    # boots the ADSP afterwards. Measured on hardware: adsprpcd cannot
+    # bring the ADSP up on this port at all, so with no starter the
+    # daemons just respawn and spin (~24% CPU each) against a subsystem
+    # stuck at OFFLINING. Killing them there buys nothing, so the killer
+    # only goes in alongside the starter.
+    if [ -x /usr/local/sbin/sfduo-audio-up.sh ]; then
+        systemctl enable sfduo-audio.service || true
+        systemctl enable --now sfduo-tame-vendor.service || true
+    else
+        echo "sfduo: built without audio modules, so there is no ADSP" >&2
+        echo "sfduo: starter. Expect adsprpcd to spin and bluetooth to" >&2
+        echo "sfduo: refuse to start (it would soft-lock the kernel)." >&2
+        echo "sfduo: Build the audio modules and reinstall." >&2
+    fi
 else
     ln -sf /usr/lib/systemd/system/sfduo-usb.service \
        /etc/systemd/system/multi-user.target.wants/sfduo-usb.service
-    ln -sf /usr/lib/systemd/system/sfduo-tame-vendor.service \
-       /etc/systemd/system/multi-user.target.wants/sfduo-tame-vendor.service
+    # same pairing rule as above, offline: the ADSP starter and the
+    # adsprpcd killer go in together or not at all
+    if [ -x /usr/local/sbin/sfduo-audio-up.sh ]; then
+        ln -sf /usr/lib/systemd/system/sfduo-audio.service \
+           /etc/systemd/system/multi-user.target.wants/sfduo-audio.service
+        ln -sf /usr/lib/systemd/system/sfduo-tame-vendor.service \
+           /etc/systemd/system/multi-user.target.wants/sfduo-tame-vendor.service
+    fi
 fi
 EOF
 chmod 755 "$PKG/DEBIAN/postinst"
