@@ -141,15 +141,29 @@ The Android container's ueventd serves the firmware requests
 
 ## Audio modules (techpack)
 
+**These are not optional.** Without them the adaptation package has no
+ADSP starter, and the ADSP is what keeps the whole system alive - see
+the warning the package prints when they are missing.
+
 Clone microsoft/surface-duo-oss-platform.vendor.opensource.audio-kernel
-(same branch) INTO the kernel tree as `techpack/audio`, then a plain
-`make ... AUDIO_BLD_DIR=/src modules` builds 23 `*_dlkm.ko`. Same
-container story as WiFi: build it in a fresh one, toolchain restored.
-Two fixups
-(see patches/0003-audio-kernel-build-fixups.patch): add private-header include paths to
-`soc/Kbuild`, and repoint the dangling `include/soc/internal.h` symlink
-(it assumes the repo-manifest layout) to
-`../../../../drivers/base/regmap/internal.h`. The card only registers if
+(same branch) INTO the kernel tree as `techpack/audio`. Unlike WiFi this
+is an in-tree build, not an `M=` external module: the kernel's own
+Makefile builds the `techpack` target, and `AUDIO_BLD_DIR` points at the
+tree root (`/src` when the tree is bind-mounted into the build
+container, per "Back into the container for the modules" above).
+
+```
+make -C <kernel> O=out/KERNEL_OBJ ARCH=arm64 CC=clang \
+  CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android- \
+  AUDIO_BLD_DIR=<kernel> modules
+```
+
+That builds 23 `*_dlkm.ko`, but only after two fixups (see
+patches/0003-audio-kernel-build-fixups.patch): add private-header
+include paths to `soc/Kbuild`, and repoint the dangling
+`include/soc/internal.h` symlink (it assumes the repo-manifest layout)
+to `../../../../drivers/base/regmap/internal.h`. Missing headers are
+what the build dies on without them. The card only registers if
 the ADSP is booted BEFORE `apr_dlkm` loads - the adaptation's
 `sfduo-audio.service` handles the ordering. Codec answers as TAVIL
 (wcd934x); the pahu DT node stays silent (-6) - that is normal.
