@@ -1,11 +1,12 @@
 #!/bin/bash
-# Inject the offline openssh bundle into the Droidian rootfs.img on the
-# device, from TWRP (RAM-booted, adb in recovery mode). Run on the HOST.
+# Inject ssh access into the Droidian rootfs.img on the device, from
+# TWRP (RAM-booted, adb in recovery mode). Run on the HOST.
 #
 # What it does on the device:
 #   e2fsck -fy /data/rootfs.img          (journal is usually dirty)
 #   loop-mount rootfs.img rw
-#   copy 11 debs -> /var/cache/sfduo-ssh/
+#   copy the openssh bundle, IF there is one, -> /var/cache/sfduo-ssh/
+#   (recent nightlies ship sshd, so the bundle is optional)
 #   install sfduo-ssh-firstboot.{service,sh} + enable symlink
 #   write authorized_keys for root and droidian (uid/gid 32011)
 #   sshd_config drop-in (root = key-only)
@@ -21,8 +22,18 @@ DEBS="$ROOT/out/ssh-debs"
 PUBKEY="${SFDUO_PUBKEY:-$HOME/.ssh/id_ed25519.pub}"
 MNT=/mnt/sfduo-root
 
-[ -d "$DEBS" ] || { echo "ERROR: deb bundle missing: $DEBS"; exit 1; }
-[ "$(ls "$DEBS"/*.deb 2>/dev/null | wc -l)" -ge 11 ] || { echo "ERROR: expected >=11 debs in $DEBS"; exit 1; }
+# The openssh bundle is OPTIONAL. Recent Droidian nightlies ship sshd
+# themselves, and the old hard requirement of 11 debs pushed at least
+# one porter into padding the directory with packages nothing needed.
+# What this script really injects is the key, the firstboot unit and,
+# when it has been built, the adaptation deb.
+if [ -d "$DEBS" ] && [ -n "$(ls "$DEBS"/*.deb 2>/dev/null)" ]; then
+    HAVE_BUNDLE=1
+    echo "== openssh bundle: $(ls "$DEBS"/*.deb | wc -l) debs"
+else
+    HAVE_BUNDLE=0
+    echo "== no openssh bundle in $DEBS - assuming the rootfs ships sshd"
+fi
 [ -f "$PUBKEY" ] || { echo "ERROR: pubkey missing: $PUBKEY (set SFDUO_PUBKEY)"; exit 1; }
 
 state="$(adb get-state 2>/dev/null || true)"
@@ -34,7 +45,9 @@ adb shell "ls /data/rootfs.img" >/dev/null || { echo "ERROR: /data/rootfs.img no
 
 echo "== push bundle"
 adb shell "rm -rf /tmp/sfduo-ssh && mkdir -p /tmp/sfduo-ssh"
-adb push "$DEBS"/*.deb /tmp/sfduo-ssh/ >/dev/null
+if [ "$HAVE_BUNDLE" = 1 ]; then          # not `[ ] && cmd`: set -e would
+    adb push "$DEBS"/*.deb /tmp/sfduo-ssh/ >/dev/null   # exit on the false test
+fi
 # adaptation package rides along if built (adaptation/package/build.sh)
 adapt="$(ls "$ROOT"/out/adaptation-droidian-surfaceduo_*_arm64.deb 2>/dev/null | sort -V | tail -1 || true)"
 if [ -n "$adapt" ]; then
@@ -52,7 +65,7 @@ adb shell "mkdir -p $MNT && mount -o loop,rw /data/rootfs.img $MNT"
 adb shell "set -e
 R=$MNT
 mkdir -p \$R/var/cache/sfduo-ssh
-cp /tmp/sfduo-ssh/*.deb \$R/var/cache/sfduo-ssh/
+ls /tmp/sfduo-ssh/*.deb >/dev/null 2>&1 && cp /tmp/sfduo-ssh/*.deb \$R/var/cache/sfduo-ssh/ || true
 cp /tmp/sfduo-ssh/sfduo-ssh-firstboot.sh \$R/usr/local/sbin/sfduo-ssh-firstboot.sh
 chmod 755 \$R/usr/local/sbin/sfduo-ssh-firstboot.sh
 cp /tmp/sfduo-ssh/sfduo-ssh-firstboot.service \$R/etc/systemd/system/
@@ -71,8 +84,13 @@ printf 'PermitRootLogin prohibit-password\n' > \$R/etc/ssh/sshd_config.d/10-sfdu
 "
 # TWRP adb does not always propagate exit codes - verify explicitly
 echo "== verify"
-ok="$(adb shell "test -f $MNT/root/.ssh/authorized_keys && ls $MNT/var/cache/sfduo-ssh/openssh-server_*.deb >/dev/null 2>&1 && test -L $MNT/etc/systemd/system/multi-user.target.wants/sfduo-ssh-firstboot.service && echo INJECT_OK" | tr -d '\r')"
+ok="$(adb shell "test -f $MNT/root/.ssh/authorized_keys && test -L $MNT/etc/systemd/system/multi-user.target.wants/sfduo-ssh-firstboot.service && echo INJECT_OK" | tr -d '\r')"
 [ "$ok" = "INJECT_OK" ] || { echo "ERROR: verification failed - do NOT boot, inspect $MNT on device"; exit 1; }
+if [ "$HAVE_BUNDLE" = 1 ]; then
+    adb shell "ls $MNT/var/cache/sfduo-ssh/openssh-server_*.deb >/dev/null 2>&1 && echo BUNDLE_OK" \
+        | tr -d '\r' | grep -q BUNDLE_OK \
+        || { echo "ERROR: bundle was pushed but openssh-server is not in it"; exit 1; }
+fi
 
 echo "== umount + sync"
 adb shell "umount $MNT && sync"

@@ -7,7 +7,11 @@
 # the same pass (its postinst migrates the hand-injected access files).
 set -e
 
-dpkg -i /var/cache/sfduo-ssh/*.deb || dpkg --configure -a
+# The bundle is optional: recent rootfs images ship sshd themselves and
+# then this directory holds only the adaptation deb, or nothing at all.
+if ls /var/cache/sfduo-ssh/*.deb >/dev/null 2>&1; then
+    dpkg -i /var/cache/sfduo-ssh/*.deb || dpkg --configure -a
+fi
 
 systemctl daemon-reload
 systemctl enable --now ssh.service

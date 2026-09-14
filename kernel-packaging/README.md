@@ -163,7 +163,25 @@ patches/0003-audio-kernel-build-fixups.patch): add private-header
 include paths to `soc/Kbuild`, and repoint the dangling
 `include/soc/internal.h` symlink (it assumes the repo-manifest layout)
 to `../../../../drivers/base/regmap/internal.h`. Missing headers are
-what the build dies on without them. The card only registers if
+what the build dies on without them.
+
+The symlink has to be fixed in the tree either way:
+
+```
+cd <kernel>/techpack/audio/include/soc
+rm internal.h
+ln -s ../../../../drivers/base/regmap/internal.h internal.h
+```
+
+The include paths, on the other hand, do not need the Kbuild patch if
+you would rather not carry it. Passing them on the command line works
+just as well and leaves the checkout untouched:
+
+```
+  ... AUDIO_BLD_DIR=<kernel> KCFLAGS="-I<kernel>/drivers/pinctrl" modules
+```
+
+The card only registers if
 the ADSP is booted BEFORE `apr_dlkm` loads - the adaptation's
 `sfduo-audio.service` handles the ordering. Codec answers as TAVIL
 (wcd934x); the pahu DT node stays silent (-6) - that is normal.
