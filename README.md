@@ -70,8 +70,9 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
    redistributed here).
 4. Build the kernel (`kernel-packaging/README.md`), pack the boot image
    with the stock DTB, `tools/flash-safely.sh validate` it.
-5. Install the Droidian rootfs zip from TWRP; inject the adaptation
-   package.
+5. Install the **Droidian 101 release** rootfs from TWRP, not the
+   current nightly (a later nightly already broke this port once - the
+   porting guide says how); inject the adaptation package.
 6. `tools/flash-safely.sh ram-boot` - **RAM-boot only** until you have
    many boring-stable cycles behind you.
 

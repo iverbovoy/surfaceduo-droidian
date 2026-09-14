@@ -56,7 +56,25 @@ boot image.
 
 ## 3. Rootfs
 
-Droidian nightly `rootfs api30 arm64` (phosh phone variant). From TWRP:
+Use the **Droidian 101 release** image, `rootfs api30 arm64` (phosh
+phone variant), not the current nightly.
+
+This is not caution for its own sake. Everything in this repository was
+built and verified against 101 (2025-11-30), and a later nightly has
+already broken this port once, in a way that costs a whole evening to
+find: newer `lxc-android` waits for the container through
+`droidian-apex`, which never sees `apexd.status` reach `ready` on this
+device even though apexd sets it within five seconds. `lxc@android`
+then fails on a 90 second timeout, `android-service@hwcomposer` fails
+on the dependency, `phosh` fails on that, and the phone boots to the
+Debian logo and then two black panels with no obvious cause. The 101
+image waits through `waitforservice` instead, which reads the property
+directly and does not hit this at all.
+
+If you do run a newer base and the screens stay black after the logo,
+check `systemctl status lxc@android` first.
+
+From TWRP:
 
 ```
 mke2fs -t ext4 /dev/block/sda6           # userdata, wipes Android!
