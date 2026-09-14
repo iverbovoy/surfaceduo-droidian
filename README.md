@@ -38,6 +38,7 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
 | Fold-to-sleep | ✅ | hall sensor (GPIO 121) → SW_LID bridge → logind suspends on fold; WoWLAN keeps WiFi associated through sleep |
 | GPS | ✅ | vendor GNSS + geoclue hybris source, ~4 m fixes; needs the geoclue keepalive drop-in from the adaptation (see traps below) |
 | Modem (calls/SMS/LTE) | 🕓 | stack done - ModemManager sees the modem via ofono/binder; calls/SMS/data not tested yet |
+| Video out (USB-C DP) | ❓ | the whole DisplayPort path sits in the stock device tree and probes cleanly; whether the lanes reach the connector has never been tested - see below |
 | NFC | - | Duo 1 has no NFC hardware |
 | Dual-screen aware UI | ❌ | Phosh treats both panels as one span (content falls into the hinge gap); a hinge-aware shell is out of scope for this port |
 
@@ -129,6 +130,35 @@ Full walkthrough: [docs/PORT-GUIDE.md](docs/PORT-GUIDE.md).
   the outer journal; under bursts (`dpkg -i` is enough) jbd2 starves
   and the system stalls for minutes. `data=ordered` survives a 300 MB
   fsync burst with zero errors.
+
+## Open question: video out over USB-C
+
+No display has ever been plugged into this device under Linux, but the
+whole DisplayPort path is present in Microsoft's own device tree and
+comes up cleanly:
+
+- `msm_drm` binds `qcom,dp_display@0`, and `mdss_pll_probe` reports
+  "MDSS DP PLL"
+- DRM exposes a connector, `card0-DP-1`, sitting at `disconnected`
+- the DP AUX channel is registered as a real i2c adapter (`i2c-3:
+  sde_dp_aux`)
+- there is a DisplayPort audio DAI, `qcom,msm-dai-q6-dp`
+- an FSA4480 SBU mux sits on i2c-0, which is the path AUX would take
+
+What is unknown is whether the lanes physically reach the USB-C
+connector. That part is a hardware question and can be answered on any
+OS: if a passive DP alt mode adapter produces a picture under Android
+or Windows, the lanes exist and the rest is a driver matter.
+
+Under this port the check takes two minutes with a passive USB-C to
+HDMI adapter:
+
+```
+cat /sys/class/drm/card0-DP-1/status      # "connected" = the lanes are there
+dmesg -w | grep -iE 'dp_display|usbpd'
+```
+
+A report either way would settle it.
 
 ## Credits
 
