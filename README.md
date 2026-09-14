@@ -26,13 +26,14 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
 | USB networking + ssh | ✅ | RNDIS gadget, 172.16.42.1 |
 | System stability | ✅ | unlimited uptime once the ADSP is booted at start (adaptation handles it) |
 | WiFi | ✅ | qcacld-3.0 built from Microsoft's OSS wlan repos against this kernel; autoloaded by the adaptation package; NetworkManager just works |
-| Hinge angle (posture!) | ✅ | MS sns_fold on the SLPI via our sensorfw patch - live degrees over DBus |
+| Hinge angle (posture!) | ✅ | MS sns_fold on the SLPI via the sensorfw patch in this repo - live degrees over DBus |
 | Audio | ✅ | 23 techpack modules from MS OSS + ADSP boot ordering; PulseAudio/droid picks the card up; TTS spoken through the speaker |
 | Bluetooth | ✅ | bluebinder exonerated (the lockup was dead-ADSP collateral); needs the timeout drop-in + a provided board-address |
 | Camera | ✅ | droidian-camera (QT_QPA_PLATFORM=wayland) - full 11MP stills |
 | Fingerprint | ✅ | droidian-fpd + enroll; unlock-by-finger via fpd-unlockd |
 | Suspend | ✅ | dwc3-msm kernel patch + sleep hook + AllowSuspend override; wake = long power press; RTC-through-sleep pending |
-| Flashlight / vibration / pen | ✅ | sysfs LEDs (video group via udev); da7280 (FF_CONSTANT only); pen inks via the touchpen HAL |
+| Flashlight / vibration | ✅ | sysfs LEDs (video group via udev); da7280 (FF_CONSTANT only) |
+| Pen (stylus) | 🟡 | it inks, but it is not a stylus to applications. The digitizer sends graded pressure, both buttons and a tool type; libinput discards all of it, because the node has to be classified as a touchscreen or touch dies. Measurements and the fix: [docs/PEN.md](docs/PEN.md) |
 | Brightness | ✅ | the phosh slider drives both panels (udev change-event sync); auto-brightness pending (ALS already works) |
 | Fold-to-sleep | ✅ | hall sensor (GPIO 121) → SW_LID bridge → logind suspends on fold; WoWLAN keeps WiFi associated through sleep |
 | GPS | ✅ | vendor GNSS + geoclue hybris source, ~4 m fixes; needs the geoclue keepalive drop-in from the adaptation (see traps below) |
@@ -65,8 +66,8 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
 2. Back up `boot_a`, `boot_b`, `misc` from a booted TWRP
    (RAM-boot only - never flash TWRP).
 3. Extract the stock DTB from **your own** backup:
-   `tools/extract-stock-dtb.sh boot_b.img` (we do not redistribute
-   device blobs).
+   `tools/extract-stock-dtb.sh boot_b.img` (device blobs are not
+   redistributed here).
 4. Build the kernel (`kernel-packaging/README.md`), pack the boot image
    with the stock DTB, `tools/flash-safely.sh validate` it.
 5. Install the Droidian rootfs zip from TWRP; inject the adaptation
