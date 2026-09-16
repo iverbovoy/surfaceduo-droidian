@@ -1,0 +1,69 @@
+/*
+ * phosh on a Surface Duo: keep the shell out of the hinge.
+ *
+ * Both panels are one output, 928x600 logical. The 84 physical pixels of
+ * hinge between them are addressable and physically hidden: logically they
+ * are the column [450, 478]. gmobile's display-panel description tells phosh
+ * where they are, but phosh consults it only when it places the top bar's
+ * clock. Everything else the shell centres - the lock screen clock, the home
+ * bar handle, the search field - centres on 464, which is the middle of the
+ * bezel.
+ *
+ * So each centred widget is given a left margin of 478px: the near panel plus
+ * the hinge. What was centred on the whole screen is then centred on the
+ * right panel, under the thumb of a right hand holding the device.
+ *
+ * Margins land only on widgets GTK3 allocates through a CSS gadget, and only
+ * on names the widget actually carries: GtkBuilder ids are not visible to CSS
+ * here (#box_info matches nothing), so every selector below is either an
+ * element name from phosh's own stylesheet, a style class from its .ui files,
+ * or a name set with gtk_widget_set_name.
+ */
+
+/* ---- lock screen ------------------------------------------------------ */
+
+#phosh-lockscreen-clock,
+#phosh-lockscreen-date,
+.phosh-lockscreen-arrow,
+.phosh-lockscreen-unlocker,
+phosh-lockscreen label.dim-label {
+  margin-left: 478px;
+}
+
+/* The PIN keypad is centred inside the unlocker, which has already moved. */
+
+/* ---- home bar --------------------------------------------------------- */
+
+/* The drag handle is 200px wide and centred, i.e. entirely inside the bezel:
+   the one gesture target the device cannot show. The handle itself is a
+   GtkEventBox, which has no CSS gadget and so ignores a margin outright; the
+   box that centres it is an ordinary GtkBox and does not. Only the handle
+   moves - the event box behind it still spans the whole width, so the swipe
+   still starts anywhere along the bottom edge. */
+#home-bar { margin-left: 478px; }
+
+/* ---- app grid --------------------------------------------------------- */
+
+.phosh-search-bar,
+#phosh-filter-adaptive-btn {
+  margin-left: 478px;
+}
+
+/* The grid itself keeps both panels; only its columns move. A flow box fits
+   as many equal columns as the child's minimum width allows, and an odd count
+   always puts one column astride the hinge - at the icons' natural width that
+   is seven columns, with the fourth in the bezel. Six columns instead, and
+   the gap between the third and the fourth lands on 464, the middle of the
+   seam.
+   
+   The minimum that produces six is the child's whole width, padding included:
+   145 = 109 + 2x18, against 922 of usable row and 6px of column spacing. The
+   padding is the other half of the trick - it insets each icon far enough
+   that the two columns beside the gap stop drawing well before the bezel
+   starts. */
+phosh-app-grid-button,
+phosh-app-grid-folder-button {
+  min-width: 109px;
+  padding-left: 18px;
+  padding-right: 18px;
+}
