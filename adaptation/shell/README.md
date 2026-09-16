@@ -126,9 +126,11 @@ something has been launched.
 
 ## The dock
 
-`sfduo-dock` is a bar across the bottom of both panels: the same apps on each
-side, a gap over the hinge, and the side you touch decides which panel the app
-opens on - the Duo's own behaviour.
+`sfduo-dock` is one bar across the bottom of both panels, cut by the bezel
+rather than doubled: the buttons are dealt out across the two halves, each app
+appearing once, and each half is pushed against the seam and rounded only on
+its outer side, so that across the hinge it reads as a single thing. Which
+half an app sits in is which panel it opens on - the Duo's own behaviour.
 
 Nothing in it talks to the compositor directly. Placement is phoc's: it tiles
 the focused window to half the output on `<Super>Left` / `<Super>Right`, which

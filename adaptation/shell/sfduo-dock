@@ -56,9 +56,11 @@ CSS = b"""
 window.sfduo-dock { background-color: #000000; }
 .dock-pane {
   background-color: rgba(18,18,20,0.92);
-  border-radius: 20px;
   padding: 6px 10px;
 }
+/* Rounded away from the hinge, square against it: one bar, cut by the bezel. */
+.dock-pane.left  { border-radius: 20px 0 0 20px; padding-right: 4px; }
+.dock-pane.right { border-radius: 0 20px 20px 0; padding-left: 4px; }
 .dock-button {
   background: none;
   border: none;
@@ -116,11 +118,22 @@ class Dock(Gtk.Window):
         GtkLayerShell.set_exclusive_zone(self, DOCK_HEIGHT)
         GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
 
+        # One dock, cut in half by the bezel rather than two docks side by
+        # side: the buttons are dealt out across the two panels, each app
+        # appearing once, and the halves are pushed against the seam so the
+        # bar reads as a single thing with the hinge lying across it. Which
+        # half an app sits in is therefore which panel it opens on.
+        items = []
+        if os.access(LAUNCHER, os.X_OK):
+            items.append(None)                      # the all-apps button
+        items += favourites()
+        cut = (len(items) + 1) // 2
+
         self.row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self.row.set_valign(Gtk.Align.END)   # a dock belongs at the bottom
-        self.left = self._pane("left")
+        self.left = self._pane("left", items[:cut])
         self.seam = Gtk.Box()
-        self.right = self._pane("right")
+        self.right = self._pane("right", items[cut:])
         self.row.pack_start(self.left, True, True, 0)
         self.row.pack_start(self.seam, False, False, 0)
         self.row.pack_start(self.right, True, True, 0)
@@ -175,23 +188,29 @@ class Dock(Gtk.Window):
             GLib.idle_add(self._set_home, not running)
             time.sleep(IDLE_POLL_MS / 1000)
 
-    def _pane(self, side):
-        """One panel's worth of dock: the apps, centred, in a rounded slab."""
+    def _pane(self, side, items):
+        """Half of the dock, pushed up against the seam.
+
+        The half that ends at the hinge is rounded only on its outer side, so
+        that across the bezel the two halves read as one bar rather than as
+        two slabs that happen to be near each other.
+        """
         outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        outer.set_halign(Gtk.Align.CENTER)
+        outer.set_halign(Gtk.Align.END if side == "left" else Gtk.Align.START)
         outer.set_valign(Gtk.Align.CENTER)
         outer.get_style_context().add_class("dock-pane")
+        outer.get_style_context().add_class(side)
 
-        if os.access(LAUNCHER, os.X_OK):
-            outer.pack_start(self._icon_button(
-                Gio.ThemedIcon.new("view-app-grid-symbolic"), "All apps",
-                lambda _b: subprocess.Popen([LAUNCHER])), False, False, 0)
-
-        for info in favourites():
-            outer.pack_start(
-                self._icon_button(info.get_icon(), info.get_display_name(),
-                                  self._on_clicked, info, side),
-                False, False, 0)
+        for info in items:
+            if info is None:
+                button = self._icon_button(
+                    Gio.ThemedIcon.new("view-app-grid-symbolic"), "All apps",
+                    lambda _b: subprocess.Popen([LAUNCHER]))
+            else:
+                button = self._icon_button(
+                    info.get_icon(), info.get_display_name(),
+                    self._on_clicked, info, side)
+            outer.pack_start(button, False, False, 0)
 
         wrapper = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         wrapper.pack_start(outer, True, True, 0)
