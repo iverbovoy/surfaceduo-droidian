@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Surface Duo dock
+Comment=A dock across both panels, launching onto the one you touch
+Exec=/usr/local/bin/sfduo-dock
+Icon=view-grid-symbolic
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-Phase=Applications

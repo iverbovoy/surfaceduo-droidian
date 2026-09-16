@@ -124,9 +124,47 @@ to the passcode page, and `wtype -M alt -k F1 -m alt` toggles the app grid
 running phosh keeps the grid open, so the home bar is only visible once
 something has been launched.
 
+## The dock
+
+`sfduo-dock` is a bar across the bottom of both panels: the same apps on each
+side, a gap over the hinge, and the side you touch decides which panel the app
+opens on - the Duo's own behaviour.
+
+Nothing in it talks to the compositor directly. Placement is phoc's: it tiles
+the focused window to half the output on `<Super>Left` / `<Super>Right`, which
+are mutter's keybindings and live in `org.gnome.mutter.keybindings`, not in
+`phoc.ini`. So a launch is three steps:
+
+```
+start the app  ->  wait for its toplevel to be mapped and focused  ->  send the chord
+```
+
+The waiting is `wlrctl toplevel find app_id:… state:active` asked every tenth
+of a second. wlrctl's own `wait` and `waitfor` actions do not mean "wait for
+this window to open" and return 1 immediately; `find` is a plain question and
+answers correctly. Focus matters because the chord goes to whatever is
+focused, and it is a *toggle*: sent to a window already on that side it pushes
+it back to full width, so the dock remembers where it put each app.
+
+Install: the script to `/usr/local/bin/sfduo-dock`, the `.desktop` to
+`/etc/xdg/autostart/`. Its apps come from `~/.config/sfduo/dock.json`
+(`{"apps": ["org.gnome.Calculator.desktop", …]}`) and fall back to the shell's
+own favourites. It sits on the overlay layer, because phosh's app grid is a
+layer surface too and otherwise covers it.
+
+Two rough edges, both known:
+
+- phoc's halves are exactly half the output, so a tiled window reaches 14
+  logical pixels into the hinge on its inner edge. Fixing it properly means
+  patching `view_arrange_tiled` in phoc to read the same gmobile cutout the
+  CSS above is built around.
+- `gsettings set sm.puri.phoc auto-maximize false` is what lets a window stay
+  tiled rather than being forced back to full width.
+
 ## What this does not fix
 
-Phosh has no concept of two panels - it has one output with a hole in it, and
-everything above is arithmetic on that hole. A shell that genuinely used both
-panels (a window per side, a dock on one of them) is a patch to phosh, not a
-stylesheet.
+Phosh has no home screen. When the last window closes it shows the app grid,
+and there is no state in which you see a wallpaper and a dock and nothing
+else - the dock above floats over the grid rather than replacing it. Giving
+the shell a real home screen, or a window per panel as a first-class idea, is
+a patch to phosh, not a stylesheet.

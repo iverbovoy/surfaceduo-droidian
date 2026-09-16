@@ -1,0 +1,215 @@
+#!/usr/bin/python3
+# sfduo-dock: a dock that spans both panels, and launches onto the one you
+# touched.
+#
+# The Duo's two panels are a single Wayland output with a hidden column down
+# the middle, so a bar anchored across the bottom is really two bars with a
+# dead strip between them. This one carries the same apps on each side; which
+# side you tap decides where the window goes.
+#
+# Placement is phoc's own: it tiles the focused window to half the output on
+# <Super>Left / <Super>Right (org.gnome.mutter.keybindings). So a launch is
+#
+#   start the app  ->  wait for its toplevel  ->  send the chord for that side
+#
+# The waiting is `wlrctl toplevel find` asked on a beat, because the chord has
+# to arrive after the window is mapped and focused, and it is a toggle: sent
+# twice it undoes itself. Nothing here talks to the compositor directly;
+# everything is a protocol phoc already speaks.
+#
+# The halves phoc tiles are exactly half the output, which is 14 logical
+# pixels into the hinge on each inner edge. Living with that is deliberate for
+# now - the alternative is a patch to phoc's view_arrange_tiled to read the
+# same gmobile cutout the shell CSS is built around.
+
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("GtkLayerShell", "0.1")
+from gi.repository import Gdk, Gio, GLib, Gtk, GtkLayerShell  # noqa: E402
+
+# The hinge as a fraction of the panel span: 84 physical pixels of 2784. Taken
+# as a fraction on purpose - the logical size changes with rotation and with
+# the output scale, and this does not.
+HINGE_FRACTION = 84 / 2784
+
+DOCK_HEIGHT = 84          # logical px, enough for a 48px icon and its padding
+ICON_SIZE = 48
+CONFIG = os.path.expanduser("~/.config/sfduo/dock.json")
+WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
+
+CSS = b"""
+window.sfduo-dock { background-color: transparent; }
+.dock-pane {
+  background-color: rgba(18,18,20,0.92);
+  border-radius: 20px;
+  padding: 6px 10px;
+}
+.dock-button {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 6px;
+  min-width: 0;
+  min-height: 0;
+}
+.dock-button:active, .dock-button:hover {
+  background-color: rgba(255,255,255,0.14);
+  border-radius: 14px;
+}
+"""
+
+
+def favourites():
+    """The apps on the dock: our own list if there is one, else the shell's."""
+    try:
+        with open(CONFIG) as fp:
+            ids = json.load(fp)["apps"]
+    except (OSError, ValueError, KeyError):
+        ids = list(Gio.Settings.new("sm.puri.phosh").get_strv("favorites"))
+
+    apps = []
+    for app_id in ids:
+        info = Gio.DesktopAppInfo.new(app_id)
+        if info is not None:
+            apps.append(info)
+    return apps
+
+
+def wayland_app_id(info):
+    """What the toplevel will call itself. Apps that say so are believed."""
+    declared = info.get_string("StartupWMClass")
+    if declared:
+        return declared
+    return info.get_id().removesuffix(".desktop")
+
+
+class Dock(Gtk.Window):
+    def __init__(self):
+        super().__init__()
+        self.get_style_context().add_class("sfduo-dock")
+        self.set_size_request(-1, DOCK_HEIGHT)
+
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_namespace(self, "sfduo-dock")
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+        for edge in (GtkLayerShell.Edge.LEFT,
+                     GtkLayerShell.Edge.RIGHT,
+                     GtkLayerShell.Edge.BOTTOM):
+            GtkLayerShell.set_anchor(self, edge, True)
+        # Reserve the strip, so a maximized or tiled window stops above it
+        # instead of hiding under it.
+        GtkLayerShell.set_exclusive_zone(self, DOCK_HEIGHT)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+
+        self.row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.left = self._pane("left")
+        self.seam = Gtk.Box()
+        self.right = self._pane("right")
+        self.row.pack_start(self.left, True, True, 0)
+        self.row.pack_start(self.seam, False, False, 0)
+        self.row.pack_start(self.right, True, True, 0)
+        self.add(self.row)
+
+        self.placed = {}          # app_id -> the panel it was last sent to
+        self.connect("size-allocate", self._on_size_allocate)
+        self.show_all()
+
+    def _pane(self, side):
+        """One panel's worth of dock: the apps, centred, in a rounded slab."""
+        outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        outer.set_halign(Gtk.Align.CENTER)
+        outer.set_valign(Gtk.Align.CENTER)
+        outer.get_style_context().add_class("dock-pane")
+
+        for info in favourites():
+            button = Gtk.Button()
+            button.get_style_context().add_class("dock-button")
+            button.set_relief(Gtk.ReliefStyle.NONE)
+            button.set_tooltip_text(info.get_display_name())
+            image = Gtk.Image.new_from_gicon(info.get_icon(),
+                                             Gtk.IconSize.DIALOG)
+            image.set_pixel_size(ICON_SIZE)
+            button.add(image)
+            button.connect("clicked", self._on_clicked, info, side)
+            outer.pack_start(button, False, False, 0)
+
+        wrapper = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        wrapper.pack_start(outer, True, True, 0)
+        return wrapper
+
+    def _on_size_allocate(self, _widget, allocation):
+        """Keep the gap between the two panes over the hinge, at any rotation."""
+        span = max(allocation.width, allocation.height)
+        gap = max(1, round(span * HINGE_FRACTION))
+        if self.seam.get_size_request().width != gap:
+            self.seam.set_size_request(gap, 1)
+
+    def _on_clicked(self, _button, info, side):
+        app_id = wayland_app_id(info)
+        try:
+            # An app that is already running is raised rather than started
+            # again; either way the window we want ends up focused.
+            info.launch([], None)
+        except GLib.Error as err:
+            print(f"sfduo-dock: {info.get_id()}: {err.message}", file=sys.stderr)
+            return
+        threading.Thread(target=self._place, args=(app_id, side),
+                         daemon=True).start()
+
+    def _place(self, app_id, side):
+        """Wait for the window, then hand it to the panel it was asked for."""
+        if not self._wait_for_window(app_id):
+            print(f"sfduo-dock: no window for {app_id}", file=sys.stderr)
+            return
+        # The chord is a toggle: sending it to a window already on that side
+        # would push it back to full width. Remember where each app was put.
+        if self.placed.get(app_id) == side:
+            return
+        key = "Left" if side == "left" else "Right"
+        if subprocess.run(["wtype", "-M", "logo", "-k", key, "-m", "logo"],
+                          check=False).returncode == 0:
+            self.placed[app_id] = side
+
+    @staticmethod
+    def _wait_for_window(app_id):
+        """True once the app has a toplevel and the compositor has focused it.
+
+        `wlrctl toplevel find` is a question, not a wait - asking it on a
+        tenth-of-a-second beat is what the wait actions in wlrctl are not.
+        Focus matters because the chord goes to whatever is focused, so the
+        window has to have arrived before it is sent.
+        """
+        deadline = time.monotonic() + WAIT_TIMEOUT
+        while time.monotonic() < deadline:
+            found = subprocess.run(
+                ["wlrctl", "toplevel", "find",
+                 f"app_id:{app_id}", "state:active"], check=False)
+            if found.returncode == 0:
+                time.sleep(0.3)   # let it settle before resizing it
+                return True
+            time.sleep(0.1)
+        return False
+
+
+def main():
+    provider = Gtk.CssProvider()
+    provider.load_from_data(CSS)
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(), provider,
+        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    Dock().connect("destroy", Gtk.main_quit)
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    main()
