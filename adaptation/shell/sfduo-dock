@@ -202,8 +202,18 @@ class Dock(Gtk.Window):
 
     def _read_locked(self):
         locked = self._session_property(self.session_path, "LockedHint")
-        if locked is not None:
-            self.set_visible(not locked)
+        if locked is None:
+            # The session is gone: restarting the shell ends one logind
+            # session and opens another, and the path we resolved at startup
+            # stops answering. Without this the dock never hears about a lock
+            # again and sits over the lock screen.
+            self.session_path = self._seat_session()
+            if self.session_path is None:
+                return True
+            locked = self._session_property(self.session_path, "LockedHint")
+            if locked is None:
+                return True
+        self.set_visible(not locked)
         return True
 
     def _pane(self, side, items):
