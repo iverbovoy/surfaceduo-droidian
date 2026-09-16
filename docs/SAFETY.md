@@ -46,6 +46,22 @@ the device resets unattended, ABL consumes the flag and parks in
 fastboot instead of letting stock boot into the poison scenario. Note the Duo auto-boots when a charger is
 attached (`off-mode-charge=0`) - the brake is not optional.
 
+**What the brake does not do** (measured 2026-09-16): it does not stop a
+*deliberate* reboot. `bootonce-bootloader` was written to `misc` from the
+running Droidian, verified byte for byte, and `systemctl reboot` walked
+straight past it into Droidian, leaving the command in `misc` unconsumed.
+Its job is the unattended reset; do not rely on it to reach fastboot on
+demand. For that, ask the kernel the way Android does - the reboot
+syscall with `"bootloader"` as its argument:
+
+```
+python3 -c 'import ctypes; l=ctypes.CDLL("libc.so.6"); l.sync();
+l.syscall(142, 0xfee1dead, 672274793, 0xA1B2C3D4, b"bootloader")'
+```
+
+(`__NR_reboot` is 142 on aarch64; `0xA1B2C3D4` is `LINUX_REBOOT_CMD_RESTART2`.)
+The device lands in fastboot within about thirty seconds.
+
 ### 2. Per-slot RAM-boot wedge
 
 After a crashed RAM-boot, the *current slot* may start rejecting ALL
