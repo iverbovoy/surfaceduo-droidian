@@ -6,17 +6,14 @@ are a single output, so the middle of the screen is the middle of the hinge:
 screen's clock was cut in half by it, the home bar's drag handle was entirely
 inside it, and a column of app icons fell into it.
 
-Two files fix that without patching phosh.
+One file fixes that without patching phosh: `gtk.css`. The second thing you
+would reach for - gmobile's cutout description - is a trap, and the reason is
+worth the section below.
 
-```
-qcom,sm8150-mtp.json   the hinge, described to gmobile as a cutout
-gtk.css                the rest of the shell, moved off the seam
-```
-
-## What phosh already knows how to do
+## gmobile's cutout: what it does, and what it costs
 
 gmobile carries a description of the display panel for each device and phosh
-asks it where the cutouts are. It looks the file up by the device tree's
+asks it where the cutouts are, looking the file up by the device tree's
 `compatible` string:
 
 ```
@@ -30,20 +27,29 @@ Droidian's phosh session already sets
 G_RESOURCE_OVERLAYS=/org/gnome/gmobile/devices/display-panels=/var/lib/droidian/phosh-notch
 ```
 
-and nothing ever put a file there. Dropping `qcom,sm8150-mtp.json` into that
-directory is enough - the log then says
+and nothing ever put a file there. Dropping a `qcom,sm8150-mtp.json` in that
+directory, with the hinge as a cutout
 
+```json
+{ "name": "Surface Duo 1", "x-res": 2784, "y-res": 1800, "border-radius": 0,
+  "width": 145, "height": 93,
+  "cutouts": [ { "name": "hinge", "path": "M 1350 0 h 84 v 1800 h -84 Z" } ] }
 ```
-Mapped file '/var/lib/droidian/phosh-notch/qcom,sm8150-mtp.json' as a resource overlay
-```
 
-and the top bar's clock, which was centred in the bezel, moves to the left of
-the bar. `x-res`/`y-res` are the panel in physical pixels and the cutout path
-is in the same units: `M 1350 0 h 84 v 1800 h -84 Z` is the hinge.
+does work: the log says `Mapped file … as a resource overlay` and the top
+bar's clock moves out of the bezel. That is also the only thing phosh does
+with cutouts.
 
-That is the whole of phosh's cutout support. `gsettings get sm.puri.phosh
-shell-layout` is `device`, which enables it, and the only thing it places is
-that clock - every other centred widget in the shell still centres on 464.
+**And it breaks the notification shade completely.** With that file in place,
+pulling the shade down gives a black screen: no clock, no quick settings, no
+notifications, and the status bar gone with them - the panel unfolds and
+nothing at all is drawn in it. Remove the file, restart phosh, and the shade
+comes back exactly as it should. It was reproduced both ways, twice.
+
+So the file is not installed on this device, and the clock is moved with two
+lines of CSS instead, which costs nothing and moves the shade's clock too.
+A phone whose notifications are unreachable is a worse phone than one with a
+clock in an odd place.
 
 ## The rest, in CSS
 

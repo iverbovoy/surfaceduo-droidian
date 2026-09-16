@@ -20,6 +20,19 @@
  * or a name set with gtk_widget_set_name.
  */
 
+/* ---- top bar and the shade -------------------------------------------- */
+
+/* The clock is a centre child in both the folded bar and the shade it pulls
+   down, so both sit in the bezel; the same class carries them both.
+
+   This is the job gmobile's cutout description was supposed to do, and it did
+   do it - at the price of the entire shade, which unfolded to a black screen
+   with nothing drawn in it at all. See the README. */
+.phosh-topbar-clock,
+.phosh-topbar-date {
+  margin-left: 478px;
+}
+
 /* ---- lock screen ------------------------------------------------------ */
 
 #phosh-lockscreen-clock,
