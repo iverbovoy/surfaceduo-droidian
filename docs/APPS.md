@@ -67,6 +67,13 @@ Eight llvmpipe threads become none and rendering stays correct. WebKit's
 dmabuf renderer stays disabled as the session has it: with mesa it measured
 3x worse, with hybris it is indistinguishable from shared memory.
 
+**Not yet done, on purpose:** shipping that JSON system-wide in
+`/usr/share/glvnd/egl_vendor.d/` from the adaptation package, so every GL
+client gets the GPU without asking. It is the right end state, but a global
+ICD is picked up by every glvnd client - phosh, droidian-camera, everything -
+and each of them has to be checked afterwards. Until then an app passes
+`__EGL_VENDOR_LIBRARY_FILENAMES` itself.
+
 ## Touch, as WebKit delivers it
 
 - Touch arrives as **touch events**, not pointer events: 797 `touchmove` to
