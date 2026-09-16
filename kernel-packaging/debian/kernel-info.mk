@@ -15,7 +15,7 @@ KERNEL_BASE_VERSION = 4.14-190
 # Stock cmdline (extracted from out/recovery/images/boot.img) plus the
 # Droidian bits: console=tty0, datapart (userdata = /dev/sda6 on LUN 0,
 # confirmed from live Android) and LVM preference.
-KERNEL_BOOTIMAGE_CMDLINE = console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0xa90000 androidboot.hardware=surfaceduo androidboot.hardware.platform=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=2048 loop.max_part=7 androidboot.usbcontroller=a600000.dwc3 kpti=off buildvariant=user console=tty0 datapart=/dev/sda6 droidian.lvm.prefer
+KERNEL_BOOTIMAGE_CMDLINE = console=ttyMSM0,115200n8 earlycon=msm_geni_serial,0xa90000 androidboot.hardware=surfaceduo androidboot.hardware.platform=qcom androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 swiotlb=2048 loop.max_part=7 androidboot.usbcontroller=a600000.dwc3 kpti=off buildvariant=user console=tty0 datapart=/dev/sda6 droidian.lvm.prefer page_poison=off debug_pagealloc=off
 
 DEVICE_VENDOR = microsoft
 DEVICE_MODEL = surfaceduo
