@@ -152,6 +152,30 @@ Install: the script to `/usr/local/bin/sfduo-dock`, the `.desktop` to
 own favourites. It sits on the overlay layer, because phosh's app grid is a
 layer surface too and otherwise covers it.
 
+### It is also the desktop
+
+With nothing running phosh has only one state, and that state is the app grid;
+there is no wallpaper-and-dock to switch to. So the dock covers it. With no
+window open it anchors to all four edges, paints itself black and puts the two
+slabs along the bottom - a desktop with nothing on it but the dock. The moment
+an application has a window it shrinks back to an 84px strip and reserves it,
+so the window stops above the icons rather than under them.
+
+Covering means covering: the exclusive zone is -1 in that state, which ignores
+what other surfaces reserved and is the only way to hide the strip phosh keeps
+for its home bar - the grid shows through it otherwise. The top panel is spared
+by hand, with a 32px top margin, because a status bar is worth keeping.
+
+Everything that is not on the dock is behind the first button, which toggles
+`fuzzel` through `sfduo-launcher-toggle`. That matters more than it sounds:
+with the desktop covered, the app grid is not reachable by swiping any more.
+
+Icons are normalised on purpose. A themed icon comes in whatever sizes the
+theme happens to carry - 16, 48, 256, scalable - so asking for a named size
+gets one app a 64px bitmap and the next a 32px one; and a button sized to its
+child leaves the row ragged even once the glyphs match. Hence a fixed pixel
+size on every image and a fixed box around every button.
+
 Two rough edges, both known:
 
 - phoc's halves are exactly half the output, so a tiled window reaches 14
