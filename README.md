@@ -54,7 +54,9 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
   bluetooth bring-up (timeout + board-address), geoclue/GPS drop-in.
 - `sensorfw-hinge-patch/` - hinge-angle sensor support for sensorfw
   (its own README covers build + install).
-- `docs/` - port guide + **the safety protocol**.
+- `docs/` - port guide + **the safety protocol** + `APPS.md`, what an
+  application has to know about this screen (the seam, rotation, touch as
+  WebKit delivers it, the cost of a frame, profiling with symbols).
 - `tools/` - `flash-safely.sh` (gated flash pipeline: offline image
   validation, per-serial attempt limits, health baselines,
   brick-signature detection), vendored AOSP mkbootimg, stock-DTB
