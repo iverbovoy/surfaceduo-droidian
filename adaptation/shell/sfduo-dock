@@ -242,11 +242,22 @@ class Dock(Gtk.Window):
         return button
 
     def _on_size_allocate(self, _widget, allocation):
-        """Keep the gap between the two panes over the hinge, at any rotation."""
+        """Keep the gap between the two halves over the hinge, at any rotation.
+
+        Both halves are given the width outright. Letting the box hand out the
+        space instead puts the gap in the wrong place: GtkBox divides the
+        *surplus* equally, not the width, so the half with one more button
+        ends up that much wider and the seam slides off the hinge - 32 px off,
+        in the arrangement this was first noticed with.
+        """
         span = max(allocation.width, allocation.height)
         gap = max(1, round(span * HINGE_FRACTION))
-        if self.seam.get_size_request().width != gap:
+        half = max(1, (allocation.width - gap) // 2)
+        if (self.seam.get_size_request().width != gap
+                or self.left.get_size_request().width != half):
             self.seam.set_size_request(gap, 1)
+            self.left.set_size_request(half, -1)
+            self.right.set_size_request(half, -1)
 
     def _on_clicked(self, _button, info, side):
         app_id = wayland_app_id(info)

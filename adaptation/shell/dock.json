@@ -1,0 +1,10 @@
+{
+  "apps": [
+    "org.gnome.Calls.desktop",
+    "sm.puri.Chatty.desktop",
+    "org.telegram.desktop.desktop",
+    "firefox.desktop",
+    "autocell.desktop",
+    "org.gnome.Settings.desktop"
+  ]
+}
