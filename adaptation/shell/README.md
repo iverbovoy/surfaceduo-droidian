@@ -190,18 +190,35 @@ Two rough edges, both known:
 ### It hides while the phone is locked
 
 The dock is on the overlay layer, which is above the lock screen as well as
-above everything else, so it has to be told. Two sources, because neither is
-enough alone: phosh's `org.gnome.ScreenSaver` `ActiveChanged`, which a
-blank-and-lock sets, and logind's `Lock`/`Unlock` signals, which is what
-`loginctl lock-sessions` and closing the device produce - that path locks the
-screen without the screen saver ever going active.
+above everything else, so it has to be told. The one source that is right in
+every case is logind's `LockedHint` on the seat's own session:
 
-Two traps in the subscribing, both of which look like "the signal never
-arrives":
+- phosh's `org.gnome.ScreenSaver` answers **false** while its lock screen is
+  on the display. Closing the device shows the lock screen without the screen
+  saver ever going active.
+- logind's `Lock`/`Unlock` signals only fire for the path `loginctl
+  lock-sessions` takes, not for closing the device.
+- `LockedHint` is set for both.
+
+The session has to be found, not assumed. `/org/freedesktop/login1/session/
+self` is whichever session the process was started from, which for anything
+launched over ssh is not the one with the screen - and `loginctl
+list-sessions | head -1` is a manager session whose hint is always `no`, which
+is a convincing way to conclude the hint does not work. The session wanted is
+the `wayland` one attached to a seat:
+
+```
+loginctl list-sessions --no-legend | while read s _; do
+  [ "$(loginctl show-session $s -p Type --value)" = wayland ] && echo $s
+done
+```
+
+Two traps in subscribing to D-Bus signals, both of which look like "the signal
+never arrives", and both of which cost a debugging round here:
 
 - **A sender filter drops them.** With a well-known name as the sender, GDBus
-  resolves the owner itself and discards signals until it has - which is
-  exactly the moment a lock arrives in. Filter on interface and path instead.
+  resolves the owner itself and discards signals until it has. Filter on
+  interface and path instead.
 - **A bus connection held in a local variable takes its subscriptions with it
   when it is collected.** Keep it on the instance.
 

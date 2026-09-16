@@ -142,46 +142,69 @@ class Dock(Gtk.Window):
         self._follow_lockscreen()
 
     def _follow_lockscreen(self):
-        """Get out of the way while the session is locked.
+        """Get out of the way while the phone is locked.
 
         The dock is on the overlay layer, which is above the lock screen as
-        well as above everything else, so without this it sits over the clock
-        offering to launch things on a locked phone.
+        well as above everything else, so it has to be told.
 
-        Two sources, because neither is enough on its own: phosh's screen
-        saver property is what a blank-and-lock sets, and logind's Lock signal
-        is what `loginctl lock-sessions` and the fold sensor produce - that
-        one locks the screen without the screen saver ever going active.
+        logind's LockedHint on the seat's own session is the one source that
+        is right in every case. phosh's org.gnome.ScreenSaver answers false
+        while its lock screen is on the display - closing the device shows it
+        without the screen saver ever going active - and the Lock signal only
+        fires for the path `loginctl lock-sessions` takes. The hint is set for
+        all of them.
+
+        The session has to be found rather than assumed: `self` is whichever
+        session the process was started from, which for anything launched over
+        ssh is not the one with the screen. The seat session is the wayland
+        one attached to a seat.
         """
-        def set_locked(locked):
-            self.set_visible(not locked)
+        self.system_bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        self.session_path = self._seat_session()
+        if self.session_path is None:
+            print("sfduo-dock: no graphical session, staying visible",
+                  file=sys.stderr)
+            return
 
-        # Kept on the instance: dropping the last reference to a bus
-        # connection takes its subscriptions with it.
-        session = self.session_bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-        # No sender filter on either: GDBus resolves a well-known sender to
-        # its unique name itself, and until it has, it drops the signals -
-        # which is exactly the window a lock arrives in.
-        session.signal_subscribe(
-            None, "org.gnome.ScreenSaver", "ActiveChanged",
-            "/org/gnome/ScreenSaver", None, Gio.DBusSignalFlags.NONE,
-            lambda *a: set_locked(a[5][0]))
+        self.system_bus.signal_subscribe(
+            None, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+            self.session_path, None, Gio.DBusSignalFlags.NONE,
+            lambda *a: self._read_locked())
+        # A signal that never comes is indistinguishable from a phone that is
+        # simply not locked, so ask as well.
+        GLib.timeout_add_seconds(2, self._read_locked)
+        self._read_locked()
 
-        system = self.system_bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
-        for signal, locked in (("Lock", True), ("Unlock", False)):
-            system.signal_subscribe(
-                None, "org.freedesktop.login1.Session",
-                signal, None, None, Gio.DBusSignalFlags.NONE,
-                lambda *a, locked=locked: set_locked(locked))
-
+    def _seat_session(self):
+        """The path of the session that owns the screen."""
         try:
-            active = session.call_sync(
-                "org.gnome.ScreenSaver", "/org/gnome/ScreenSaver",
-                "org.gnome.ScreenSaver", "GetActive", None, None,
+            sessions = self.system_bus.call_sync(
+                "org.freedesktop.login1", "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager", "ListSessions", None, None,
                 Gio.DBusCallFlags.NONE, 2000, None)
-            set_locked(active[0])
         except GLib.Error:
-            pass          # the shell will tell us on the next change
+            return None
+        for _sid, _uid, _user, seat, path in sessions[0]:
+            if seat and self._session_property(path, "Type") == "wayland":
+                return path
+        return None
+
+    def _session_property(self, path, name):
+        try:
+            value = self.system_bus.call_sync(
+                "org.freedesktop.login1", path,
+                "org.freedesktop.DBus.Properties", "Get",
+                GLib.Variant("(ss)", ("org.freedesktop.login1.Session", name)),
+                None, Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error:
+            return None
+        return value[0]
+
+    def _read_locked(self):
+        locked = self._session_property(self.session_path, "LockedHint")
+        if locked is not None:
+            self.set_visible(not locked)
+        return True
 
     def _pane(self, side, items):
         """Half of the dock, pushed up against the seam.
