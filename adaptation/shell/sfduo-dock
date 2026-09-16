@@ -24,6 +24,7 @@
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -334,7 +335,28 @@ class Dock(Gtk.Window):
         return False
 
 
+def only_one():
+    """Refuse to be the second dock.
+
+    The session autostarts one, and the shell restarting autostarts another
+    while the first is still up - two docks, and the older one holds a stale
+    idea of the session and sits over the lock screen. An abstract socket is
+    the cheapest lock that dies with the process, however it dies.
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind("\0sfduo-dock")
+    except OSError:
+        return None
+    return sock
+
+
 def main():
+    lock = only_one()
+    if lock is None:
+        print("sfduo-dock: already running", file=sys.stderr)
+        return
+
     provider = Gtk.CssProvider()
     provider.load_from_data(CSS)
     Gtk.StyleContext.add_provider_for_screen(

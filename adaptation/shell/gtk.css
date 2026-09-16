@@ -22,16 +22,20 @@
 
 /* ---- top bar and the shade -------------------------------------------- */
 
-/* The clock is a centre child in both the folded bar and the shade it pulls
-   down, so both sit in the bezel; the same class carries them both.
+/* The clock is a centre child of the bar, so it sits in the bezel. A margin
+   on the clock itself moves it, but by an amount that depends on how wide the
+   indicators next to it happen to be: it read 560 with four icons and went
+   off the right edge entirely once the modem added "4G" to them.
+
+   Widening the group on the left is what phosh itself does for a notch, and
+   it is stable - a centre child stays centred until a side child crowds it,
+   and then moves by exactly the overlap. 560 lands the clock on 696 against
+   the right panel's centre of 703.
 
    This is the job gmobile's cutout description was supposed to do, and it did
    do it - at the price of the entire shade, which unfolded to a black screen
    with nothing drawn in it at all. See the README. */
-.phosh-topbar-clock,
-.phosh-topbar-date {
-  margin-left: 478px;
-}
+#top-bar > :first-child { padding-right: 560px; }
 
 /* ---- lock screen ------------------------------------------------------ */
 
