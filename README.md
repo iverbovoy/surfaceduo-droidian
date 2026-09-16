@@ -132,6 +132,28 @@ Full walkthrough: [docs/PORT-GUIDE.md](docs/PORT-GUIDE.md).
   the outer journal; under bursts (`dpkg -i` is enough) jbd2 starves
   and the system stalls for minutes. `data=ordered` survives a 300 MB
   fsync burst with zero errors.
+- **Page poisoning on by default**: Microsoft's defconfig ships
+  `CONFIG_PAGE_POISONING` and `CONFIG_DEBUG_PAGEALLOC` with their
+  `_ENABLE_DEFAULT` set, so every page freed is filled with a pattern,
+  every page allocated is verified byte by byte, and the mapping is torn
+  down and rebuilt each time (`memchr_inv`, `set_memory_valid`,
+  `try_charge` in any perf profile). It taxes every allocation the
+  device makes. `page_poison=off debug_pagealloc=off` on the cmdline
+  (in `kernel-info.mk` since 2026-09) measured 15 points of CPU across a
+  WebKit app's two processes; ABL appends its own arguments, so they
+  arrive - check `/proc/cmdline`.
+- **GL for applications lands on llvmpipe**: `/usr/share/glvnd/egl_vendor.d/`
+  registers only mesa, and mesa has no driver for this kernel, so any
+  client that asks glvnd for EGL (WebKitGTK's WebGL, for one) gets the
+  software rasteriser - eight `llvmpipe` threads - even though
+  `libEGL_adreno.so` is already mapped into the process. A vendor JSON
+  naming `libEGL_libhybris.so.0` and `__EGL_VENDOR_LIBRARY_FILENAMES`
+  pointing at it puts the client on the GPU. Two things go with it: the
+  app must inherit the session environment (`LD_PRELOAD=libtls-padding.so`
+  above all - without it hybris cannot find Android's `libEGL.so` and
+  the process falls to software and dies), and WebKit's dmabuf renderer
+  stays disabled as the session has it: with mesa it measured 3x worse,
+  with hybris it is indistinguishable from shared memory.
 
 ## Open question: video out over USB-C
 
