@@ -43,16 +43,13 @@ HINGE_FRACTION = 84 / 2784
 
 ICON_SIZE = 48            # logical px, the glyph itself
 BUTTON_SIZE = 64          # the box it sits in - equal for every app
-DOCK_HEIGHT = 84          # the strip the dock occupies when a window is open
-PANEL_HEIGHT = 32         # phosh's top bar, left visible over the desktop
+DOCK_HEIGHT = 84          # the strip the dock reserves along the bottom
 CONFIG = os.path.expanduser("~/.config/sfduo/dock.json")
 LAUNCHER = "/usr/local/bin/sfduo-launcher-toggle"   # everything not on the dock
 WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
-IDLE_POLL_MS = 600        # how often to ask whether anything is running
 
 CSS = b"""
-/* Opaque in both states: as a strip it hides what shows through the
-   gap between the panes, and as the desktop it is the desktop. */
+/* Opaque, so that nothing shows through the gap between the two halves. */
 window.sfduo-dock { background-color: #000000; }
 .dock-pane {
   background-color: rgba(18,18,20,0.92);
@@ -140,53 +137,8 @@ class Dock(Gtk.Window):
         self.add(self.row)
 
         self.placed = {}          # app_id -> the panel it was last sent to
-        self.home = None          # whether the dock is currently the desktop
         self.connect("size-allocate", self._on_size_allocate)
         self.show_all()
-        self._set_home(True)
-        threading.Thread(target=self._watch_windows, daemon=True).start()
-
-    def _set_home(self, home):
-        """Cover the desktop, or shrink back to a strip along the bottom.
-
-        With nothing running phosh shows its app grid and has no other state
-        to be in, so the way to a clean desktop is to cover it: anchored to
-        all four edges with no exclusive zone of its own, the dock fills
-        whatever the bars have left and the grid is simply not seen. The
-        moment a window exists the dock becomes a strip again and reserves
-        it, so the window stops above the icons instead of under them.
-        """
-        if home == self.home:
-            return
-        self.home = home
-
-        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.TOP, home)
-        if home:
-            # -1 means "ignore what the other surfaces reserved", which is the
-            # only way to cover the strip phosh keeps for its home bar - the
-            # app grid shows through it otherwise. The top panel is spared by
-            # hand, because a status bar is worth keeping.
-            GtkLayerShell.set_exclusive_zone(self, -1)
-            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, PANEL_HEIGHT)
-        else:
-            GtkLayerShell.set_exclusive_zone(self, DOCK_HEIGHT)
-            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, 0)
-        self.set_size_request(-1, -1 if home else DOCK_HEIGHT)
-        self.row.set_margin_bottom(24 if home else 0)
-
-        style = self.get_style_context()
-        if home:
-            style.add_class("home")
-        else:
-            style.remove_class("home")
-
-    def _watch_windows(self):
-        """Ask, on a beat, whether any application has a window open."""
-        while True:
-            running = subprocess.run(["wlrctl", "toplevel", "find"],
-                                     check=False).returncode == 0
-            GLib.idle_add(self._set_home, not running)
-            time.sleep(IDLE_POLL_MS / 1000)
 
     def _pane(self, side, items):
         """Half of the dock, pushed up against the seam.

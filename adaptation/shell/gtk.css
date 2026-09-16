@@ -42,6 +42,21 @@ phosh-lockscreen label.dim-label {
    still starts anywhere along the bottom edge. */
 #home-bar { margin-left: 478px; }
 
+/* ---- the desktop ------------------------------------------------------ */
+
+/* Phosh has no home screen. With nothing running it shows the app grid, and
+   there is no state in which the device shows a wallpaper and nothing else -
+   which is what this device wants, since its launcher is the dock along the
+   bottom. So the grid is pushed past the bottom edge: it is still there, still
+   reachable by search when the margin is removed, but nothing of it is on the
+   screen and nothing of it can be touched. 1200 is simply more than the
+   panel's 600 logical pixels, in either orientation.
+
+   The alternative was to cover the grid with the dock, which worked and cost
+   the notification shade: pulled down, it unfolded underneath the cover and
+   could not be reached. */
+phosh-app-grid { margin-top: 1200px; }
+
 /* ---- app grid --------------------------------------------------------- */
 
 .phosh-search-bar,
