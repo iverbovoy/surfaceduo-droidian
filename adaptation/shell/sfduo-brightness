@@ -1,0 +1,87 @@
+#!/usr/bin/python3
+# sfduo-brightness: put the brightness back after the panels are powered on.
+#
+# Closing the device powers the two DSI panels down, and bringing them back up
+# leaves each one's backlight at the driver's default, which is full. The
+# shell keeps its own idea of the level and has no reason to write it again,
+# so the screen comes back at 100% every time the device is opened - measured:
+# panel0 and panel1 both at 255 while gnome-settings-daemon still said 60%.
+#
+# So: watch the panels. When one is at full while the shell thinks it should
+# be lower, write the shell's level back. A level of 100% is left alone, which
+# is what makes this safe - at 100% there is nothing to restore, and every
+# other value is a disagreement only the panel reset could have caused.
+#
+# The restoring is done by handing the shell back its own number: writing
+# gnome-settings-daemon's Brightness property, even with the value it already
+# holds, makes it write the hardware again. Going to the hardware directly
+# needs a privilege this has no business holding, and logind's SetBrightness
+# refuses anything that is not the seat's own session.
+
+import sys
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+SCREEN = "org.gnome.SettingsDaemon.Power.Screen"
+PANELS = ("panel0-backlight", "panel1-backlight")
+SYSFS = "/sys/class/backlight/%s/%s"
+POLL_MS = 1000
+
+
+def read(panel, attr):
+    try:
+        with open(SYSFS % (panel, attr)) as fp:
+            return int(fp.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+class Keeper:
+    def __init__(self):
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self.props = Gio.DBusProxy.new_sync(
+            bus, Gio.DBusProxyFlags.NONE, None,
+            "org.gnome.SettingsDaemon.Power",
+            "/org/gnome/SettingsDaemon/Power",
+            "org.freedesktop.DBus.Properties", None)
+
+        GLib.timeout_add(POLL_MS, self.check)
+
+    def wanted(self):
+        """The level the shell believes it is at, as a percentage."""
+        try:
+            value = self.props.call_sync(
+                "Get",
+                GLib.Variant("(ss)", (SCREEN, "Brightness")),
+                Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error:
+            return None
+        return value[0]
+
+    def check(self):
+        percent = self.wanted()
+        if percent is None or percent < 0 or percent >= 100:
+            return True
+
+        reset = any(read(p, "brightness") == read(p, "max_brightness")
+                    for p in PANELS)
+        if not reset:
+            return True
+
+        try:
+            self.props.call_sync(
+                "Set",
+                GLib.Variant("(ssv)", (SCREEN, "Brightness",
+                                       GLib.Variant("i", percent))),
+                Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error as err:
+            print(f"sfduo-brightness: {err.message}", file=sys.stderr)
+        return True
+
+
+if __name__ == "__main__":
+    Keeper()
+    GLib.MainLoop().run()

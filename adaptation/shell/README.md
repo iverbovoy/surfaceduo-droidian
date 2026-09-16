@@ -187,6 +187,57 @@ Two rough edges, both known:
 - `gsettings set sm.puri.phoc auto-maximize false` is what lets a window stay
   tiled rather than being forced back to full width.
 
+### It hides while the phone is locked
+
+The dock is on the overlay layer, which is above the lock screen as well as
+above everything else, so it has to be told. Two sources, because neither is
+enough alone: phosh's `org.gnome.ScreenSaver` `ActiveChanged`, which a
+blank-and-lock sets, and logind's `Lock`/`Unlock` signals, which is what
+`loginctl lock-sessions` and closing the device produce - that path locks the
+screen without the screen saver ever going active.
+
+Two traps in the subscribing, both of which look like "the signal never
+arrives":
+
+- **A sender filter drops them.** With a well-known name as the sender, GDBus
+  resolves the owner itself and discards signals until it has - which is
+  exactly the moment a lock arrives in. Filter on interface and path instead.
+- **A bus connection held in a local variable takes its subscriptions with it
+  when it is collected.** Keep it on the instance.
+
+## Brightness
+
+The screen came back at 100% every time the device was opened, and there were
+two separate reasons.
+
+The first is the ambient light sensor: `gsettings get
+org.gnome.settings-daemon.plugins.power ambient-enabled` was `true`, there is
+a real sensor behind `net.hadess.SensorProxy`, and with an empty
+`ambient-brightness-points` curve the level it computed after every unlock was
+the maximum. Setting `ambient-enabled false` is the whole fix.
+
+The second outlives that one. Closing the device powers the two DSI panels
+down, and bringing them back up leaves each panel's backlight at the driver's
+default, which is full: `panel0-backlight` and `panel1-backlight` both at 255
+while gnome-settings-daemon still said 60%. Nothing re-applies it, because as
+far as the shell is concerned nothing changed. `sfduo-brightness` watches the
+two panels and, when one is at full while the shell believes otherwise, writes
+the shell's own number back to it - handing gsd its current value is enough to
+make it write the hardware again. A level of 100% is left alone, which is what
+makes it safe.
+
+Which device to watch matters. There are three:
+
+```
+backlight         pm8150l WLED, max 4095 - not wired to anything here, pinned at full
+panel0-backlight  the left panel,  max 255
+panel1-backlight  the right panel, max 255
+```
+
+The Duo's panels are OLED and are driven by DCS commands through the mdss
+nodes, so `panel0`/`panel1` are the real ones. Reading `backlight` tells you
+nothing: it says 4095 no matter what the screen is doing.
+
 ## What this does not fix
 
 Phosh has no home screen. When the last window closes it shows the app grid,
