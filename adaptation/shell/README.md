@@ -313,6 +313,15 @@ rather than 4G. `0004` is unfinished work on a top bar per panel, inert
 without a full-height cutout in gmobile's device description, and is not in
 the packaged binary.
 
+While the phone is locked the dock is not hidden - a hidden layer surface is
+a destroyed one, and takes a few frames to come back - it steps down from the
+overlay layer to the top one. The lock screen is on the overlay layer and
+covers everything beneath it, which is all "hidden" ever had to mean. It also
+lets the launch curtain be raised *under* the lock screen, over a window
+nobody has placed yet (the first-run wizard, on a new install): the unlock
+signal arrives after the lock screen has already gone, so a curtain raised in
+answer to it is always a moment late, and one that is already there is not.
+
 The session has to be found, not assumed. `/org/freedesktop/login1/session/
 self` is whichever session the process was started from, which for anything
 launched over ssh is not the one with the screen - and `loginctl

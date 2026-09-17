@@ -769,6 +769,20 @@ rm -f /etc/systemd/system/multi-user.target.wants/sfduo-powerkey.service \
 # from scratch had a failed slot guard on its first real boot.
 mkdir -p /var/lib/droidian
 touch /var/lib/droidian/lxc_attach_workaround
+# A first install comes up at full brightness - the panels' power-on default,
+# on two OLEDs a hand's width from the face. Seed systemd-backlight's saved
+# state at about a third, and set it now as well, so the value it saves at
+# the first shutdown is the same one. Only where nothing has been saved yet:
+# on a device that has been used, the owner's level is left alone.
+for p in panel0-backlight panel1-backlight; do
+    f="/var/lib/systemd/backlight/platform-ae00000.qcom,mdss_mdp:backlight:$p"
+    if [ ! -e "$f" ]; then
+        mkdir -p /var/lib/systemd/backlight
+        echo 90 > "$f"
+        [ -w "/sys/class/backlight/$p/brightness" ] && \
+            echo 90 > "/sys/class/backlight/$p/brightness" || true
+    fi
+done
 # plymouth takes DRM master on card0 and the vendor composer, which opened
 # the device meanwhile, is left without it for good: black panels after the
 # Debian logo (the README's plymouth trap). The composer watchdog repairs it,

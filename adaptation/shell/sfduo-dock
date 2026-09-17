@@ -143,6 +143,30 @@ def desktop_info(desktop_id):
         return None
 
 
+def process_age(executable):
+    """Seconds since the process whose argv[0] is `executable` started, or
+    None if there is none."""
+    try:
+        ticks = os.sysconf("SC_CLK_TCK")
+        with open("/proc/uptime") as fp:
+            uptime = float(fp.read().split()[0])
+    except (OSError, ValueError):
+        return None
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fp:
+                if fp.read().split(b"\0")[0] != executable:
+                    continue
+            with open(f"/proc/{pid}/stat") as fp:
+                start = int(fp.read().rsplit(")", 1)[1].split()[19])
+            return uptime - start / ticks
+        except (OSError, IndexError, ValueError):
+            continue
+    return None
+
+
 def debug(message):
     """SFDUO_DOCK_DEBUG=1 in the environment: say what the gestures did."""
     if os.environ.get("SFDUO_DOCK_DEBUG"):
@@ -328,6 +352,7 @@ class Dock(Gtk.Window):
         self.animation = None     # tick id of the grid's motion
         self.move = None          # tick id of the dock's crossing
         self.placed = self._load_placed()   # app_id -> the panel it was sent to
+        self.locked = False       # see _set_locked
         self.placing = 0          # launches of our own still being placed
         self.adopted = set()      # windows we did not launch and have dealt with
         self.connect("size-allocate", self._on_size_allocate)
@@ -371,6 +396,13 @@ class Dock(Gtk.Window):
         the dock - it is the only record there is. The compositor will say
         which windows exist but not where they are."""
         try:
+            # A record older than the compositor describes windows that died
+            # with the last one: everything on the screen now is new, and
+            # opened across both panels, whatever the file says. Believed, it
+            # left the first-run wizard untiled after a restart of the shell.
+            age = process_age(b"/usr/bin/phoc")
+            if age is not None and time.time() - os.path.getmtime(PLACED) > age:
+                return {}
             with open(PLACED) as fp:
                 return {k: v for k, v in json.load(fp).items() if v in ("left", "right")}
         except (OSError, ValueError):
@@ -452,11 +484,27 @@ class Dock(Gtk.Window):
         one when both are free. Once per window: if the chord cannot reach it
         it stays as it opened, rather than being chased every beat."""
         self.adopted &= set(ids)
-        if self.placing or not self.get_visible():      # our launch, or locked
+        self.last_ids = list(ids)
+        if self.locked:
+            GLib.idle_add(self._cover_strangers)        # see _set_locked
             return
-        for app_id in ids:
-            if app_id in self.placed or app_id in self.adopted:
-                continue
+        if self.placing:                                # a launch of our own
+            return
+        strangers = [a for a in ids if a not in self.placed and a not in self.adopted]
+        if not strangers:
+            if self.curtain_up and not self.placing:    # held for nothing
+                GLib.idle_add(self._lift_curtain)
+            return
+        # It is already on the screen, across both panels; the move to one of
+        # them happens behind the curtain all the same.
+        GLib.idle_add(lambda: self._raise_curtain() or False)
+        try:
+            self._adopt(strangers)
+        finally:
+            GLib.timeout_add(CURTAIN_SETTLE, self._lift_curtain)
+
+    def _adopt(self, strangers):
+        for app_id in strangers:
             self.adopted.add(app_id)
             taken = set(self.placed.values())
             side = "left" if taken == {"right"} else "right"
@@ -605,7 +653,9 @@ class Dock(Gtk.Window):
         gap = max(1, round(width * HINGE_FRACTION))
         half = (width - gap) // 2
         top = STAGE_HEIGHT - DOCK_HEIGHT
-        if self.progress > 0.0 or getattr(self, "curtain_up", False):
+        if self.locked:
+            region = cairo.Region()         # nothing: the lock screen's touches are its own
+        elif self.progress > 0.0 or getattr(self, "curtain_up", False):
             region = cairo.Region(cairo.RectangleInt(0, 0, width, STAGE_HEIGHT))
         else:
             region = cairo.Region()
@@ -809,25 +859,7 @@ class Dock(Gtk.Window):
     @staticmethod
     def _shell_age():
         """Seconds since phosh started, or None if it is not running."""
-        try:
-            ticks = os.sysconf("SC_CLK_TCK")
-            with open("/proc/uptime") as fp:
-                uptime = float(fp.read().split()[0])
-            for pid in os.listdir("/proc"):
-                if not pid.isdigit():
-                    continue
-                try:
-                    with open(f"/proc/{pid}/cmdline", "rb") as fp:
-                        if fp.read().split(b"\0")[0] != b"/usr/libexec/phosh":
-                            continue
-                    with open(f"/proc/{pid}/stat") as fp:
-                        start = int(fp.read().rsplit(")", 1)[1].split()[19])
-                    return uptime - start / ticks
-                except (OSError, IndexError, ValueError):
-                    continue
-        except (OSError, ValueError):
-            pass
-        return None
+        return process_age(b"/usr/libexec/phosh")
 
     def _assume_locked_at_start(self):
         """Tell logind what a stock phosh does not: that it came up locked.
@@ -862,6 +894,48 @@ class Dock(Gtk.Window):
         except GLib.Error as err:
             print(f"sfduo-dock: could not set LockedHint: {err.message}",
                   file=sys.stderr)
+
+    def _set_locked(self, locked):
+        """Step down a layer while the phone is locked - and stay there.
+
+        The window used to be hidden outright, and a hidden layer surface is
+        a destroyed one: shown again at the unlock it took a few frames to
+        come back, and whatever it meant to cover - a window still across
+        both panels - had been seen by then. Waiting for the unlock at all is
+        too late: the signal arrives after the lock screen has gone.
+
+        So while locked the dock moves from the overlay layer to the top one.
+        The lock screen is on the overlay layer and covers everything beneath
+        it, the dock included, which is all "hidden" ever had to mean - and a
+        curtain raised down there, over a window nobody has placed yet, is
+        already in place when the lock screen comes off it.
+        """
+        if locked == self.locked:
+            return
+        self.locked = locked
+        if locked:
+            if self.progress > 0.0:
+                self._stop_animation()
+                self._set_progress(0.0)
+            GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)
+            self._cover_strangers()
+        else:
+            GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+            if self.curtain_up:
+                # held until now; from here it is an ordinary curtain, lifted
+                # by the adoption on the next beat or by the clock
+                self.curtain_timer = GLib.timeout_add_seconds(
+                    WAIT_TIMEOUT + 2, self._lift_curtain)
+        self._shape()
+
+    def _cover_strangers(self):
+        """Locked, with a window on the screen that nobody has placed: keep
+        the curtain over it, under the lock screen, until the unlock."""
+        ids = getattr(self, "last_ids", [])
+        if self.locked and not self.curtain_up and \
+                any(a not in self.placed and a not in self.adopted for a in ids):
+            self._raise_curtain(hold=True)
+        return False
 
     def _shell_is_up(self):
         """True once phosh owns org.gnome.ScreenSaver - see above."""
@@ -914,7 +988,7 @@ class Dock(Gtk.Window):
             elif self._screen_saver_active():
                 locked = True
             if locked is not None:
-                self.set_visible(not locked)
+                self._set_locked(bool(locked))
         except Exception as err:          # noqa: BLE001 - see docstring
             print(f"sfduo-dock: lock state: {err}", file=sys.stderr)
         return True
@@ -1164,9 +1238,9 @@ class Dock(Gtk.Window):
         self.curtain_timer = None
         return curtain
 
-    def _raise_curtain(self, info, side):
+    def _raise_curtain(self, info=None, side=None, hold=False):
         for where, icon in self.curtain_icons.items():
-            gicon = info.get_icon() if where == side else None
+            gicon = info.get_icon() if info is not None and where == side else None
             if gicon is not None:
                 icon.set_from_gicon(gicon, Gtk.IconSize.DIALOG)
             else:
@@ -1176,10 +1250,14 @@ class Dock(Gtk.Window):
         self.curtain.get_style_context().add_class("up")
         self.curtain_up = True
         self._shape()
-        # Whatever happens to the launch, the curtain does not stay.
+        # Whatever happens to the launch, the curtain does not stay - unless
+        # it is being held under the lock screen, where nobody can see it and
+        # the unlock takes over.
         if self.curtain_timer is not None:
             GLib.source_remove(self.curtain_timer)
-        self.curtain_timer = GLib.timeout_add_seconds(WAIT_TIMEOUT + 2, self._lift_curtain)
+            self.curtain_timer = None
+        if not hold:
+            self.curtain_timer = GLib.timeout_add_seconds(WAIT_TIMEOUT + 2, self._lift_curtain)
 
     def _lift_curtain(self):
         if self.curtain_timer is not None:
