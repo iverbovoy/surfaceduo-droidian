@@ -1,0 +1,15 @@
+--- a/src/home.c
++++ b/src/home.c
+@@ -518,6 +518,12 @@
+ 
+   phosh_layer_surface_set_kbd_interactivity (PHOSH_LAYER_SURFACE (self), kbd_interactivity);
+   update_drag_handle (self, TRUE);
++  /* Keyboard interactivity is double-buffered state: without a commit the
++   * compositor never sees it. The top panel commits at this point; home
++   * left it to the next redraw, and a folded home with nothing to draw never
++   * has one - it kept the keyboard for good, no window could take the focus,
++   * and nothing that acts on the focused window did anything. */
++  phosh_layer_surface_wl_surface_commit (PHOSH_LAYER_SURFACE (self));
+ }
+ 
+ 

@@ -298,7 +298,7 @@ both, because which comes first depends on how long the shell took to start
 start that is still most of a minute after the lock screen is drawn, so the
 dock also treats "nobody owns `org.gnome.ScreenSaver` yet" as locked.
 
-The package carries the patched binary (0001 and 0002 only) and
+The package carries the patched binary (0001-0003, not the unfinished 0004) and
 `sfduo-phosh-install` puts it in place at install time - but only beside
 exactly the phosh version it was built for; on any other it says so and
 leaves the packaged shell alone. `sfduo-phosh-install --restore` puts the
@@ -309,8 +309,9 @@ package was built from, configured as the package is (`--prefix=/usr
 --libdir=lib/aarch64-linux-gnu`; a `/usr/local` build looks for its plugins in
 the wrong place). The binary replaces `/usr/libexec/phosh`; the packaged one
 is kept beside it as `phosh.stock`. `0002` makes the status bar say LTE
-rather than 4G. `0003` is unfinished work on a top bar per panel, inert
-without a full-height cutout in gmobile's device description.
+rather than 4G. `0004` is unfinished work on a top bar per panel, inert
+without a full-height cutout in gmobile's device description, and is not in
+the packaged binary.
 
 The session has to be found, not assumed. `/org/freedesktop/login1/session/
 self` is whichever session the process was started from, which for anything
@@ -333,6 +334,34 @@ never arrives", and both of which cost a debugging round here:
   interface and path instead.
 - **A bus connection held in a local variable takes its subscriptions with it
   when it is collected.** Keep it on the instance.
+
+### When a launched app opens across both panels
+
+Placement depends on the new window taking the focus, and for a day of this
+port's life nothing could: every launch logged `Layer surface has focus, not
+focusing view yet` in phoc, `wlrctl toplevel find … state:active` never
+matched, and the tiling chord went nowhere. Reboots "fixed" it for a launch or
+two, which made it look like stale session state. It was not.
+
+phosh's home overview takes keyboard interactivity while it is unfolded, and
+gives it up when the first window appears - `set_keyboard_interactivity(0)` -
+**and then never commits its surface**. That state is double-buffered; without
+a commit the compositor never sees it, and keeps the keyboard on a home that
+is folded and out of sight. The top panel commits at the same point in its
+own code; home left it to the next redraw, and under this shell a folded home
+has nothing to redraw. A `WAYLAND_DEBUG=1` dump of phosh shows it plainly: the
+request, then zero commits of that `wl_surface` for as long as you care to
+wait. Reproduces on a clean Droidian 101 image with a stock phosh:
+
+```
+systemctl restart phosh            # unlock, then, in the session's environment:
+gnome-control-center &
+wlrctl toplevel find app_id:org.gnome.Settings state:active; echo $?   # 1, forever
+```
+
+`phosh-patches/0003` is the one missing line. With it the same sequence
+answers 0. The dock says so in the journal when it meets the unpatched
+behaviour ("never took focus - a layer surface is holding the keyboard").
 
 ### Seeing what a gesture did
 
