@@ -281,7 +281,16 @@ session; the startup lock happens before either, and nothing replays it. So
 dock sat on the lock screen after every reboot. It hid for a whole day of
 development, because every lock *after* startup works.
 
-`phosh-patches/0001` makes phosh say its state at both of those moments -
+The dock covers for a stock phosh itself: logind lets a session's owner set
+the hint, and the dock runs as that user, so when it starts beside a shell
+less than 45 seconds old it sets `LockedHint` to true - phosh always comes up
+locked - and phosh clears it at the first unlock like any other. Checked on a
+clean Droidian 101 image with its own phosh: the hint reads `yes` six seconds
+after a shell restart. The cost: a user who unlocks before a slow-starting
+phosh is listening to itself leaves the hint stuck, and the dock away, until
+the next lock and unlock.
+
+`phosh-patches/0001` fixes it at the source and makes phosh say its state at both of those moments -
 both, because which comes first depends on how long the shell took to start
 (1 s on a warm restart, 10 s on a bad one, and the order flips). On a slow
 start that is still most of a minute after the lock screen is drawn, so the

@@ -692,7 +692,7 @@ Architecture: arm64
 Maintainer: Ivan Verbovoy <ivanverbovoy@gmail.com>
 Section: misc
 Priority: optional
-Recommends: python3-gi, gir1.2-gtk-3.0, gir1.2-gtklayershell-0.1, wlrctl, wtype, dconf-cli
+Recommends: python3-gi, python3-gi-cairo, python3-cairo, gir1.2-gtk-3.0, gir1.2-gtklayershell-0.1, wlrctl, wtype, dconf-cli
 Description: Surface Duo 1 adaptation for Droidian (sfduo)
  USB RNDIS gadget access (172.16.42.1, telnet fallback) and, as bring-up
  progresses, touch / wifi / sensor plumbing for the Microsoft Surface Duo 1.
@@ -724,6 +724,18 @@ rm -f /etc/systemd/system/bluebinder.service \
 # no units, nothing (found by installing on a clean Droidian 101 image).
 # The script is safe to run early; bluebinder runs it again before it starts.
 /usr/local/sbin/sfduo-bt-address || true
+# Index the audio modules now rather than on the audio unit's first run. The
+# kernel autoloads them early in boot (~37 s) once depmod knows them, and they
+# have to be loaded BEFORE the ADSP comes up: loaded after it, they miss
+# "Q6 is Up" and the sound card never registers for that boot. Measured on a
+# clean image - the first boot after an install had no sound, every later
+# one did.
+if [ -d /usr/lib/sfduo/audio ]; then
+    KVER=$(uname -r)
+    mkdir -p "/lib/modules/$KVER"
+    cp -un /usr/lib/sfduo/audio/*.ko "/lib/modules/$KVER/" 2>/dev/null || true
+    depmod -a 2>/dev/null || true
+fi
 # pre-0.12 installs shipped an experimental wayfire session; its units
 # are gone from the package - drop the leftover enable symlink
 rm -f /etc/systemd/system/multi-user.target.wants/sfduo-powerkey.service \

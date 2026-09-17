@@ -49,7 +49,11 @@ for tool in ("wlrctl", "wtype"):
                for d in os.environ.get("PATH", "/usr/bin").split(":")):
         print(SETUP_HINT % tool, file=sys.stderr)
         sys.exit(0)
-import cairo  # noqa: E402
+try:
+    import cairo  # noqa: E402
+except ImportError:
+    print(SETUP_HINT % "python3-cairo", file=sys.stderr)
+    sys.exit(0)
 from gi.repository import Gdk, Gio, GLib, Gtk, GtkLayerShell  # noqa: E402
 
 # The hinge as a fraction of the panel span: 84 physical pixels of 2784. Taken
@@ -59,6 +63,7 @@ HINGE_FRACTION = 84 / 2784
 
 ICON_SIZE = 48            # logical px, the glyph itself
 BUTTON_SIZE = 64          # the box it sits in - equal for every app
+SHELL_YOUNG = 45          # s: a phosh younger than this is still behind its first lock screen
 DOCK_HEIGHT = 84          # the strip the dock reserves along the bottom
 CONFIG = os.path.expanduser("~/.config/sfduo/dock.json")
 PLACED = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-placed.json")
@@ -675,6 +680,7 @@ class Dock(Gtk.Window):
         self.system_bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
         self.session_bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         self.session_path = None
+        self.assumed_locked = False
         self.session_bus.signal_subscribe(
             None, "org.gnome.ScreenSaver", "ActiveChanged",
             "/org/gnome/ScreenSaver", None, Gio.DBusSignalFlags.NONE,
@@ -725,6 +731,63 @@ class Dock(Gtk.Window):
             return None
         return value[0]
 
+    @staticmethod
+    def _shell_age():
+        """Seconds since phosh started, or None if it is not running."""
+        try:
+            ticks = os.sysconf("SC_CLK_TCK")
+            with open("/proc/uptime") as fp:
+                uptime = float(fp.read().split()[0])
+            for pid in os.listdir("/proc"):
+                if not pid.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{pid}/cmdline", "rb") as fp:
+                        if fp.read().split(b"\0")[0] != b"/usr/libexec/phosh":
+                            continue
+                    with open(f"/proc/{pid}/stat") as fp:
+                        start = int(fp.read().rsplit(")", 1)[1].split()[19])
+                    return uptime - start / ticks
+                except (OSError, IndexError, ValueError):
+                    continue
+        except (OSError, ValueError):
+            pass
+        return None
+
+    def _assume_locked_at_start(self):
+        """Tell logind what a stock phosh does not: that it came up locked.
+
+        phosh always starts behind its lock screen and reports only changes,
+        so the first thing logind hears is the first unlock, and LockedHint
+        reads "no" over the lock screen until then. logind lets a session's
+        owner set the hint, and the dock runs as that user - so, started
+        alongside a young shell, it sets it. phosh clears it on unlock like
+        any other. A shell that has been up a while is left alone: the dock
+        restarted on its own, and the hint is already the truth.
+
+        The cost, measured against leaving it: if the user unlocks before a
+        slow-starting phosh is listening to itself, the hint sticks and the
+        dock stays away until the next lock and unlock. The port's patched
+        phosh has neither problem.
+        """
+        if self.assumed_locked or self.session_path is None:
+            return
+        age = self._shell_age()
+        if age is None:
+            return                      # no shell yet - look again next beat
+        self.assumed_locked = True      # one decision per dock, either way
+        if age > SHELL_YOUNG:
+            return
+        try:
+            self.system_bus.call_sync(
+                "org.freedesktop.login1", self.session_path,
+                "org.freedesktop.login1.Session", "SetLockedHint",
+                GLib.Variant("(b)", (True,)), None,
+                Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error as err:
+            print(f"sfduo-dock: could not set LockedHint: {err.message}",
+                  file=sys.stderr)
+
     def _shell_is_up(self):
         """True once phosh owns org.gnome.ScreenSaver - see above."""
         try:
@@ -760,6 +823,7 @@ class Dock(Gtk.Window):
         try:
             if self.session_path is None:
                 self.session_path = self._seat_session()
+            self._assume_locked_at_start()
             locked = None
             if self.session_path is not None:
                 locked = self._session_property(self.session_path, "LockedHint")

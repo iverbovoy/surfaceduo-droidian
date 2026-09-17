@@ -22,3 +22,15 @@ if [ -x /usr/sbin/sshd ]; then
 fi
 
 touch /var/lib/sfduo-ssh-installed
+sync
+
+# One reboot, once. The adaptation arrives too late in this boot to do its
+# job: the ADSP ordering, the audio modules' early autoload and the slot
+# guard all belong to the start of a boot, and a system left running
+# without them has no sound and, measured, can freeze within minutes. The
+# flag above is written first, so this cannot loop.
+if dpkg-query -W -f='${Status}' adaptation-droidian-surfaceduo 2>/dev/null \
+        | grep -q 'install ok installed'; then
+    echo "sfduo: adaptation installed - rebooting once to start with it" >&2
+    systemctl --no-block reboot
+fi
