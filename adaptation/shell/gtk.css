@@ -66,6 +66,13 @@ phosh-lockscreen scrolledwindow {
   margin-right: 478px;
 }
 
+/* The arrow above the hint, and the whole passcode page - status line, the
+   entry, the keypad and the button - which is one centred box. */
+.phosh-lockscreen-arrow,
+.phosh-lockscreen-unlocker {
+  margin-left: 478px;
+}
+
 /* The hint under the arrow has no name of its own, only "dim-label" - and so
    does the artist line in the media player, which shares this screen, hidden
    in a revealer. A revealer that shows nothing still asks for its child's
