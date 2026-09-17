@@ -335,6 +335,16 @@ never arrives", and both of which cost a debugging round here:
 - **A bus connection held in a local variable takes its subscriptions with it
   when it is collected.** Keep it on the instance.
 
+### Windows the dock did not launch
+
+The shell's own grid, a notification, the first-run wizard, a terminal: a
+window nobody asked the dock for opens across both panels like any other. On
+its next beat the dock adopts it - focuses it and tiles it onto the free
+panel, the right one when both are free - once per window; if the chord
+cannot reach it, it stays as it opened rather than being chased. On an
+install from scratch the first thing on the screen is GNOME's Initial Setup,
+and this is what puts it on one panel.
+
 ### The launch curtain
 
 A new window maps at its own size, across both panels, and can only be tiled

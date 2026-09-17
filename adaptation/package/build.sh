@@ -760,6 +760,22 @@ fi
 # are gone from the package - drop the leftover enable symlink
 rm -f /etc/systemd/system/multi-user.target.wants/sfduo-powerkey.service \
       /etc/systemd/system/graphical.target.wants/wayfire-duo.service
+# android_bootctl reaches the boot HAL through lxc-attach, and on this device
+# lxc-attach swallows the last argument unless Droidian's wrapper is told to
+# pad it - this file is how it is told. Without it every bootctl call is an
+# empty command: the slot guard fails, no boot is ever marked successful, and
+# the bootloader's retry counter runs down until it switches slots. It was
+# made by hand on the development device in July and forgotten; an install
+# from scratch had a failed slot guard on its first real boot.
+mkdir -p /var/lib/droidian
+touch /var/lib/droidian/lxc_attach_workaround
+# plymouth takes DRM master on card0 and the vendor composer, which opened
+# the device meanwhile, is left without it for good: black panels after the
+# Debian logo (the README's plymouth trap). The composer watchdog repairs it,
+# but only a couple of minutes into the boot - measured on an install from
+# scratch, where the screen came up at 3.5 minutes instead of 1.5. Without
+# plymouth there is no race. The splash is all that is lost.
+ln -sf /dev/null /etc/systemd/system/plymouth-start.service
 # 0.13: the slot guard and the modem unit used to be copied into /etc by
 # hand; a unit there shadows the packaged one forever.
 rm -f /etc/systemd/system/sfduo-slot-guard.service \

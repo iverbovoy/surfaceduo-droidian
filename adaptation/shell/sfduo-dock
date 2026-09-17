@@ -133,6 +133,16 @@ scrollbar { opacity: 0; }
 """
 
 
+def desktop_info(desktop_id):
+    """The app behind a desktop id, or None. PyGObject raises TypeError where
+    the C constructor returns NULL - an id with no desktop file, which is any
+    window of something installed without one."""
+    try:
+        return Gio.DesktopAppInfo.new(desktop_id)
+    except TypeError:
+        return None
+
+
 def debug(message):
     """SFDUO_DOCK_DEBUG=1 in the environment: say what the gestures did."""
     if os.environ.get("SFDUO_DOCK_DEBUG"):
@@ -149,7 +159,7 @@ def favourites():
 
     apps = []
     for app_id in ids:
-        info = Gio.DesktopAppInfo.new(app_id)
+        info = desktop_info(app_id)
         if info is not None:
             apps.append(info)
     return apps
@@ -318,6 +328,8 @@ class Dock(Gtk.Window):
         self.animation = None     # tick id of the grid's motion
         self.move = None          # tick id of the dock's crossing
         self.placed = self._load_placed()   # app_id -> the panel it was sent to
+        self.placing = 0          # launches of our own still being placed
+        self.adopted = set()      # windows we did not launch and have dealt with
         self.connect("size-allocate", self._on_size_allocate)
         self.connect("map", lambda *_a: self._shape())
         self.show_all()
@@ -405,6 +417,10 @@ class Dock(Gtk.Window):
                     for a in gone:
                         self.placed.pop(a, None)
                     self._save_placed()
+                # The grid, a notification, the first-run wizard, a terminal:
+                # a window nobody asked the dock for opens across both panels
+                # like any other, and has the same right to one of its own.
+                self._adopt_strangers(ids)
                 busy = set()
                 running = {}
                 for app_id in ids:
@@ -430,6 +446,32 @@ class Dock(Gtk.Window):
             except Exception as err:      # noqa: BLE001 - keep the beat going
                 print(f"sfduo-dock: windows: {err}", file=sys.stderr)
             time.sleep(WATCH_MS / 1000)
+
+    def _adopt_strangers(self, ids):
+        """Put a window the dock did not launch on the free panel - the right
+        one when both are free. Once per window: if the chord cannot reach it
+        it stays as it opened, rather than being chased every beat."""
+        self.adopted &= set(ids)
+        if self.placing or not self.get_visible():      # our launch, or locked
+            return
+        for app_id in ids:
+            if app_id in self.placed or app_id in self.adopted:
+                continue
+            self.adopted.add(app_id)
+            taken = set(self.placed.values())
+            side = "left" if taken == {"right"} else "right"
+            debug(f"adopting {app_id} onto the {side} panel")
+            subprocess.run(["wlrctl", "toplevel", "focus", f"app_id:{app_id}"],
+                           check=False)
+            if not self._wait_for_window(app_id):
+                print(f"sfduo-dock: {app_id} never took focus - left where it opened",
+                      file=sys.stderr)
+                continue
+            key = "Left" if side == "left" else "Right"
+            if subprocess.run(["wtype", "-M", "logo", "-k", key, "-m", "logo"],
+                              check=False).returncode == 0:
+                self.placed[app_id] = side
+                self._save_placed()
 
     def _set_running(self, running):
         """running: app_id -> minimized. Dots on favourites, buttons for the
@@ -483,7 +525,7 @@ class Dock(Gtk.Window):
 
     @staticmethod
     def _info_for(app_id):
-        info = Gio.DesktopAppInfo.new(app_id + ".desktop")
+        info = desktop_info(app_id + ".desktop")
         if info is not None:
             return info
         for candidate in Gio.AppInfo.get_all():
@@ -1068,7 +1110,7 @@ class Dock(Gtk.Window):
         try:
             with open(path) as fp:
                 desktop_id, side = fp.read().split()[:2]
-            info = Gio.DesktopAppInfo.new(desktop_id)
+            info = desktop_info(desktop_id)
         except (OSError, ValueError, TypeError) as err:
             print(f"sfduo-dock: {path}: {err}", file=sys.stderr)
             return
@@ -1091,6 +1133,7 @@ class Dock(Gtk.Window):
             print(f"sfduo-dock: {info.get_id()}: {err.message}", file=sys.stderr)
             return
         self._raise_curtain(info, side)
+        self.placing += 1
         threading.Thread(target=self._place_and_reveal,
                          args=(info, app_id, side, before), daemon=True).start()
 
@@ -1156,6 +1199,7 @@ class Dock(Gtk.Window):
         except Exception as err:          # noqa: BLE001 - the curtain must lift
             print(f"sfduo-dock: placing {info.get_id()}: {err}", file=sys.stderr)
             placed = False
+        self.placing -= 1
         # A tiled window needs a moment to lay itself out at its new size.
         GLib.timeout_add(CURTAIN_SETTLE if placed else 0, self._lift_curtain)
 
