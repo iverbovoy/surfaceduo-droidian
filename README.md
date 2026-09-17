@@ -151,6 +151,19 @@ Full walkthrough: [docs/PORT-GUIDE.md](docs/PORT-GUIDE.md).
   (in `kernel-info.mk` since 2026-09) measured 15 points of CPU across a
   WebKit app's two processes; ABL appends its own arguments, so they
   arrive - check `/proc/cmdline`.
+- **The defconfig is Microsoft's debug one**: page poisoning is one of 96
+  options by which `vendor/surfaceduo_defconfig` - what this port builds -
+  differs from `vendor/surfaceduo-perf_defconfig` in the same tree, and
+  nearly all of them are debugging: `SLUB_DEBUG_ON` (on the device every
+  slab cache reads `sanity_checks`, `red_zone`, `poison` and `store_user`
+  = 1), `DEBUG_OBJECTS`, `DEBUG_KMEMLEAK`, `DEBUG_SPINLOCK`,
+  `DEBUG_MUTEXES`, `DEBUG_LIST`, fault injection. What it costs, measured:
+  `systemctl daemon-reload` takes 26-30 s, every time, with pid 1 spending
+  it in `kmem_cache_alloc`/`kmem_cache_free` and spinlock release; an ssh
+  login that has to start a user manager takes about 27 s; a package
+  postinst that enables a dozen units took nine minutes. Building the perf
+  config (plus this port's fragment) is the fix and has not been done or
+  tested yet; `slub_debug=-` on the cmdline would be the cheap half of it.
 - **GL for applications lands on llvmpipe**: `/usr/share/glvnd/egl_vendor.d/`
   registers only mesa, and mesa has no driver for this kernel, so any
   client that asks glvnd for EGL (WebKitGTK's WebGL, for one) gets the
