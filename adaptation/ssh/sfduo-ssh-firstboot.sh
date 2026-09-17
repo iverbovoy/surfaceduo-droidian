@@ -14,6 +14,11 @@ if ls /var/cache/sfduo-ssh/*.deb >/dev/null 2>&1; then
 fi
 
 systemctl daemon-reload
-systemctl enable --now ssh.service
+# The 101 image ships no sshd, and without the offline bundle there is none
+# to enable. Failing here (set -e) skipped the flag below, and the whole
+# bundle was installed again on every boot.
+if [ -x /usr/sbin/sshd ]; then
+    systemctl enable --now ssh.service || true
+fi
 
 touch /var/lib/sfduo-ssh-installed

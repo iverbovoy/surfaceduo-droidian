@@ -207,6 +207,24 @@ printf '[Unit]\nAfter=sfduo-audio.service\n\n[Service]\nExecCondition=/usr/local
 # gadget afterwards. Requires v6 kernel for the forced-suspend fallback.
 # droidian ships AllowSuspend=no (10-droidian-sleep.conf) - the verb is
 # refused before the kernel is even asked. Our 99- wins the sort order.
+# board-address: the Duo has no bdaddr property, so bluebinder_post.sh needs
+# the file. Derived from the wifi MAC + 1, whenever wlan0 first exists.
+cat > "$PKG/usr/local/sbin/sfduo-bt-address" <<'BTADDR'
+#!/bin/sh
+# Write /var/lib/bluetooth/board-address once, from wlan0's MAC + 1.
+F=/var/lib/bluetooth/board-address
+[ -s "$F" ] && exit 0
+WMAC=$(cat /sys/class/net/wlan0/address 2>/dev/null) || exit 0
+[ -n "$WMAC" ] || exit 0
+head=$(echo "${WMAC%:*}" | tr a-f A-F)
+last=$(printf '%02X' $(( (0x${WMAC##*:} + 1) & 0xff )))
+mkdir -p /var/lib/bluetooth
+printf '%s:%s\n' "$head" "$last" > "$F"
+chmod 644 "$F"
+BTADDR
+chmod 755 "$PKG/usr/local/sbin/sfduo-bt-address"
+printf '[Service]\nExecStartPre=-/usr/local/sbin/sfduo-bt-address\n' \
+    > "$PKG/etc/systemd/system/bluebinder.service.d/15-sfduo-bt-address.conf"
 # bluebinder: chip re-init takes ~65s after a stop; stock unit allows 60
 mkdir -p "$PKG/etc/systemd/system/bluebinder.service.d"
 printf '[Service]\nTimeoutStartSec=180\n' > "$PKG/etc/systemd/system/bluebinder.service.d/10-sfduo-timeout.conf"
@@ -700,14 +718,12 @@ fi
 rm -f /etc/systemd/system/bluebinder.service \
       /etc/systemd/system/bluetooth.service \
       /etc/systemd/system/dbus-org.bluez.service
-if [ ! -f /var/lib/bluetooth/board-address ]; then
-    WMAC=$(cat /sys/class/net/wlan0/address 2>/dev/null)
-    if [ -n "$WMAC" ]; then
-        mkdir -p /var/lib/bluetooth
-        printf "%s\n" "$WMAC" | awk -F: "{printf \"%s:%s:%s:%s:%s:%02X\n\", toupper(\$1),toupper(\$2),toupper(\$3),toupper(\$4),toupper(\$5), strtonum(\"0x\" \$6)+1}" > /var/lib/bluetooth/board-address
-        chmod 644 /var/lib/bluetooth/board-address
-    fi
-fi
+# On a first install there is no wlan0 yet - this package is what loads the
+# wifi module - and under `set -e` the failed read of its address used to
+# end the postinst right here, before anything was enabled: no USB access,
+# no units, nothing (found by installing on a clean Droidian 101 image).
+# The script is safe to run early; bluebinder runs it again before it starts.
+/usr/local/sbin/sfduo-bt-address || true
 # pre-0.12 installs shipped an experimental wayfire session; its units
 # are gone from the package - drop the leftover enable symlink
 rm -f /etc/systemd/system/multi-user.target.wants/sfduo-powerkey.service \
