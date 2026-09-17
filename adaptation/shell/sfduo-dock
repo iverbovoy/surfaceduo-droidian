@@ -63,7 +63,6 @@ HINGE_FRACTION = 84 / 2784
 
 ICON_SIZE = 48            # logical px, the glyph itself
 BUTTON_SIZE = 64          # the box it sits in - equal for every app
-SHELL_YOUNG = 45          # s: a phosh younger than this is still behind its first lock screen
 DOCK_HEIGHT = 84          # the strip the dock reserves along the bottom
 CONFIG = os.path.expanduser("~/.config/sfduo/dock.json")
 PLACED = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-placed.json")
@@ -790,12 +789,14 @@ class Dock(Gtk.Window):
         only as a second opinion: either one saying "locked" is enough.
 
         The hint has a hole of its own. phosh comes up locked, and 0.49 as
-        packaged does not tell logind: it locks before it is listening to itself, so the
-        hint says "no" behind the lock screen until the first unlock. The
-        port's phosh is patched to say it (see phosh-patches/), and says it
-        when it takes the org.gnome.ScreenSaver name - which on a slow start
-        is most of a minute after the lock screen is up. Until that name has
-        an owner the hint means nothing, and the dock stays hidden.
+        packaged does not tell logind until the first unlock; the port's phosh
+        is patched to (phosh-patches/0001). The dock does not paper over an
+        unpatched one: 0.13.0 set the hint itself when it started beside a
+        young shell, and a dock that starts after a quick unlock - twenty
+        seconds into a boot, it usually does - then marked an unlocked phone
+        as locked, for good, and hid. A dock over the first lock screen is the
+        smaller harm. Until phosh owns org.gnome.ScreenSaver the hint means
+        nothing either way, and the dock stays out of sight.
 
         The session has to be found rather than assumed: `self` is whichever
         session the process was started from, which for anything launched over
@@ -805,7 +806,6 @@ class Dock(Gtk.Window):
         self.system_bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
         self.session_bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         self.session_path = None
-        self.assumed_locked = False
         self.session_bus.signal_subscribe(
             None, "org.gnome.ScreenSaver", "ActiveChanged",
             "/org/gnome/ScreenSaver", None, Gio.DBusSignalFlags.NONE,
@@ -855,45 +855,6 @@ class Dock(Gtk.Window):
         except GLib.Error:
             return None
         return value[0]
-
-    @staticmethod
-    def _shell_age():
-        """Seconds since phosh started, or None if it is not running."""
-        return process_age(b"/usr/libexec/phosh")
-
-    def _assume_locked_at_start(self):
-        """Tell logind what a stock phosh does not: that it came up locked.
-
-        phosh always starts behind its lock screen and reports only changes,
-        so the first thing logind hears is the first unlock, and LockedHint
-        reads "no" over the lock screen until then. logind lets a session's
-        owner set the hint, and the dock runs as that user - so, started
-        alongside a young shell, it sets it. phosh clears it on unlock like
-        any other. A shell that has been up a while is left alone: the dock
-        restarted on its own, and the hint is already the truth.
-
-        The cost, measured against leaving it: if the user unlocks before a
-        slow-starting phosh is listening to itself, the hint sticks and the
-        dock stays away until the next lock and unlock. The port's patched
-        phosh has neither problem.
-        """
-        if self.assumed_locked or self.session_path is None:
-            return
-        age = self._shell_age()
-        if age is None:
-            return                      # no shell yet - look again next beat
-        self.assumed_locked = True      # one decision per dock, either way
-        if age > SHELL_YOUNG:
-            return
-        try:
-            self.system_bus.call_sync(
-                "org.freedesktop.login1", self.session_path,
-                "org.freedesktop.login1.Session", "SetLockedHint",
-                GLib.Variant("(b)", (True,)), None,
-                Gio.DBusCallFlags.NONE, 2000, None)
-        except GLib.Error as err:
-            print(f"sfduo-dock: could not set LockedHint: {err.message}",
-                  file=sys.stderr)
 
     def _set_locked(self, locked):
         """Step down a layer while the phone is locked - and stay there.
@@ -972,7 +933,6 @@ class Dock(Gtk.Window):
         try:
             if self.session_path is None:
                 self.session_path = self._seat_session()
-            self._assume_locked_at_start()
             locked = None
             if self.session_path is not None:
                 locked = self._session_property(self.session_path, "LockedHint")

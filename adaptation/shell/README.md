@@ -283,14 +283,15 @@ session; the startup lock happens before either, and nothing replays it. So
 dock sat on the lock screen after every reboot. It hid for a whole day of
 development, because every lock *after* startup works.
 
-The dock covers for a stock phosh itself: logind lets a session's owner set
-the hint, and the dock runs as that user, so when it starts beside a shell
-less than 45 seconds old it sets `LockedHint` to true - phosh always comes up
-locked - and phosh clears it at the first unlock like any other. Checked on a
-clean Droidian 101 image with its own phosh: the hint reads `yes` six seconds
-after a shell restart. The cost: a user who unlocks before a slow-starting
-phosh is listening to itself leaves the hint stuck, and the dock away, until
-the next lock and unlock.
+0.13.0 had the dock cover for a stock phosh by setting the hint itself when
+it started beside a shell less than 45 seconds old. That was wrong, and the
+first outside install showed it within the hour: twenty seconds into a boot
+the dock has usually not started yet, an owner who unlocks in that time is
+already past the lock screen, and the dock then marked an unlocked phone as
+locked - for good, since nothing was left to clear it - and hid. One lock and
+unlock brought it back. 0.13.1 removed the heuristic: with an unpatched phosh
+the dock can sit over the first lock screen after a boot, which is the smaller
+harm; with the port's phosh neither happens.
 
 `phosh-patches/0001` fixes it at the source and makes phosh say its state at both of those moments -
 both, because which comes first depends on how long the shell took to start
@@ -299,9 +300,9 @@ start that is still most of a minute after the lock screen is drawn, so the
 dock also treats "nobody owns `org.gnome.ScreenSaver` yet" as locked.
 
 The package carries the patched binary (0001-0003, not the unfinished 0004) and
-`sfduo-phosh-install` puts it in place at install time - but only beside
+`sudo sfduo-phosh-install` puts it in place at install time - but only beside
 exactly the phosh version it was built for; on any other it says so and
-leaves the packaged shell alone. `sfduo-phosh-install --restore` puts the
+leaves the packaged shell alone. `sudo sfduo-phosh-install --restore` puts the
 packaged binary back, and a phosh upgrade does the same on its own.
 
 The patches are against droidian/phosh at cf38ab5, the tree the installed

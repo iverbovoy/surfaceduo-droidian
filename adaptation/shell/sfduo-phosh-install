@@ -29,7 +29,10 @@ if [ "$HAVE" != "$WANT" ]; then
     echo "sfduo-phosh: phosh is $HAVE, the patched binary is for $WANT - left alone"
     exit 0
 fi
-cmp -s "$OURS" "$BIN" && exit 0
+if cmp -s "$OURS" "$BIN"; then
+    echo "sfduo-phosh: patched phosh already in place"
+    exit 0
+fi
 # keep the packaged binary, once: never overwrite the copy with our own
 [ -f "$STOCK" ] || cp -a "$BIN" "$STOCK"
 # a running binary cannot be written over, only replaced
