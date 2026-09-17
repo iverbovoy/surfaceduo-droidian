@@ -3,6 +3,10 @@
 Small files that belong to the port rather than to any application on it.
 Each was found necessary on hardware; none is optional.
 
+Since 0.13 the adaptation package installs all of them except the sudoers
+rule (units go to `/usr/lib/systemd/system/` there); the paths below are for
+installing by hand.
+
 ```
 sfduo-slot-guard.service   /etc/systemd/system/          mark the boot good, pin slot A
 sfduo-modem.service        /etc/systemd/system/          the modem online and on LTE, every boot

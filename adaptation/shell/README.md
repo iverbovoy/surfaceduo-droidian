@@ -111,11 +111,23 @@ two columns beside the gap stop drawing well before the bezel begins.
 
 ## Installing
 
+Since 0.13 the adaptation package installs all of it: the dock and the
+brightness keeper with their autostart entries, and the CSS as
+`/usr/share/sfduo/gtk.css`, linked into the user's `~/.config/gtk-3.0/` unless
+a file of their own is already there (GTK reads a user stylesheet from nowhere
+else). By hand, the CSS alone is:
+
 ```
-install -Dm644 qcom,sm8150-mtp.json /var/lib/droidian/phosh-notch/qcom,sm8150-mtp.json
 install -Dm644 -o droidian -g droidian gtk.css /home/droidian/.config/gtk-3.0/gtk.css
 systemctl restart phosh
 ```
+
+The gmobile cutout described above is not installed: it costs the whole
+notification shade, as that section explains.
+
+All of this is experimental and changes from one release to the next. To go
+back to stock phosh behaviour, remove `/etc/xdg/autostart/sfduo-dock.desktop`
+and the `gtk.css` link, and restart the shell.
 
 A black background, which suits a screen with a black bar down the middle:
 

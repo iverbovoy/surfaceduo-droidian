@@ -1,2 +1,3 @@
-# itemAE: the face (user droidian) drives panel power on fold/unfold.
+# Lets the session user drive panel power. Not installed by the package:
+# nothing calls sfduo-screens as the user any more. Kept for hand use.
 droidian ALL=(root) NOPASSWD: /usr/local/sbin/sfduo-screens

@@ -8,8 +8,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 ACCESS="$HERE/../access"
+SYSTEM="$HERE/../system"
+SHELLDIR="$HERE/../shell"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.12.0}"
+VER="${1:-0.13.0}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
@@ -619,9 +621,11 @@ chmod 755 "$PKG/usr/local/sbin/sfduo-lid-daemon"
 # Folding with a cable attached must NOT suspend: an aborted suspend
 # (dwc3 refuses with an active USB link) leaves the DSI panels dead
 # until a cold power cycle. On external power a fold just locks.
-mkdir -p "$PKG/etc/systemd/logind.conf.d"
-printf '[Login]\nHandleLidSwitchExternalPower=lock\n' \
-    > "$PKG/etc/systemd/logind.conf.d/50-sfduo-lid.conf"
+# 0.13: a fold locks on battery too. Suspend is off in the session as the
+# port is set up today, so "suspend" there only meant "nothing happens";
+# ../system/README.md has the reasoning and what to change if that does.
+install -Dm644 "$SYSTEM/50-sfduo-lid.conf" \
+    "$PKG/etc/systemd/logind.conf.d/50-sfduo-lid.conf"
 
 cat > "$PKG/usr/lib/systemd/system/sfduo-lid.service" <<'UNIT'
 [Unit]
@@ -635,6 +639,33 @@ Restart=on-failure
 WantedBy=multi-user.target
 UNIT
 
+# System pieces (../system/README.md): each was found necessary on hardware.
+# The slot guard and the modem unit were hand-installed into /etc before
+# 0.13; postinst moves those copies out of the way of the packaged ones.
+install -m644 "$SYSTEM/sfduo-slot-guard.service" "$PKG/usr/lib/systemd/system/"
+install -m644 "$SYSTEM/sfduo-modem.service"      "$PKG/usr/lib/systemd/system/"
+install -m755 "$SYSTEM/sfduo-modem"              "$PKG/usr/local/sbin/"
+install -m755 "$SYSTEM/sfduo-screens"            "$PKG/usr/local/sbin/"
+install -Dm644 "$SYSTEM/dconf/50-sfduo-phoc"       "$PKG/etc/dconf/db/local.d/50-sfduo-phoc"
+install -Dm644 "$SYSTEM/dconf/locks/50-sfduo-phoc" "$PKG/etc/dconf/db/local.d/locks/50-sfduo-phoc"
+install -Dm644 "$SYSTEM/dconf/profile-user"        "$PKG/etc/dconf/profile/user"
+# sfduo-screens ships without its sudoers rule: nothing in the package calls
+# it as the user any more, and a NOPASSWD rule with no caller is only a hole.
+
+# The two-panel shell (../shell/README.md) - EXPERIMENTAL. A dock across both
+# panels that tiles what it launches onto the panel that was tapped, and the
+# CSS that keeps phosh's own furniture off the hinge. It autostarts with the
+# session; removing /etc/xdg/autostart/sfduo-dock.desktop turns it off.
+# The patched phosh it works best with is NOT in this package - see
+# ../shell/phosh-patches; with a stock phosh the dock can sit on the lock
+# screen after a reboot until the first unlock.
+install -m755 "$SHELLDIR/sfduo-dock"       "$PKG/usr/local/bin/"
+install -m755 "$SHELLDIR/sfduo-brightness" "$PKG/usr/local/bin/"
+install -Dm644 "$SHELLDIR/sfduo-dock.desktop"       "$PKG/etc/xdg/autostart/sfduo-dock.desktop"
+install -Dm644 "$SHELLDIR/sfduo-brightness.desktop" "$PKG/etc/xdg/autostart/sfduo-brightness.desktop"
+install -Dm644 "$SHELLDIR/gtk.css"   "$PKG/usr/share/sfduo/gtk.css"
+install -Dm644 "$SHELLDIR/dock.json" "$PKG/usr/share/sfduo/dock.json.example"
+
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: adaptation-droidian-surfaceduo
 Version: $VER
@@ -642,6 +673,7 @@ Architecture: arm64
 Maintainer: Ivan Verbovoy <ivanverbovoy@gmail.com>
 Section: misc
 Priority: optional
+Recommends: python3-gi, gir1.2-gtk-3.0, gir1.2-gtklayershell-0.1, wlrctl, wtype, dconf-cli
 Description: Surface Duo 1 adaptation for Droidian (sfduo)
  USB RNDIS gadget access (172.16.42.1, telnet fallback) and, as bring-up
  progresses, touch / wifi / sensor plumbing for the Microsoft Surface Duo 1.
@@ -679,19 +711,55 @@ fi
 # are gone from the package - drop the leftover enable symlink
 rm -f /etc/systemd/system/multi-user.target.wants/sfduo-powerkey.service \
       /etc/systemd/system/graphical.target.wants/wayfire-duo.service
+# 0.13: the slot guard and the modem unit used to be copied into /etc by
+# hand; a unit there shadows the packaged one forever.
+rm -f /etc/systemd/system/sfduo-slot-guard.service \
+      /etc/systemd/system/sfduo-modem.service \
+      /etc/systemd/system/multi-user.target.wants/sfduo-slot-guard.service \
+      /etc/systemd/system/multi-user.target.wants/sfduo-modem.service
+# the dconf lock on sm.puri.phoc auto-maximize only counts once compiled
+command -v dconf >/dev/null 2>&1 && dconf update || true
+# The shell's CSS has to live in the user's own config - GTK reads it from
+# nowhere else. Link it rather than copy it, so an upgrade reaches it; a file
+# somebody put there themselves is left alone. The dock's config directory is
+# made here as the user, because made by root the dock cannot write to it.
+if id droidian >/dev/null 2>&1; then
+    H=$(getent passwd droidian | cut -d: -f6)
+    for d in "$H/.config" "$H/.config/gtk-3.0" "$H/.config/sfduo"; do
+        [ -d "$d" ] || install -d -o droidian -g droidian "$d"
+    done
+    chown droidian:droidian "$H/.config/sfduo"
+    if [ ! -e "$H/.config/gtk-3.0/gtk.css" ] || \
+       cmp -s "$H/.config/gtk-3.0/gtk.css" /usr/share/sfduo/gtk.css; then
+        ln -sfn /usr/share/sfduo/gtk.css "$H/.config/gtk-3.0/gtk.css"
+        chown -h droidian:droidian "$H/.config/gtk-3.0/gtk.css"
+    else
+        echo "sfduo: $H/.config/gtk-3.0/gtk.css is not ours - left alone;" >&2
+        echo "sfduo: the shell's CSS is at /usr/share/sfduo/gtk.css" >&2
+    fi
+fi
 if [ -d /run/systemd/system ]; then
+    # `systemctl enable` reloads the manager every time, and on this kernel a
+    # reload is half a minute (a debug-heavy config: every allocation is
+    # checked). A dozen of them made the install take nine minutes. So:
+    # enable without reloading, reload once, then start.
+    START=""
+    en()     { systemctl --no-reload enable "$@"; }
+    en_now() { systemctl --no-reload enable "$@" && START="$START $*"; }
     systemctl daemon-reload
-    systemctl enable --now sfduo-usb.service || true
-    systemctl enable bluebinder.service bluetooth.service 2>/dev/null || true
-    systemctl enable sfduo-composer-watchdog.service || true
-    systemctl enable --now sfduo-lid.service || true
-    systemctl enable --now sfduo-writeback.timer || true
-    systemctl enable --now sfduo-wakeup.service || true
+    en sfduo-slot-guard.service || true
+    en_now sfduo-modem.service || true
+    en_now sfduo-usb.service || true
+    en bluebinder.service bluetooth.service 2>/dev/null || true
+    en sfduo-composer-watchdog.service || true
+    en_now sfduo-lid.service || true
+    en_now sfduo-writeback.timer || true
+    en_now sfduo-wakeup.service || true
     udevadm control --reload 2>/dev/null || true
     udevadm trigger -s backlight -s leds 2>/dev/null || true
     # geoclue is a static unit; the drop-in adds [Install] so it can start at boot
-    systemctl enable --now geoclue.service 2>/dev/null || systemctl start geoclue.service || true
-    [ -f /usr/lib/sfduo/wlan.ko ] && systemctl enable --now sfduo-wlan.service || true
+    en_now geoclue.service 2>/dev/null || START="$START geoclue.service"
+    [ -f /usr/lib/sfduo/wlan.ko ] && en_now sfduo-wlan.service || true
     # sfduo-tame-vendor kills adsprpcd, and sfduo-audio.service is what
     # boots the ADSP afterwards. Measured on hardware: adsprpcd cannot
     # bring the ADSP up on this port at all, so with no starter the
@@ -699,17 +767,23 @@ if [ -d /run/systemd/system ]; then
     # stuck at OFFLINING. Killing them there buys nothing, so the killer
     # only goes in alongside the starter.
     if [ -x /usr/local/sbin/sfduo-audio-up.sh ]; then
-        systemctl enable sfduo-audio.service || true
-        systemctl enable --now sfduo-tame-vendor.service || true
+        en sfduo-audio.service || true
+        en_now sfduo-tame-vendor.service || true
     else
         echo "sfduo: built without audio modules, so there is no ADSP" >&2
         echo "sfduo: starter. Expect adsprpcd to spin and bluetooth to" >&2
         echo "sfduo: refuse to start (it would soft-lock the kernel)." >&2
         echo "sfduo: Build the audio modules and reinstall." >&2
     fi
+    systemctl daemon-reload
+    for u in $START; do systemctl start "$u" || true; done
 else
     ln -sf /usr/lib/systemd/system/sfduo-usb.service \
        /etc/systemd/system/multi-user.target.wants/sfduo-usb.service
+    ln -sf /usr/lib/systemd/system/sfduo-slot-guard.service \
+       /etc/systemd/system/multi-user.target.wants/sfduo-slot-guard.service
+    ln -sf /usr/lib/systemd/system/sfduo-modem.service \
+       /etc/systemd/system/multi-user.target.wants/sfduo-modem.service
     # same pairing rule as above, offline: the ADSP starter and the
     # adsprpcd killer go in together or not at all
     if [ -x /usr/local/sbin/sfduo-audio-up.sh ]; then
