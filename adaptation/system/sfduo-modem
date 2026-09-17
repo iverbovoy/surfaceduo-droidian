@@ -1,0 +1,57 @@
+#!/bin/sh
+# sfduo-modem: bring the modem online at boot, and onto LTE.
+#
+# Two things nothing else does on this device (measured 2026-09-16/17):
+#
+# - ofono leaves /ril_0 at Online=false after every boot, SIM in or not.
+#   ModemManager's ofono modem then sits in `failed` and never re-probes,
+#   so the shell shows no SIM. Setting Online by hand cures it.
+# - TechnologyPreference comes up as `umts` although the modem lists `lte`,
+#   and the value stored in /var/lib/ofono/<imsi>/radiosetting is not
+#   applied at boot. On 3G: signal 37, 170-650ms; on LTE: 77-87, 70-90ms.
+#
+# RadioSettings only exists once the modem is online, hence the two waits.
+
+MODEM=/ril_0
+
+ofono() { busctl --system call org.ofono "$MODEM" "$@" 2>/dev/null; }
+
+wait_for() {        # wait_for <seconds> <command...>
+    n=$1; shift
+    while [ "$n" -gt 0 ]; do
+        "$@" && return 0
+        sleep 1
+        n=$((n - 1))
+    done
+    return 1
+}
+
+has_modem()    { ofono org.ofono.Modem GetProperties >/dev/null; }
+is_online()    { ofono org.ofono.Modem GetProperties | grep -q '"Online" b true'; }
+has_settings() { ofono org.ofono.RadioSettings GetProperties >/dev/null; }
+
+wait_for 120 has_modem || { echo "sfduo-modem: no $MODEM in ofono"; exit 0; }
+
+if ! is_online; then
+    ofono org.ofono.Modem SetProperty sv Online b true
+    wait_for 30 is_online || { echo "sfduo-modem: $MODEM would not go online"; exit 1; }
+    echo "sfduo-modem: $MODEM online"
+fi
+
+if wait_for 30 has_settings; then
+    props=$(ofono org.ofono.RadioSettings GetProperties)
+    if echo "$props" | grep -q '"AvailableTechnologies" as [0-9]* .*"lte"' &&
+       ! echo "$props" | grep -q '"TechnologyPreference" s "lte"'; then
+        ofono org.ofono.RadioSettings SetProperty sv TechnologyPreference s lte &&
+            echo "sfduo-modem: preferring lte"
+    fi
+fi
+
+# A ModemManager that probed the modem while it was offline keeps it failed.
+# mmcli under a timeout: asked while ModemManager is wedged, it never returns.
+state=$(timeout 10 mmcli -m any 2>/dev/null) || state=failed
+if echo "$state" | grep -Eq 'state:.*failed|^failed$'; then
+    echo "sfduo-modem: restarting ModemManager"
+    systemctl restart ModemManager.service
+fi
+exit 0

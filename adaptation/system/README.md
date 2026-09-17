@@ -5,6 +5,8 @@ Each was found necessary on hardware; none is optional.
 
 ```
 sfduo-slot-guard.service   /etc/systemd/system/          mark the boot good, pin slot A
+sfduo-modem.service        /etc/systemd/system/          the modem online and on LTE, every boot
+sfduo-modem                /usr/local/sbin/              ...the script it runs
 50-sfduo-lid.conf          /etc/systemd/logind.conf.d/   closing the device locks it
 sfduo-screens              /usr/local/sbin/              panel power without the compositor
 50-sfduo-screens           /etc/sudoers.d/               the session may run the above
@@ -30,6 +32,35 @@ the call does nothing - the failure that caused the drift in the first place.
 ```
 install -m644 sfduo-slot-guard.service /etc/systemd/system/
 systemctl enable sfduo-slot-guard.service
+```
+
+## The modem comes up offline, and on 3G
+
+Measured on two consecutive boots with the SIM in (2026-09-17): ofono leaves
+`/ril_0` at `Online=false`, ModemManager probes it in that state, marks it
+`failed` and never looks again - the shell shows no SIM at all. And when it is
+put online by hand, `TechnologyPreference` is `umts` although
+`AvailableTechnologies` lists `lte`: 3G gave signal 37 and 170-650 ms pings
+where LTE gives 77-87 and 70-90 ms. Every install of this port therefore
+looks like "the modem does not work", then like "LTE does not work".
+
+`sfduo-modem` waits for ofono's modem, sets `Online`, prefers `lte` if the
+modem offers it, and restarts ModemManager if it had already given up.
+ofono does store the preference (`/var/lib/ofono/<imsi>/radiosetting`), and
+once it has been set it came back as `lte` on the next boot - but only after
+something put the modem online, so the unit does both.
+
+```
+install -m755 sfduo-modem /usr/local/sbin/
+install -m644 sfduo-modem.service /etc/systemd/system/
+systemctl enable sfduo-modem.service
+```
+
+Mobile data is one line, and needs nothing else - its route metric lands at
+700 against wifi's 600, so wifi stays preferred:
+
+```
+nmcli c add type gsm ifname '*' con-name <name> apn <apn>
 ```
 
 ## Closing the device locks it
