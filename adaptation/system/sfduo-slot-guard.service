@@ -1,0 +1,17 @@
+[Unit]
+Description=Surface Duo slot guard — mark boot successful, pin slot a
+# The vendor bootctrl HAL lives in the android container; the wrapper
+# needs the container up. Requires /var/lib/droidian/lxc_attach_workaround
+# on this device (lxc-attach eats the last argument otherwise — the
+# silent failure that caused the slot-b drift and fastboot landings).
+After=android_boot_completed.service
+Wants=android_boot_completed.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/android_bootctl mark-boot-successful
+ExecStart=/usr/sbin/android_bootctl set-active-boot-slot 0
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

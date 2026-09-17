@@ -52,6 +52,9 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
   access, offline sshd bundle, touch udev rule, wlan/audio module
   loading with ADSP boot ordering, hinge sensor config, suspend hooks,
   bluetooth bring-up (timeout + board-address), geoclue/GPS drop-in.
+- `adaptation/system/` - the slot guard that keeps the bootloader on slot
+  A, the lid policy (closing the device locks it), panel power without the
+  compositor.
 - `adaptation/shell/` - phosh across both panels: the hinge described to
   gmobile as a cutout, and the CSS that moves everything the shell centres
   off the seam (its own README covers the mechanism and the three traps).

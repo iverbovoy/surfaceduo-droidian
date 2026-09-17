@@ -1,0 +1,2 @@
+# itemAE: the face (user droidian) drives panel power on fold/unfold.
+droidian ALL=(root) NOPASSWD: /usr/local/sbin/sfduo-screens

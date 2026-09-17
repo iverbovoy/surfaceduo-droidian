@@ -1,0 +1,15 @@
+#!/bin/sh
+# sfduo-screens: panel power via sysfs bl_power (4 = off, 0 = on).
+# Compositor-independent on purpose: wlr-randr --off on the sole
+# HWCOMPOSER-1 output CRASHES wayfire (found the hard way), while bl_power
+# is the same DSI panel-power path the system itself uses. Brightness
+# values persist across a cycle; rendering continues underneath (no GPU
+# saving - this is a screen toggle, not suspend).
+P0=/sys/class/backlight/panel0-backlight/bl_power
+P1=/sys/class/backlight/panel1-backlight/bl_power
+case "${1:-toggle}" in
+    off) echo 4 > "$P0"; echo 4 > "$P1" ;;
+    on)  echo 0 > "$P0"; echo 0 > "$P1" ;;
+    toggle) if [ "$(cat "$P0")" = "0" ]; then exec "$0" off; else exec "$0" on; fi ;;
+    *) echo "usage: sfduo-screens [on|off|toggle]" >&2; exit 1 ;;
+esac
