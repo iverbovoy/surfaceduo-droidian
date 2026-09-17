@@ -139,7 +139,9 @@ All of this is experimental and changes from one release to the next. To go
 back to stock phosh behaviour, remove `/etc/xdg/autostart/sfduo-dock.desktop`
 and the `gtk.css` link, and restart the shell.
 
-A black background, which suits a screen with a black bar down the middle:
+A black background, which suits a screen with a black bar down the middle -
+the package sets it as the default (`/etc/dconf/db/local.d/51-sfduo-background`);
+by hand it is:
 
 ```
 gsettings set org.gnome.desktop.background picture-options 'none'
@@ -295,6 +297,12 @@ both, because which comes first depends on how long the shell took to start
 (1 s on a warm restart, 10 s on a bad one, and the order flips). On a slow
 start that is still most of a minute after the lock screen is drawn, so the
 dock also treats "nobody owns `org.gnome.ScreenSaver` yet" as locked.
+
+The package carries the patched binary (0001 and 0002 only) and
+`sfduo-phosh-install` puts it in place at install time - but only beside
+exactly the phosh version it was built for; on any other it says so and
+leaves the packaged shell alone. `sfduo-phosh-install --restore` puts the
+packaged binary back, and a phosh upgrade does the same on its own.
 
 The patches are against droidian/phosh at cf38ab5, the tree the installed
 package was built from, configured as the package is (`--prefix=/usr

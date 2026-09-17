@@ -667,6 +667,16 @@ install -m755 "$SYSTEM/sfduo-screens"            "$PKG/usr/local/sbin/"
 install -Dm644 "$SYSTEM/dconf/50-sfduo-phoc"       "$PKG/etc/dconf/db/local.d/50-sfduo-phoc"
 install -Dm644 "$SYSTEM/dconf/locks/50-sfduo-phoc" "$PKG/etc/dconf/db/local.d/locks/50-sfduo-phoc"
 install -Dm644 "$SYSTEM/dconf/profile-user"        "$PKG/etc/dconf/profile/user"
+install -Dm644 "$SYSTEM/dconf/51-sfduo-background" "$PKG/etc/dconf/db/local.d/51-sfduo-background"
+# A clean image has no `dconf` to compile these with until the shell's setup
+# step has run, and until then neither the lock nor the black background
+# would apply. Ship the database compiled; postinst's `dconf update` rebuilds
+# it from local.d whenever the tool is there, so the two never disagree.
+if command -v dconf >/dev/null 2>&1; then
+    dconf compile "$PKG/etc/dconf/db/local" "$PKG/etc/dconf/db/local.d"
+else
+    echo "NOTE: no dconf on this host - the settings apply only after sfduo-shell-setup"
+fi
 # sfduo-screens ships without its sudoers rule: nothing in the package calls
 # it as the user any more, and a NOPASSWD rule with no caller is only a hole.
 
@@ -680,6 +690,16 @@ install -Dm644 "$SYSTEM/dconf/profile-user"        "$PKG/etc/dconf/profile/user"
 install -m755 "$SHELLDIR/sfduo-dock"       "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-brightness" "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-shell-setup" "$PKG/usr/local/sbin/"
+install -m755 "$SHELLDIR/sfduo-phosh-install" "$PKG/usr/local/sbin/"
+# The patched phosh (../shell/phosh-patches 0001 + 0002, nothing else), built
+# per ../shell/README.md. Version-locked: see sfduo-phosh-install.
+PHOSH_BIN="$ROOT/out/phosh/phosh-0.49.0-cf38ab5-sfduo"
+if [ -f "$PHOSH_BIN" ]; then
+    install -Dm755 "$PHOSH_BIN" "$PKG/usr/lib/sfduo/phosh/phosh"
+    echo "0.49.0+git20250824213429.cf38ab5.next.phosh.0.49" > "$PKG/usr/lib/sfduo/phosh/version"
+else
+    echo "NOTE: $PHOSH_BIN not found - building without the patched phosh"
+fi
 install -Dm644 "$SHELLDIR/sfduo-dock.desktop"       "$PKG/etc/xdg/autostart/sfduo-dock.desktop"
 install -Dm644 "$SHELLDIR/sfduo-brightness.desktop" "$PKG/etc/xdg/autostart/sfduo-brightness.desktop"
 install -Dm644 "$SHELLDIR/gtk.css"   "$PKG/usr/share/sfduo/gtk.css"
@@ -748,6 +768,8 @@ rm -f /etc/systemd/system/sfduo-slot-guard.service \
       /etc/systemd/system/multi-user.target.wants/sfduo-modem.service
 # the dconf lock on sm.puri.phoc auto-maximize only counts once compiled
 command -v dconf >/dev/null 2>&1 && dconf update || true
+# the patched shell, if this is the phosh it was built for
+/usr/local/sbin/sfduo-phosh-install || true
 # The shell's CSS has to live in the user's own config - GTK reads it from
 # nowhere else. Link it rather than copy it, so an upgrade reaches it; a file
 # somebody put there themselves is left alone. The dock's config directory is

@@ -1,0 +1,14 @@
+# Surface Duo: a black background. The hinge is a black bar down the middle
+# of the display, and on anything but black it is the first thing you see.
+# A default, not a lock - Settings can change it.
+[org/gnome/desktop/background]
+picture-options='none'
+picture-uri=''
+picture-uri-dark=''
+color-shading-type='solid'
+primary-color='#000000'
+
+[org/gnome/desktop/screensaver]
+picture-options='none'
+picture-uri=''
+primary-color='#000000'

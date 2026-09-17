@@ -1,0 +1,35 @@
+#!/bin/sh
+# sfduo-phosh-install: put the port's patched phosh in place of the packaged
+# one - or, with --restore, put the packaged one back.
+#
+# The patched binary is phosh 0.49.0 at Droidian's cf38ab5 plus the two
+# patches in adaptation/shell/phosh-patches of the port's repository: it
+# tells logind it came up locked, and it says LTE rather than 4G. It is built
+# against exactly that package's libraries and resources, so it is installed
+# only beside exactly that version. A phosh upgrade overwrites it with the
+# new stock binary, which is the safe way for this to stop applying.
+set -e
+OURS=/usr/lib/sfduo/phosh/phosh
+WANT=$(cat /usr/lib/sfduo/phosh/version 2>/dev/null || true)
+BIN=/usr/libexec/phosh
+STOCK=/usr/libexec/phosh.stock
+
+if [ "$1" = "--restore" ]; then
+    [ -f "$STOCK" ] || { echo "sfduo-phosh: no $STOCK to restore" >&2; exit 1; }
+    cp -a "$STOCK" "$BIN.tmp" && mv -f "$BIN.tmp" "$BIN"
+    echo "sfduo-phosh: packaged phosh restored - restart the shell"
+    exit 0
+fi
+
+[ -f "$OURS" ] && [ -n "$WANT" ] || { echo "sfduo-phosh: no patched binary in this package"; exit 0; }
+HAVE=$(dpkg-query -W -f='${Version}' phosh 2>/dev/null || true)
+if [ "$HAVE" != "$WANT" ]; then
+    echo "sfduo-phosh: phosh is $HAVE, the patched binary is for $WANT - left alone"
+    exit 0
+fi
+cmp -s "$OURS" "$BIN" && exit 0
+# keep the packaged binary, once: never overwrite the copy with our own
+[ -f "$STOCK" ] || cp -a "$BIN" "$STOCK"
+# a running binary cannot be written over, only replaced
+cp -a "$OURS" "$BIN.tmp" && chmod 755 "$BIN.tmp" && mv -f "$BIN.tmp" "$BIN"
+echo "sfduo-phosh: patched phosh installed (packaged one kept as $STOCK)"
