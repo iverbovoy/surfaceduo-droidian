@@ -183,9 +183,18 @@ what other surfaces reserved and is the only way to hide the strip phosh keeps
 for its home bar - the grid shows through it otherwise. The top panel is spared
 by hand, with a 32px top margin, because a status bar is worth keeping.
 
-Everything that is not on the dock is behind the first button, which toggles
-`fuzzel` through `sfduo-launcher-toggle`. That matters more than it sounds:
-with the desktop covered, the app grid is not reachable by swiping any more.
+Everything that is not on the dock is behind the first button: a grid of
+every application, dealt across the two panels alphabetically - the first
+half on the left, the second on the right, three columns each, each half
+scrolling on its own - and launching onto the panel that was tapped, exactly
+like the dock. It lives in a `GtkRevealer` above the strip and slides up out
+of the dock (280ms) and back down into it; the window grows to the display
+first, which is invisible because both it and the desktop are black. The
+button again, a tap on empty space, or launching something closes it.
+`pkill -USR1 -f sfduo-dock` toggles it from outside, for a keybinding.
+
+That matters more than it sounds: with phosh's own grid pushed off the
+screen, this is the only way to everything else.
 
 Icons are normalised on purpose. A themed icon comes in whatever sizes the
 theme happens to carry - 16, 48, 256, scalable - so asking for a named size

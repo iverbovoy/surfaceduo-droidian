@@ -24,6 +24,7 @@
 
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -46,7 +47,10 @@ ICON_SIZE = 48            # logical px, the glyph itself
 BUTTON_SIZE = 64          # the box it sits in - equal for every app
 DOCK_HEIGHT = 84          # the strip the dock reserves along the bottom
 CONFIG = os.path.expanduser("~/.config/sfduo/dock.json")
-LAUNCHER = "/usr/local/bin/sfduo-launcher-toggle"   # everything not on the dock
+PANEL_HEIGHT = 32         # phosh's top bar, left visible over the grid
+GRID_ICON = 64            # the app grid's icons, phosh's own size
+GRID_COLUMNS = 3          # per panel: 450px gives three of ~140
+SLIDE_MS = 280            # the grid sliding up, and back down
 WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
 
 CSS = b"""
@@ -71,6 +75,16 @@ window.sfduo-dock { background-color: #000000; }
   background-color: rgba(255,255,255,0.14);
   border-radius: 14px;
 }
+.dock-button.open { background-color: rgba(255,255,255,0.10); border-radius: 14px; }
+/* The grid: one flow box per panel, icons over their names. */
+.grid-pane { padding: 12px 14px; }
+.grid-app {
+  background: none; border: none; box-shadow: none;
+  padding: 10px 4px; border-radius: 16px;
+}
+.grid-app:active, .grid-app:hover { background-color: rgba(255,255,255,0.12); }
+.grid-app label { color: #e8e4d9; font-size: 12px; }
+scrollbar { opacity: 0; }
 """
 
 
@@ -121,9 +135,7 @@ class Dock(Gtk.Window):
         # appearing once, and the halves are pushed against the seam so the
         # bar reads as a single thing with the hinge lying across it. Which
         # half an app sits in is therefore which panel it opens on.
-        items = []
-        if os.access(LAUNCHER, os.X_OK):
-            items.append(None)                      # the all-apps button
+        items = [None]                              # the all-apps button
         items += favourites()
         cut = (len(items) + 1) // 2
 
@@ -135,12 +147,33 @@ class Dock(Gtk.Window):
         self.row.pack_start(self.left, True, True, 0)
         self.row.pack_start(self.seam, False, False, 0)
         self.row.pack_start(self.right, True, True, 0)
-        self.add(self.row)
+
+        # The grid of everything sits above the strip in a revealer, so that
+        # it slides up out of the dock and back down into it. Closed, it has
+        # no height and the window is the strip; open, the window is the
+        # whole display and the grid fills what the strip leaves.
+        self.grid = self._build_grid()
+        self.grid_revealer = Gtk.Revealer()
+        self.grid_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_UP)
+        self.grid_revealer.set_transition_duration(SLIDE_MS)
+        self.grid_revealer.set_vexpand(True)
+        self.grid_revealer.add(self.grid)
+        self.grid_revealer.connect("notify::child-revealed", self._on_grid_settled)
+
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        column.pack_start(self.grid_revealer, True, True, 0)
+        column.pack_end(self.row, False, False, 0)
+        self.add(column)
+        self.grid_open = False
 
         self.placed = {}          # app_id -> the panel it was last sent to
         self.connect("size-allocate", self._on_size_allocate)
         self.show_all()
         self._follow_lockscreen()
+        # `pkill -USR1 -f sfduo-dock` toggles the grid: a keybinding can be
+        # pointed at it, and so can a test that has no finger.
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1,
+                             lambda: self._toggle_grid() or True)
 
     def _follow_lockscreen(self):
         """Get out of the way while the phone is locked.
@@ -247,7 +280,8 @@ class Dock(Gtk.Window):
             if info is None:
                 button = self._icon_button(
                     Gio.ThemedIcon.new("view-app-grid-symbolic"), "All apps",
-                    lambda _b: subprocess.Popen([LAUNCHER]))
+                    lambda _b: self._toggle_grid())
+                self.grid_buttons = getattr(self, "grid_buttons", []) + [button]
             else:
                 button = self._icon_button(
                     info.get_icon(), info.get_display_name(),
@@ -257,6 +291,103 @@ class Dock(Gtk.Window):
         wrapper = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         wrapper.pack_start(outer, True, True, 0)
         return wrapper
+
+    def _build_grid(self):
+        """Every application, dealt across the two panels.
+
+        Alphabetical, the first half on the left and the second on the right,
+        so a name is found by which panel it would be on. Each half scrolls
+        on its own. Tapping launches onto the panel tapped, as on the dock.
+        """
+        apps = sorted((a for a in Gio.AppInfo.get_all() if a.should_show()),
+                      key=lambda a: a.get_display_name().casefold())
+        cut = (len(apps) + 1) // 2
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.grid_left = self._grid_pane("left", apps[:cut])
+        self.grid_seam = Gtk.Box()
+        self.grid_right = self._grid_pane("right", apps[cut:])
+        row.pack_start(self.grid_left, True, True, 0)
+        row.pack_start(self.grid_seam, False, False, 0)
+        row.pack_start(self.grid_right, True, True, 0)
+
+        # A tap on nothing closes it. Buttons take their own presses, so the
+        # event box only ever hears about the space between them.
+        backdrop = Gtk.EventBox()
+        backdrop.add(row)
+        backdrop.connect("button-release-event",
+                         lambda *_a: self._toggle_grid(False) or False)
+        return backdrop
+
+    def _grid_pane(self, side, apps):
+        flow = Gtk.FlowBox()
+        flow.set_selection_mode(Gtk.SelectionMode.NONE)
+        flow.set_homogeneous(True)
+        flow.set_min_children_per_line(GRID_COLUMNS)
+        flow.set_max_children_per_line(GRID_COLUMNS)
+        flow.set_column_spacing(6)
+        flow.set_row_spacing(6)
+        flow.set_valign(Gtk.Align.START)
+        flow.get_style_context().add_class("grid-pane")
+
+        for info in apps:
+            button = Gtk.Button()
+            button.get_style_context().add_class("grid-app")
+            button.set_relief(Gtk.ReliefStyle.NONE)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            image = Gtk.Image()
+            image.set_pixel_size(GRID_ICON)
+            image.set_from_gicon(info.get_icon() or Gio.ThemedIcon.new("application-x-executable"),
+                                 Gtk.IconSize.INVALID)
+            label = Gtk.Label(label=info.get_display_name())
+            label.set_ellipsize(3)                  # END
+            label.set_max_width_chars(14)
+            label.set_justify(Gtk.Justification.CENTER)
+            box.pack_start(image, False, False, 0)
+            box.pack_start(label, False, False, 0)
+            button.add(box)
+            button.connect("clicked", self._on_grid_app, info, side)
+            flow.add(button)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.add(flow)
+        return scroller
+
+    def _on_grid_app(self, button, info, side):
+        self._toggle_grid(False)
+        self._on_clicked(button, info, side)
+
+    def _toggle_grid(self, open_=None):
+        """Slide the grid up out of the dock, or back down into it.
+
+        Opening grows the window to the display first - it is black, and so
+        is the desktop, so nothing is seen to change - and then reveals the
+        grid, which slides up from the strip. Closing reveals nothing and
+        shrinks the window back once the slide has finished.
+        """
+        if open_ is None:
+            open_ = not self.grid_open
+        if open_ == self.grid_open:
+            return
+        self.grid_open = open_
+        for button in getattr(self, "grid_buttons", []):
+            ctx = button.get_style_context()
+            ctx.add_class("open") if open_ else ctx.remove_class("open")
+
+        if open_:
+            GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.TOP, True)
+            GtkLayerShell.set_exclusive_zone(self, -1)
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, PANEL_HEIGHT)
+            self.set_size_request(-1, -1)
+        self.grid_revealer.set_reveal_child(open_)
+
+    def _on_grid_settled(self, revealer, _pspec):
+        if not revealer.get_child_revealed() and not self.grid_open:
+            GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.TOP, False)
+            GtkLayerShell.set_exclusive_zone(self, DOCK_HEIGHT)
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, 0)
+            self.set_size_request(-1, DOCK_HEIGHT)
 
     @staticmethod
     def _icon_button(icon, tooltip, callback, *args):
@@ -300,6 +431,9 @@ class Dock(Gtk.Window):
             self.seam.set_size_request(gap, 1)
             self.left.set_size_request(half, -1)
             self.right.set_size_request(half, -1)
+            self.grid_seam.set_size_request(gap, 1)
+            self.grid_left.set_size_request(half, -1)
+            self.grid_right.set_size_request(half, -1)
 
     def _on_clicked(self, _button, info, side):
         app_id = wayland_app_id(info)
