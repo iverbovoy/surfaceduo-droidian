@@ -641,12 +641,18 @@ class Dock(Gtk.Window):
         The dock is on the overlay layer, which is above the lock screen as
         well as above everything else, so it has to be told.
 
-        logind's LockedHint on the seat's own session is the one source that
-        is right in every case. phosh's org.gnome.ScreenSaver answers false
-        while its lock screen is on the display - closing the device shows it
-        without the screen saver ever going active - and the Lock signal only
-        fires for the path `loginctl lock-sessions` takes. The hint is set for
-        all of them.
+        logind's LockedHint on the seat's session is the source. phosh's
+        org.gnome.ScreenSaver answers false while its lock screen is on the
+        display - "active" there means blanked, not locked - so it is asked
+        only as a second opinion: either one saying "locked" is enough.
+
+        The hint has a hole of its own. phosh comes up locked, and 0.49 as
+        packaged does not tell logind: it locks before it is listening to itself, so the
+        hint says "no" behind the lock screen until the first unlock. The
+        port's phosh is patched to say it (see phosh-patches/), and says it
+        when it takes the org.gnome.ScreenSaver name - which on a slow start
+        is most of a minute after the lock screen is up. Until that name has
+        an owner the hint means nothing, and the dock stays hidden.
 
         The session has to be found rather than assumed: `self` is whichever
         session the process was started from, which for anything launched over
@@ -654,16 +660,26 @@ class Dock(Gtk.Window):
         one attached to a seat.
         """
         self.system_bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        self.session_bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         self.session_path = None
+        self.session_bus.signal_subscribe(
+            None, "org.gnome.ScreenSaver", "ActiveChanged",
+            "/org/gnome/ScreenSaver", None, Gio.DBusSignalFlags.NONE,
+            lambda *a: self._read_locked())
 
         # Any session's property change; which session is decided on read,
         # because the one that owns the screen is not there yet when the
         # dock starts two seconds behind the shell, and is a different one
         # after every restart of the shell.
+        # logind's sessions only, picked by the interface named in the
+        # signal's first argument - not by sender, which drops signals (see
+        # the README). Subscribed to every PropertiesChanged on the system
+        # bus this ran a dozen times a second: the modem, the battery and
+        # the network never stop changing.
         self.system_bus.signal_subscribe(
-            None, "org.freedesktop.DBus.Properties", "PropertiesChanged",
-            None, None, Gio.DBusSignalFlags.NONE,
-            lambda *a: self._read_locked())
+            None, "org.freedesktop.DBus.Properties",
+            "PropertiesChanged", None, "org.freedesktop.login1.Session",
+            Gio.DBusSignalFlags.NONE, lambda *a: self._read_locked())
         # A signal that never comes is indistinguishable from a phone that is
         # simply not locked, so ask as well.
         GLib.timeout_add_seconds(2, self._read_locked)
@@ -696,6 +712,30 @@ class Dock(Gtk.Window):
             return None
         return value[0]
 
+    def _shell_is_up(self):
+        """True once phosh owns org.gnome.ScreenSaver - see above."""
+        try:
+            value = self.session_bus.call_sync(
+                "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                "org.freedesktop.DBus", "NameHasOwner",
+                GLib.Variant("(s)", ("org.gnome.ScreenSaver",)), None,
+                Gio.DBusCallFlags.NONE, 500, None)
+        except GLib.Error:
+            return False
+        return bool(value[0])
+
+    def _screen_saver_active(self):
+        """What phosh itself says. False when it cannot be asked - the shell
+        restarting is not the phone being locked."""
+        try:
+            value = self.session_bus.call_sync(
+                "org.gnome.ScreenSaver", "/org/gnome/ScreenSaver",
+                "org.gnome.ScreenSaver", "GetActive", None, None,
+                Gio.DBusCallFlags.NONE, 500, None)
+        except GLib.Error:
+            return False
+        return bool(value[0])
+
     def _read_locked(self):
         """Hide while the seat's session says it is locked.
 
@@ -717,6 +757,10 @@ class Dock(Gtk.Window):
                 if self.session_path is not None:
                     locked = self._session_property(self.session_path,
                                                     "LockedHint")
+            if not self._shell_is_up():
+                locked = True
+            elif self._screen_saver_active():
+                locked = True
             if locked is not None:
                 self.set_visible(not locked)
         except Exception as err:          # noqa: BLE001 - see docstring
@@ -953,8 +997,18 @@ class Dock(Gtk.Window):
         if found != app_id:
             learn_app_id(info, found)
         app_id = found
+        # Ask for the focus rather than hope for it: phoc gives it to a new
+        # window on its own, but not when another window was raised meanwhile.
+        subprocess.run(["wlrctl", "toplevel", "focus", f"app_id:{app_id}"],
+                       check=False)
         if not self._wait_for_window(app_id):
-            print(f"sfduo-dock: {app_id} never took focus", file=sys.stderr)
+            # Asking did not help, so it is not a window that has the focus
+            # but a layer surface with exclusive keyboard - phoc's log says
+            # "Layer surface has focus, not focusing view yet" (LogDomains
+            # phoc-seat). No chord reaches the window from here; it stays
+            # across both panels, and the dock hides as for any such window.
+            print(f"sfduo-dock: {app_id} never took focus - a layer surface "
+                  "is holding the keyboard", file=sys.stderr)
             return
         # The chord is a toggle: sending it to a window already on that side
         # would push it back to full width. Remember where each app was put.

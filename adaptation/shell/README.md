@@ -239,15 +239,39 @@ Two rough edges, both known:
 ### It hides while the phone is locked
 
 The dock is on the overlay layer, which is above the lock screen as well as
-above everything else, so it has to be told. The one source that is right in
-every case is logind's `LockedHint` on the seat's own session:
+above everything else, so it has to be told. The source is logind's
+`LockedHint` on the seat's own session:
 
 - phosh's `org.gnome.ScreenSaver` answers **false** while its lock screen is
-  on the display. Closing the device shows the lock screen without the screen
-  saver ever going active.
+  on the display - "active" there means blanked. Closing the device shows the
+  lock screen without the screen saver ever going active.
 - logind's `Lock`/`Unlock` signals only fire for the path `loginctl
   lock-sessions` takes, not for closing the device.
 - `LockedHint` is set for both.
+
+**Except for the one lock that matters most: the one the shell starts in.**
+phosh comes up locked, on every boot and every restart, and phosh 0.49 as
+Droidian packages it (cf38ab5) does not tell logind - later versions were not
+checked. It listens to its own lock state only once it owns
+`org.gnome.ScreenSaver`, and can only set the hint once it has a proxy for its
+session; the startup lock happens before either, and nothing replays it. So
+`LockedHint` is `no` behind the lock screen until the first unlock, and the
+dock sat on the lock screen after every reboot. It hid for a whole day of
+development, because every lock *after* startup works.
+
+`phosh-patches/0001` makes phosh say its state at both of those moments -
+both, because which comes first depends on how long the shell took to start
+(1 s on a warm restart, 10 s on a bad one, and the order flips). On a slow
+start that is still most of a minute after the lock screen is drawn, so the
+dock also treats "nobody owns `org.gnome.ScreenSaver` yet" as locked.
+
+The patches are against droidian/phosh at cf38ab5, the tree the installed
+package was built from, configured as the package is (`--prefix=/usr
+--libdir=lib/aarch64-linux-gnu`; a `/usr/local` build looks for its plugins in
+the wrong place). The binary replaces `/usr/libexec/phosh`; the packaged one
+is kept beside it as `phosh.stock`. `0002` makes the status bar say LTE
+rather than 4G. `0003` is unfinished work on a top bar per panel, inert
+without a full-height cutout in gmobile's device description.
 
 The session has to be found, not assumed. `/org/freedesktop/login1/session/
 self` is whichever session the process was started from, which for anything

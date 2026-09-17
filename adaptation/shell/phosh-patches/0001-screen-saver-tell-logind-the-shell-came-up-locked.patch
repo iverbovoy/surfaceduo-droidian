@@ -1,0 +1,28 @@
+--- a/src/screen-saver-manager.c
++++ b/src/screen-saver-manager.c
+@@ -596,6 +596,10 @@
+     "swapped-object-signal::wakeup-outputs", G_CALLBACK (on_lockscreen_manager_wakeup_outputs), self,
+     "swapped-object-signal::notify::locked", G_CALLBACK (on_lockscreen_manager_locked_changed), self,
+     NULL);
++
++  /* Whatever happened to the lock before we were listening - the shell
++   * locking itself as it comes up, usually - was not heard. */
++  on_lockscreen_manager_locked_changed (self);
+ }
+ 
+ 
+@@ -675,6 +679,14 @@
+     "swapped-object-signal::lock", G_CALLBACK (on_logind_lock), self,
+     "swapped-object-signal::unlock", G_CALLBACK (on_logind_unlock), self,
+     NULL);
++
++  /* The shell comes up locked, and usually did so before this proxy existed:
++   * the change that would have set LockedHint found no one to tell. Say it
++   * now, or logind believes an unlocked session behind the lock screen until
++   * the first unlock - and so does everything that asks logind. Which of the
++   * proxy and the bus name arrives first varies with how long the shell took
++   * to start, so both say it. */
++  on_lockscreen_manager_locked_changed (self);
+ }
+ 
+ 

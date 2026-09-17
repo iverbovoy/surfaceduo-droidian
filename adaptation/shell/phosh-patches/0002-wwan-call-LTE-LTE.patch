@@ -1,0 +1,22 @@
+--- a/src/wwan/phosh-wwan-mm.c
++++ b/src/wwan/phosh-wwan-mm.c
+@@ -86,7 +86,7 @@
+   if (access_tec & MM_MODEM_ACCESS_TECHNOLOGY_5GNR) {
+     return "5G";
+   } else if (access_tec & MM_MODEM_ACCESS_TECHNOLOGY_LTE) {
+-    return "4G";
++    return "LTE";
+   } else if (access_tec & MM_MODEM_ACCESS_TECHNOLOGY_HSPA_PLUS) {
+     return "3.75G";
+   } else if (access_tec & MM_MODEM_ACCESS_TECHNOLOGY_HSPA) {
+--- a/src/wwan/phosh-wwan-ofono.c
++++ b/src/wwan/phosh-wwan-ofono.c
+@@ -92,7 +92,7 @@
+   if (g_strcmp0 (access_tec, "hspa") == 0)
+     return "3.5G";
+   if (g_strcmp0 (access_tec, "lte") == 0)
+-    return "4G";
++    return "LTE";
+   if (g_strcmp0 (access_tec, "nr") == 0)
+     return "5G";
+ 
