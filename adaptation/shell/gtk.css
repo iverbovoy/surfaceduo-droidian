@@ -133,3 +133,16 @@ phosh-app-grid-folder-button {
   padding-left: 18px;
   padding-right: 18px;
 }
+
+/* The top bar is never see-through. phosh makes it transparent whenever no
+   window is maximized - over a wallpaper that is the point, over this black
+   one it changes nothing - but a new window maps at the very top of the
+   output for a moment, under the bar, before it is tiled: its header bar
+   showed through as a grey flash across the status icons on every launch
+   (caught at 5 fps: one frame of "Settings" and a menu button behind the
+   clock). The launch curtain cannot cover it - the bar is not the dock's. */
+#top-bar-bin,
+#top-bar-bin:not(.p-solid) {
+  background-color: #000000;
+  transition: none;
+}
