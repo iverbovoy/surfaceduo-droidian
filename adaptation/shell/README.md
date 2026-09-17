@@ -122,6 +122,16 @@ install -Dm644 -o droidian -g droidian gtk.css /home/droidian/.config/gtk-3.0/gt
 systemctl restart phosh
 ```
 
+A fresh Droidian 101 image has none of what the dock needs - `wlrctl`,
+`wtype`, the gtk-layer-shell typelib, `dconf` - and the package can only
+recommend them, because it is installed offline with `dpkg` before the device
+has seen a network. Until they are there the dock says so in the journal and
+exits. Once online:
+
+```
+sudo sfduo-shell-setup
+```
+
 The gmobile cutout described above is not installed: it costs the whole
 notification shade, as that section explains.
 

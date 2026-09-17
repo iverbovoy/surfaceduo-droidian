@@ -1,0 +1,12 @@
+#!/bin/sh
+# sfduo-shell-setup: what the two-panel shell needs that a fresh Droidian
+# image does not have. The adaptation package only recommends these - it is
+# installed offline, with dpkg, before the device has ever seen a network -
+# so this is the step to run once it has one.
+set -e
+[ "$(id -u)" = 0 ] || { echo "run as root: sudo $0" >&2; exit 1; }
+apt-get update
+apt-get install -y wlrctl wtype gir1.2-gtklayershell-0.1 python3-gi gir1.2-gtk-3.0 dconf-cli
+# compile the lock that keeps windows from opening across both panels
+dconf update
+echo "done - restart the shell (systemctl restart phosh) or reboot"

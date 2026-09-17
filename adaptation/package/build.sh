@@ -661,6 +661,7 @@ install -Dm644 "$SYSTEM/dconf/profile-user"        "$PKG/etc/dconf/profile/user"
 # screen after a reboot until the first unlock.
 install -m755 "$SHELLDIR/sfduo-dock"       "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-brightness" "$PKG/usr/local/bin/"
+install -m755 "$SHELLDIR/sfduo-shell-setup" "$PKG/usr/local/sbin/"
 install -Dm644 "$SHELLDIR/sfduo-dock.desktop"       "$PKG/etc/xdg/autostart/sfduo-dock.desktop"
 install -Dm644 "$SHELLDIR/sfduo-brightness.desktop" "$PKG/etc/xdg/autostart/sfduo-brightness.desktop"
 install -Dm644 "$SHELLDIR/gtk.css"   "$PKG/usr/share/sfduo/gtk.css"
@@ -776,7 +777,9 @@ if [ -d /run/systemd/system ]; then
         echo "sfduo: Build the audio modules and reinstall." >&2
     fi
     systemctl daemon-reload
-    for u in $START; do systemctl start "$u" || true; done
+    # --no-block: on a first boot this runs before multi-user.target, and a
+    # unit that waits for the modem would hold the whole boot with it.
+    for u in $START; do systemctl --no-block start "$u" || true; done
 else
     ln -sf /usr/lib/systemd/system/sfduo-usb.service \
        /etc/systemd/system/multi-user.target.wants/sfduo-usb.service

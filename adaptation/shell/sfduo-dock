@@ -33,9 +33,22 @@ import time
 
 import gi
 
-gi.require_version("Gtk", "3.0")
-gi.require_version("Gdk", "3.0")
-gi.require_version("GtkLayerShell", "0.1")
+# A fresh Droidian image has none of what this needs, and `dpkg -i` does not
+# pull in a package's Recommends. Started by the session on such a system,
+# say what is missing once and leave quietly - not a traceback at every login.
+SETUP_HINT = "sfduo-dock: %s is missing - run `sudo sfduo-shell-setup` once online"
+try:
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("Gdk", "3.0")
+    gi.require_version("GtkLayerShell", "0.1")
+except ValueError:
+    print(SETUP_HINT % "gir1.2-gtklayershell-0.1", file=sys.stderr)
+    sys.exit(0)
+for tool in ("wlrctl", "wtype"):
+    if not any(os.access(os.path.join(d, tool), os.X_OK)
+               for d in os.environ.get("PATH", "/usr/bin").split(":")):
+        print(SETUP_HINT % tool, file=sys.stderr)
+        sys.exit(0)
 import cairo  # noqa: E402
 from gi.repository import Gdk, Gio, GLib, Gtk, GtkLayerShell  # noqa: E402
 
