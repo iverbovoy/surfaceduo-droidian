@@ -190,8 +190,14 @@ scrolling on its own - and launching onto the panel that was tapped, exactly
 like the dock. It lives in a `GtkRevealer` above the strip and slides up out
 of the dock (280ms) and back down into it; the window grows to the display
 first, which is invisible because both it and the desktop are black. The
-button again, a tap on empty space, or launching something closes it.
-`pkill -USR1 -f sfduo-dock` toggles it from outside, for a keybinding.
+strip goes as the grid comes - the grid is the launcher then, and the room
+is better spent on a fifth row of it. A finger moving up across the strip
+opens it; the button does too. Moving down across the grid, a tap on empty
+space, or launching something closes it. The gesture watches in the capture
+phase and claims the sequence once it is clearly a swipe, which takes it
+away from whatever button the finger started on - a swipe does not also
+launch the app it began over. `pkill -USR1 -f sfduo-dock` toggles it from
+outside, for a keybinding.
 
 That matters more than it sounds: with phosh's own grid pushed off the
 screen, this is the only way to everything else.

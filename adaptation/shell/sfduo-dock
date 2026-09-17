@@ -50,7 +50,8 @@ CONFIG = os.path.expanduser("~/.config/sfduo/dock.json")
 PANEL_HEIGHT = 32         # phosh's top bar, left visible over the grid
 GRID_ICON = 64            # the app grid's icons, phosh's own size
 GRID_COLUMNS = 3          # per panel: 450px gives three of ~140
-SLIDE_MS = 280            # the grid sliding up, and back down
+SLIDE_MS = 200            # the grid sliding up, and back down
+SWIPE_PX = 24             # how far a finger travels before it is a swipe
 WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
 
 CSS = b"""
@@ -170,6 +171,16 @@ class Dock(Gtk.Window):
         self.connect("size-allocate", self._on_size_allocate)
         self.show_all()
         self._follow_lockscreen()
+
+        # A finger moving up across the strip opens the grid; moving down
+        # across the grid closes it. The gesture watches in the capture
+        # phase and claims the sequence once it is clearly a swipe, which
+        # takes it away from whatever button the finger started on - so a
+        # swipe does not also launch the app it began over.
+        self.drag = Gtk.GestureDrag.new(self)
+        self.drag.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        self.drag.set_touch_only(True)
+        self.drag.connect("drag-update", self._on_drag)
         # `pkill -USR1 -f sfduo-dock` toggles the grid: a keybinding can be
         # pointed at it, and so can a test that has no finger.
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1,
@@ -358,6 +369,14 @@ class Dock(Gtk.Window):
         self._toggle_grid(False)
         self._on_clicked(button, info, side)
 
+    def _on_drag(self, gesture, _dx, dy):
+        if not self.grid_open and dy < -SWIPE_PX:
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self._toggle_grid(True)
+        elif self.grid_open and dy > SWIPE_PX:
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self._toggle_grid(False)
+
     def _toggle_grid(self, open_=None):
         """Slide the grid up out of the dock, or back down into it.
 
@@ -380,10 +399,14 @@ class Dock(Gtk.Window):
             GtkLayerShell.set_exclusive_zone(self, -1)
             GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, PANEL_HEIGHT)
             self.set_size_request(-1, -1)
+            # The strip goes as the grid comes: the grid is the launcher now,
+            # and the room is better spent on a fourth row of it.
+            self.row.set_visible(False)
         self.grid_revealer.set_reveal_child(open_)
 
     def _on_grid_settled(self, revealer, _pspec):
         if not revealer.get_child_revealed() and not self.grid_open:
+            self.row.set_visible(True)
             GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.TOP, False)
             GtkLayerShell.set_exclusive_zone(self, DOCK_HEIGHT)
             GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, 0)
