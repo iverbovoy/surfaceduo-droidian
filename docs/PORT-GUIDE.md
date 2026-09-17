@@ -88,7 +88,8 @@ cmdline argument and loop-mounts it as /.
 
 ## 4. Adaptation
 
-Build and inject `adaptation/` (see its README): USB RNDIS access +
+Build the package (`adaptation/package/build.sh`, or take the .deb from a
+release) and inject it with `adaptation/ssh/inject-ssh-twrp.sh`: USB RNDIS access +
 sshd (the nightly ships none), the touch udev rule, bluetooth fixes
 (start timeout + board-address), vendor-daemon taming with early ADSP
 boot (without it the system I/O-deadlocks ~2 minutes after boot), the
@@ -131,9 +132,11 @@ you are actually on the USB link.
 ## 6. What to expect
 
 See the status matrix in the top-level README. Touch works end-to-end
-(kernel spi-hid → vendor touchpen HAL → uinput → udev rule). Phosh
-treats the two panels as one span, so centered UI falls into the hinge
-gap - a compositor-level fix is future work.
+(kernel spi-hid → vendor touchpen HAL → uinput → udev rule). Stock
+phosh treats the two panels as one span, so centered UI falls into the
+hinge gap; the adaptation's experimental shell (`adaptation/shell/`) works
+around that from outside phosh - run `sudo sfduo-shell-setup` once the
+device is online to give it what it needs.
 
 ## Debug channels, in order of preference
 
