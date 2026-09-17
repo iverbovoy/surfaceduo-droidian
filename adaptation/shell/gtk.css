@@ -39,34 +39,54 @@
 
 /* ---- lock screen ------------------------------------------------------ */
 
+/* The clock, the date and the notifications share one box, and GTK places a
+   child with a margin inside it by a rule that is not "the box minus the
+   margin" - as long as there is slack, that is: margin plus width less than
+   the box. So there is no slack. The box is given the display's width, and
+   each child is given a margin of one panel plus the hinge and a width of
+   exactly the other panel: 478 + 450 = 928, nothing left to distribute, and
+   the child sits where the arithmetic says. Clock and date on the right
+   panel, under the thumb; the notifications on the left, where the eyes are
+   and no hand is.
+
+   The arrow, the hint under it and the keypad live in boxes of their own and
+   never needed this: 478 puts them on 703 as it is.
+
+   All of it is the landscape width, like every other number here. */
+phosh-lockscreen .p-large { min-width: 928px; }
+
 #phosh-lockscreen-clock,
-#phosh-lockscreen-date,
+#phosh-lockscreen-date {
+  margin-left: 478px;
+  min-width: 450px;
+}
+
+/* The notifications cannot be given the arithmetic's 478: the area that
+   holds them also holds the media player, in a revealer, and a revealer that
+   shows nothing still asks for its child's width - 598px. Ask for more than
+   928 - 598 = 330 and the whole box overflows the display, and everything in
+   it, clock included, slides right by half the excess. So 330 exactly: the
+   area sits at [0, 598], the card is centred in it a little right of the
+   panel's centre, and narrowed by 28px so that its right edge stops at 443,
+   short of the bezel. Not centred on the panel; on the panel, and steady. */
+phosh-lockscreen scrolledwindow {
+  margin-left: 0;
+  margin-right: 330px;
+}
+phosh-lockscreen .phosh-notification-tray { margin-right: 28px; }
+
 .phosh-lockscreen-arrow,
 .phosh-lockscreen-unlocker,
 phosh-lockscreen label.dim-label {
   margin-left: 478px;
 }
 
+/* The rule above is for the "Slide up to unlock" hint, which has no name of
+   its own - but a notification card's timestamp is a dim label too, and a
+   margin inside the card widens the card and pushes everything around it. */
+phosh-lockscreen .phosh-notification-tray label.dim-label { margin-left: 0; }
+
 /* The PIN keypad is centred inside the unlocker, which has already moved. */
-
-/* Notifications go the other way. The clock and the keypad sit on the panel
-   the thumb is on; something to read belongs on the other one, where the eyes
-   already are and where no hand is covering it.
-
-   The shift goes on the scrolled window that holds them rather than on the
-   list inside it: the list lives in a 360px clamp, and a 478px margin on
-   something 360 wide leaves nothing. Moving the whole area works out to the
-   left panel, and the clamp then centres within it. */
-phosh-lockscreen scrolledwindow {
-  margin-left: 0;
-  margin-right: 478px;
-}
-
-/* The margin above stops short: a widget is never given less than it asks
-   for, and the card asks for 332px, which from the left edge of the area
-   reaches 465 - fifteen pixels into the bezel. So the card is narrowed by
-   that much rather than pushed, which it does honour. */
-phosh-lockscreen .phosh-notification-tray { margin-right: 28px; }
 
 /* ---- home bar --------------------------------------------------------- */
 
