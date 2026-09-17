@@ -161,15 +161,15 @@ class Dock(Gtk.Window):
         one attached to a seat.
         """
         self.system_bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
-        self.session_path = self._seat_session()
-        if self.session_path is None:
-            print("sfduo-dock: no graphical session, staying visible",
-                  file=sys.stderr)
-            return
+        self.session_path = None
 
+        # Any session's property change; which session is decided on read,
+        # because the one that owns the screen is not there yet when the
+        # dock starts two seconds behind the shell, and is a different one
+        # after every restart of the shell.
         self.system_bus.signal_subscribe(
             None, "org.freedesktop.DBus.Properties", "PropertiesChanged",
-            self.session_path, None, Gio.DBusSignalFlags.NONE,
+            None, None, Gio.DBusSignalFlags.NONE,
             lambda *a: self._read_locked())
         # A signal that never comes is indistinguishable from a phone that is
         # simply not locked, so ask as well.
@@ -191,6 +191,8 @@ class Dock(Gtk.Window):
         return None
 
     def _session_property(self, path, name):
+        if path is None:
+            return None
         try:
             value = self.system_bus.call_sync(
                 "org.freedesktop.login1", path,
@@ -202,19 +204,30 @@ class Dock(Gtk.Window):
         return value[0]
 
     def _read_locked(self):
-        locked = self._session_property(self.session_path, "LockedHint")
-        if locked is None:
-            # The session is gone: restarting the shell ends one logind
-            # session and opens another, and the path we resolved at startup
-            # stops answering. Without this the dock never hears about a lock
-            # again and sits over the lock screen.
-            self.session_path = self._seat_session()
+        """Hide while the seat's session says it is locked.
+
+        Nothing in here may raise: an exception out of a GLib callback is
+        printed once and the timeout is dropped for good, after which the
+        dock keeps whatever state it had - which is how it came to sit over
+        the lock screen for an hour with no error visible on the screen.
+        """
+        try:
             if self.session_path is None:
-                return True
-            locked = self._session_property(self.session_path, "LockedHint")
+                self.session_path = self._seat_session()
+            locked = None
+            if self.session_path is not None:
+                locked = self._session_property(self.session_path, "LockedHint")
             if locked is None:
-                return True
-        self.set_visible(not locked)
+                # The session is gone - the shell was restarted and logind
+                # opened a new one - or is not there yet. Look again.
+                self.session_path = self._seat_session()
+                if self.session_path is not None:
+                    locked = self._session_property(self.session_path,
+                                                    "LockedHint")
+            if locked is not None:
+                self.set_visible(not locked)
+        except Exception as err:          # noqa: BLE001 - see docstring
+            print(f"sfduo-dock: lock state: {err}", file=sys.stderr)
         return True
 
     def _pane(self, side, items):
