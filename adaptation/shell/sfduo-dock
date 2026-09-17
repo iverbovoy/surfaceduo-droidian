@@ -82,6 +82,8 @@ FLICK = 0.6               # px/ms: faster than this and the direction decides
 MOVE_MS = 240             # the dock crossing to the other panel
 WATCH_MS = 500            # how often to ask which windows are open
 WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
+CURTAIN_ICON = 96         # the app's icon on the launch curtain
+CURTAIN_SETTLE = 250      # ms between the tiling chord and lifting the curtain
 
 CSS = b"""
 /* The window is the whole display and mostly nothing: transparent, with
@@ -115,6 +117,10 @@ viewport { background-color: transparent; }
   border-radius: 14px;
 }
 .running-dot { color: #e8e4d9; font-size: 9px; margin-bottom: 1px; }
+/* The launch curtain: black over both panels while a new window is being put
+   on its panel, the app's icon where it is going to be. */
+.curtain { background-color: #000000; opacity: 0; transition: opacity 140ms ease-out; }
+.curtain.up { opacity: 1; transition: none; }
 /* The grid: one flow box per panel, icons over their names. */
 .grid-pane { padding: 12px 14px; }
 .grid-app {
@@ -304,6 +310,8 @@ class Dock(Gtk.Window):
             row.set_halign(Gtk.Align.FILL)    # the display's width, not its own
             row.set_hexpand(True)
             self.stage.add_overlay(row)
+        self.curtain = self._build_curtain()
+        self.stage.add_overlay(self.curtain)
         self.add(self.stage)
 
         self.progress = 0.0       # 0 closed .. 1 open
@@ -339,6 +347,11 @@ class Dock(Gtk.Window):
         # pointed at it, and so can a test that has no finger.
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1,
                              lambda: self._toggle_grid() or True)
+        # `pkill -USR2 -f sfduo-dock` launches what $XDG_RUNTIME_DIR/sfduo-launch
+        # names - "org.gnome.Settings.desktop right" - exactly as a tap on its
+        # button would: curtain, placement and all. For tests with no finger.
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR2,
+                             lambda: self._launch_from_file() or True)
 
     @staticmethod
     def _load_placed():
@@ -550,7 +563,7 @@ class Dock(Gtk.Window):
         gap = max(1, round(width * HINGE_FRACTION))
         half = (width - gap) // 2
         top = STAGE_HEIGHT - DOCK_HEIGHT
-        if self.progress > 0.0:
+        if self.progress > 0.0 or getattr(self, "curtain_up", False):
             region = cairo.Region(cairo.RectangleInt(0, 0, width, STAGE_HEIGHT))
         else:
             region = cairo.Region()
@@ -1050,6 +1063,18 @@ class Dock(Gtk.Window):
             self.grid_right.set_size_request(half, -1)
 
 
+    def _launch_from_file(self):
+        path = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-launch")
+        try:
+            with open(path) as fp:
+                desktop_id, side = fp.read().split()[:2]
+            info = Gio.DesktopAppInfo.new(desktop_id)
+        except (OSError, ValueError, TypeError) as err:
+            print(f"sfduo-dock: {path}: {err}", file=sys.stderr)
+            return
+        if info is not None and side in ("left", "right"):
+            self._on_clicked(None, info, side)
+
     def _on_clicked(self, _button, info, side):
         app_id = wayland_app_id(info)
         if app_id in getattr(self, "running", {}):
@@ -1065,8 +1090,74 @@ class Dock(Gtk.Window):
         except GLib.Error as err:
             print(f"sfduo-dock: {info.get_id()}: {err.message}", file=sys.stderr)
             return
-        threading.Thread(target=self._place, args=(info, app_id, side, before),
-                         daemon=True).start()
+        self._raise_curtain(info, side)
+        threading.Thread(target=self._place_and_reveal,
+                         args=(info, app_id, side, before), daemon=True).start()
+
+    # ---- the launch curtain ------------------------------------------------
+    #
+    # A new window maps at its own size, across both panels, and is tiled only
+    # once it has the focus: for most of a second it is in the wrong place.
+    # phoc has no way to say where a window should open, so the dock - which
+    # is above everything - covers the stage for that second and lifts when
+    # the window is where it belongs.
+
+    def _build_curtain(self):
+        curtain = Gtk.Box()
+        curtain.get_style_context().add_class("curtain")
+        curtain.set_halign(Gtk.Align.FILL)
+        curtain.set_valign(Gtk.Align.FILL)
+        curtain.set_homogeneous(True)
+        self.curtain_icons = {}
+        for side in ("left", "right"):
+            icon = Gtk.Image()
+            icon.set_pixel_size(CURTAIN_ICON)
+            icon.set_halign(Gtk.Align.CENTER)
+            icon.set_valign(Gtk.Align.CENTER)
+            curtain.pack_start(icon, True, True, 0)
+            self.curtain_icons[side] = icon
+        curtain.set_no_show_all(True)
+        self.curtain_up = False
+        self.curtain_timer = None
+        return curtain
+
+    def _raise_curtain(self, info, side):
+        for where, icon in self.curtain_icons.items():
+            gicon = info.get_icon() if where == side else None
+            if gicon is not None:
+                icon.set_from_gicon(gicon, Gtk.IconSize.DIALOG)
+            else:
+                icon.clear()
+            icon.show()
+        self.curtain.show()
+        self.curtain.get_style_context().add_class("up")
+        self.curtain_up = True
+        self._shape()
+        # Whatever happens to the launch, the curtain does not stay.
+        if self.curtain_timer is not None:
+            GLib.source_remove(self.curtain_timer)
+        self.curtain_timer = GLib.timeout_add_seconds(WAIT_TIMEOUT + 2, self._lift_curtain)
+
+    def _lift_curtain(self):
+        if self.curtain_timer is not None:
+            GLib.source_remove(self.curtain_timer)
+            self.curtain_timer = None
+        if not self.curtain_up:
+            return False
+        self.curtain_up = False
+        self.curtain.get_style_context().remove_class("up")     # fades, per the CSS
+        self._shape()
+        GLib.timeout_add(180, lambda: self.curtain_up or self.curtain.hide() or False)
+        return False
+
+    def _place_and_reveal(self, info, app_id, side, before):
+        try:
+            placed = self._place(info, app_id, side, before)
+        except Exception as err:          # noqa: BLE001 - the curtain must lift
+            print(f"sfduo-dock: placing {info.get_id()}: {err}", file=sys.stderr)
+            placed = False
+        # A tiled window needs a moment to lay itself out at its new size.
+        GLib.timeout_add(CURTAIN_SETTLE if placed else 0, self._lift_curtain)
 
     def _place(self, info, app_id, side, before):
         """Wait for the window, then hand it to the panel it was asked for.
@@ -1090,7 +1181,7 @@ class Dock(Gtk.Window):
             time.sleep(0.1)
         if found is None:
             print(f"sfduo-dock: no window for {info.get_id()}", file=sys.stderr)
-            return
+            return False
         if found != app_id:
             learn_app_id(info, found)
         app_id = found
@@ -1106,16 +1197,18 @@ class Dock(Gtk.Window):
             # across both panels, and the dock hides as for any such window.
             print(f"sfduo-dock: {app_id} never took focus - a layer surface "
                   "is holding the keyboard", file=sys.stderr)
-            return
+            return False
         # The chord is a toggle: sending it to a window already on that side
         # would push it back to full width. Remember where each app was put.
         if self.placed.get(app_id) == side:
-            return
+            return True
         key = "Left" if side == "left" else "Right"
         if subprocess.run(["wtype", "-M", "logo", "-k", key, "-m", "logo"],
                           check=False).returncode == 0:
             self.placed[app_id] = side
             self._save_placed()
+            return True
+        return False
 
     @staticmethod
     def _wait_for_window(app_id):

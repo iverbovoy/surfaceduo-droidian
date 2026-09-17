@@ -335,6 +335,20 @@ never arrives", and both of which cost a debugging round here:
 - **A bus connection held in a local variable takes its subscriptions with it
   when it is collected.** Keep it on the instance.
 
+### The launch curtain
+
+A new window maps at its own size, across both panels, and can only be tiled
+once it has the focus - most of a second in the wrong place, and phoc has no
+way to be told where a window should open. The dock is above everything, so it
+covers the stage for that second: black, with the app's icon on the panel it
+is headed for, lifted 250 ms after the tiling chord so the window has laid
+itself out at its new size. It lifts on every path, including a launch that
+never produces a window.
+
+`pkill -USR2 -f sfduo-dock` launches whatever `$XDG_RUNTIME_DIR/sfduo-launch`
+names (`org.gnome.Settings.desktop right`) exactly as a tap would - curtain,
+placement and all - for checking this without a finger.
+
 ### When a launched app opens across both panels
 
 Placement depends on the new window taking the focus, and for a day of this
