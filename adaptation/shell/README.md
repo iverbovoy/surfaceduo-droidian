@@ -75,6 +75,15 @@ look the way they do:
   (`phosh-lockscreen`, `phosh-app-grid-button`), a style class from the `.ui`
   (`.phosh-lockscreen-arrow`, `.phosh-search-bar`), or a name set explicitly
   with `<property name="name">` (`#phosh-lockscreen-clock`, `#home-bar`).
+- **A style class reaches everything that wears it, including what is not
+  on screen.** `label.dim-label` was meant for the "Slide up to unlock" hint;
+  it also matched the artist line in the lock screen's media player, hidden
+  in a revealer - and a revealer that shows nothing still asks for its
+  child's width. A 478px margin on that label made the player ask for 598,
+  the area holding the notifications could shrink no further, and everything
+  in the box drifted. Two afternoons of "the layout will not hold still"
+  came down to that one selector. Select by position in the tree when the
+  widget has no name of its own.
 - **A CSS margin only lands on a widget GTK3 allocates through a CSS gadget.**
   Labels, images and boxes have one. `GtkEventBox` does not, which is why the
   home bar's handle ignores a margin and the box that centres it does not.

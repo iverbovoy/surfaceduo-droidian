@@ -61,32 +61,20 @@ phosh-lockscreen .p-large { min-width: 928px; }
   min-width: 450px;
 }
 
-/* The notifications cannot be given the arithmetic's 478: the area that
-   holds them also holds the media player, in a revealer, and a revealer that
-   shows nothing still asks for its child's width - 598px. Ask for more than
-   928 - 598 = 330 and the whole box overflows the display, and everything in
-   it, clock included, slides right by half the excess. So 330 exactly: the
-   area sits at [0, 598], the card is centred in it a little right of the
-   panel's centre, and narrowed by 28px so that its right edge stops at 443,
-   short of the bezel. Not centred on the panel; on the panel, and steady. */
 phosh-lockscreen scrolledwindow {
   margin-left: 0;
-  margin-right: 330px;
-}
-phosh-lockscreen .phosh-notification-tray { margin-right: 28px; }
-
-.phosh-lockscreen-arrow,
-.phosh-lockscreen-unlocker,
-phosh-lockscreen label.dim-label {
-  margin-left: 478px;
+  margin-right: 478px;
 }
 
-/* The rule above is for the "Slide up to unlock" hint, which has no name of
-   its own - but a notification card's timestamp is a dim label too, and a
-   margin inside the card widens the card and pushes everything around it. */
-phosh-lockscreen .phosh-notification-tray label.dim-label { margin-left: 0; }
-
-/* The PIN keypad is centred inside the unlocker, which has already moved. */
+/* The hint under the arrow has no name of its own, only "dim-label" - and so
+   does the artist line in the media player, which shares this screen, hidden
+   in a revealer. A revealer that shows nothing still asks for its child's
+   width, so a 478px margin on that label made the player ask for 598, the
+   area holding the notifications could shrink no further, and the card sat
+   right of centre with the clock dragged along. Selecting the hint by where
+   it lives - a direct child of a direct child of the deck's page - reaches
+   nothing else. */
+phosh-lockscreen deck > box > box > label.dim-label { margin-left: 478px; }
 
 /* ---- home bar --------------------------------------------------------- */
 
