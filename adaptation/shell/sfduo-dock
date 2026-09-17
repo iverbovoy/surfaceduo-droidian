@@ -36,6 +36,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("GtkLayerShell", "0.1")
+import cairo  # noqa: E402
 from gi.repository import Gdk, Gio, GLib, Gtk, GtkLayerShell  # noqa: E402
 
 # The hinge as a fraction of the panel span: 84 physical pixels of 2784. Taken
@@ -47,16 +48,25 @@ ICON_SIZE = 48            # logical px, the glyph itself
 BUTTON_SIZE = 64          # the box it sits in - equal for every app
 DOCK_HEIGHT = 84          # the strip the dock reserves along the bottom
 CONFIG = os.path.expanduser("~/.config/sfduo/dock.json")
-PANEL_HEIGHT = 32         # phosh's top bar, left visible over the grid
+PANEL_HEIGHT = 32         # phosh's top bar
+HOME_BAR_HEIGHT = 15      # phosh's home bar, under the dock
+SCREEN_HEIGHT = 600       # logical, landscape - like every other number here
+STAGE_HEIGHT = SCREEN_HEIGHT - PANEL_HEIGHT - HOME_BAR_HEIGHT   # what is ours
 GRID_ICON = 64            # the app grid's icons, phosh's own size
 GRID_COLUMNS = 3          # per panel: 450px gives three of ~140
-SLIDE_MS = 200            # the grid sliding up, and back down
-SWIPE_PX = 24             # how far a finger travels before it is a swipe
+SLIDE_MS = 220            # the grid settling after the finger lets go
+SWIPE_PX = 12             # how far a finger travels before it is a swipe
+FLICK = 0.6               # px/ms: faster than this and the direction decides
 WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
 
 CSS = b"""
-/* Opaque, so that nothing shows through the gap between the two halves. */
-window.sfduo-dock { background-color: #000000; }
+/* The window is the whole display and mostly nothing: transparent, with
+   input only where the strip is. The strip and the grid paint their own
+   black, so nothing shows through the gap between the two halves. */
+window.sfduo-dock { background-color: transparent; }
+viewport { background-color: transparent; }
+.dock-row { background-color: #000000; }
+.grid-stage { background-color: #000000; }
 .dock-pane {
   background-color: rgba(18,18,20,0.92);
   padding: 6px 10px;
@@ -113,11 +123,40 @@ def wayland_app_id(info):
     return info.get_id().removesuffix(".desktop")
 
 
+class Stage(Gtk.Viewport):
+    """A viewport that asks for the stage's height and no more.
+
+    A bare viewport asks for its child's height, and this one's child is
+    twice the stage - a spacer and the grid - so the window grew to twice
+    the display and, being anchored at the bottom, put the grid on screen.
+    The height is the stage's, whatever is inside.
+    """
+
+    def do_get_preferred_height(self):
+        return STAGE_HEIGHT, STAGE_HEIGHT
+
+    def do_get_preferred_height_for_width(self, _width):
+        return STAGE_HEIGHT, STAGE_HEIGHT
+
+
 class Dock(Gtk.Window):
     def __init__(self):
         super().__init__()
         self.get_style_context().add_class("sfduo-dock")
-        self.set_size_request(-1, DOCK_HEIGHT)
+
+        # Transparent where it is nothing, and it is nothing almost
+        # everywhere: the window is as tall as the space between phosh's
+        # bars, so that the grid can be laid out once and left standing just
+        # below the bottom edge, ready to be dragged up. Growing the window
+        # at the moment of opening is what made opening stutter - a round
+        # trip to the compositor, a relayout and the first paint of forty
+        # icons, all on the first frame of the gesture.
+        screen = Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+        self.set_app_paintable(True)
+        self.set_size_request(-1, STAGE_HEIGHT)
 
         GtkLayerShell.init_for_window(self)
         GtkLayerShell.set_namespace(self, "sfduo-dock")
@@ -126,8 +165,9 @@ class Dock(Gtk.Window):
                      GtkLayerShell.Edge.RIGHT,
                      GtkLayerShell.Edge.BOTTOM):
             GtkLayerShell.set_anchor(self, edge, True)
-        # Reserve the strip, so a maximized or tiled window stops above it
-        # instead of hiding under it.
+        # Reserve only the strip: a maximized or tiled window stops above it
+        # and runs on underneath the rest, which is transparent and, when
+        # closed, lets touches through.
         GtkLayerShell.set_exclusive_zone(self, DOCK_HEIGHT)
         GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
 
@@ -141,7 +181,8 @@ class Dock(Gtk.Window):
         cut = (len(items) + 1) // 2
 
         self.row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        self.row.set_valign(Gtk.Align.END)   # a dock belongs at the bottom
+        self.row.get_style_context().add_class("dock-row")
+        self.row.set_size_request(-1, DOCK_HEIGHT)
         self.left = self._pane("left", items[:cut])
         self.seam = Gtk.Box()
         self.right = self._pane("right", items[cut:])
@@ -149,43 +190,164 @@ class Dock(Gtk.Window):
         self.row.pack_start(self.seam, False, False, 0)
         self.row.pack_start(self.right, True, True, 0)
 
-        # The grid of everything sits above the strip in a revealer, so that
-        # it slides up out of the dock and back down into it. Closed, it has
-        # no height and the window is the strip; open, the window is the
-        # whole display and the grid fills what the strip leaves.
+        # The grid stands on a stage below the visible edge and is moved,
+        # not revealed: its position is a number, the finger sets it while
+        # it is down and a frame-clock animation finishes the journey after.
+        # The grid is scrolled into view, not moved: a viewport the height of
+        # the stage holds a transparent spacer with the grid beneath it, and
+        # the scroll position is the grid's position. Scrolling a viewport
+        # shifts its window without laying anything out again, which is what
+        # makes following a finger cheap. (A GtkFixed grows to hold whatever
+        # is put in it; a GtkLayout hands children their natural size; an
+        # overlay clamps a margin so the child fits. None will park a widget
+        # below the edge.)
         self.grid = self._build_grid()
-        self.grid_revealer = Gtk.Revealer()
-        self.grid_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_UP)
-        self.grid_revealer.set_transition_duration(SLIDE_MS)
-        self.grid_revealer.set_vexpand(True)
-        self.grid_revealer.add(self.grid)
-        self.grid_revealer.connect("notify::child-revealed", self._on_grid_settled)
-
+        self.grid.set_size_request(-1, STAGE_HEIGHT)
+        spacer = Gtk.Box()
+        spacer.set_size_request(-1, STAGE_HEIGHT)
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        column.pack_start(self.grid_revealer, True, True, 0)
-        column.pack_end(self.row, False, False, 0)
-        self.add(column)
-        self.grid_open = False
+        column.pack_start(spacer, False, False, 0)
+        column.pack_start(self.grid, False, False, 0)
+        self.scroll = Gtk.Adjustment(value=0, lower=0, upper=2 * STAGE_HEIGHT,
+                                     step_increment=1, page_increment=STAGE_HEIGHT,
+                                     page_size=STAGE_HEIGHT)
+        viewport = Stage(vadjustment=self.scroll)
+        viewport.set_shadow_type(Gtk.ShadowType.NONE)
+        viewport.add(column)
 
+        self.row.set_valign(Gtk.Align.END)
+        self.stage = Gtk.Overlay()
+        self.stage.add(viewport)
+        self.stage.add_overlay(self.row)
+        self.add(self.stage)
+
+        self.progress = 0.0       # 0 closed .. 1 open
+        self.animation = None     # (tick id, from, to, start time)
         self.placed = {}          # app_id -> the panel it was last sent to
         self.connect("size-allocate", self._on_size_allocate)
+        self.connect("map", lambda *_a: self._shape())
         self.show_all()
         self._follow_lockscreen()
 
-        # A finger moving up across the strip opens the grid; moving down
-        # across the grid closes it. The gesture watches in the capture
-        # phase and claims the sequence once it is clearly a swipe, which
-        # takes it away from whatever button the finger started on - so a
-        # swipe does not also launch the app it began over.
+        # The finger drives the grid. In the capture phase, so that the
+        # sequence can be claimed once it is a swipe and taken away from the
+        # button it started on; touch only, so a stylus or a pointer keeps
+        # clicking things.
         self.drag = Gtk.GestureDrag.new(self)
         self.drag.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         self.drag.set_touch_only(True)
         self.drag.connect("drag-begin", self._on_drag_begin)
-        self.drag.connect("drag-update", self._on_drag)
+        self.drag.connect("drag-update", self._on_drag_update)
+        self.drag.connect("drag-end", self._on_drag_end)
         # `pkill -USR1 -f sfduo-dock` toggles the grid: a keybinding can be
         # pointed at it, and so can a test that has no finger.
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1,
                              lambda: self._toggle_grid() or True)
+
+    # ---- the grid's motion ------------------------------------------------
+
+    @property
+    def grid_open(self):
+        return self.progress >= 1.0
+
+    def _set_progress(self, progress):
+        """Put the grid where a progress of 0..1 says, and the strip with it."""
+        self.progress = max(0.0, min(1.0, progress))
+        y = round(STAGE_HEIGHT * (1.0 - self.progress))
+        self.scroll.set_value(STAGE_HEIGHT - y)
+        # The strip fades as the grid rises over it; the grid is the
+        # launcher then, and the room is better spent on a fifth row.
+        self.row.set_opacity(1.0 - self.progress)
+        self.row.set_visible(self.progress < 1.0)
+        for button in getattr(self, "grid_buttons", []):
+            ctx = button.get_style_context()
+            ctx.add_class("open") if self.grid_open else ctx.remove_class("open")
+        self._shape()
+
+    def _shape(self):
+        """Where the window takes touches: the strip when closed, all of it
+        otherwise. Everything else falls through to what is underneath."""
+        win = self.get_window()
+        if win is None:
+            return
+        width = self.get_allocated_width()
+        if self.progress <= 0.0:
+            rect = cairo.RectangleInt(0, STAGE_HEIGHT - DOCK_HEIGHT, width, DOCK_HEIGHT)
+        else:
+            rect = cairo.RectangleInt(0, 0, width, STAGE_HEIGHT)
+        win.input_shape_combine_region(cairo.Region(rect), 0, 0)
+
+    def _animate_to(self, target):
+        """Finish the journey from wherever the grid is, easing out."""
+        self._stop_animation()
+        start = self.progress
+        if abs(target - start) < 0.001:
+            self._set_progress(target)
+            return
+        # The remaining distance takes a proportional share of the time, so
+        # a grid released near its destination does not crawl the last bit.
+        duration = SLIDE_MS * abs(target - start)
+        t0 = self.get_frame_clock().get_frame_time()
+
+        def tick(_widget, clock):
+            t = (clock.get_frame_time() - t0) / 1000.0
+            k = min(1.0, t / duration) if duration > 0 else 1.0
+            eased = 1.0 - (1.0 - k) ** 3               # ease-out cubic
+            self._set_progress(start + (target - start) * eased)
+            if k >= 1.0:
+                self.animation = None
+                return GLib.SOURCE_REMOVE
+            return GLib.SOURCE_CONTINUE
+
+        self.animation = self.add_tick_callback(tick)
+
+    def _stop_animation(self):
+        if self.animation is not None:
+            self.remove_tick_callback(self.animation)
+            self.animation = None
+
+    def _toggle_grid(self, open_=None):
+        if open_ is None:
+            open_ = not self.grid_open
+        self._animate_to(1.0 if open_ else 0.0)
+
+    # ---- the finger -------------------------------------------------------
+
+    def _on_drag_begin(self, _gesture, _x, y):
+        self._stop_animation()
+        self.drag_start = self.progress
+        self.drag_claimed = False
+        self.drag_last = (GLib.get_monotonic_time(), 0.0)
+        self.drag_velocity = 0.0
+
+    def _on_drag_update(self, gesture, _dx, dy):
+        # Once it is a swipe, it is ours: the button it started over does
+        # not also fire.
+        if not self.drag_claimed:
+            if abs(dy) < SWIPE_PX:
+                return
+            self.drag_claimed = True
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        now = GLib.get_monotonic_time()
+        then, last_dy = self.drag_last
+        if now > then:
+            self.drag_velocity = (dy - last_dy) / ((now - then) / 1000.0)  # px/ms
+        self.drag_last = (now, dy)
+        # A finger going up raises the grid by exactly as much.
+        self._set_progress(self.drag_start - dy / STAGE_HEIGHT)
+
+    def _on_drag_end(self, _gesture, _dx, _dy):
+        if not self.drag_claimed:
+            return
+        # A flick decides by direction; a slow release, by which side of
+        # halfway the grid was left on.
+        if self.drag_velocity < -FLICK:
+            target = 1.0
+        elif self.drag_velocity > FLICK:
+            target = 0.0
+        else:
+            target = 1.0 if self.progress >= 0.5 else 0.0
+        self._animate_to(target)
 
     def _follow_lockscreen(self):
         """Get out of the way while the phone is locked.
@@ -326,6 +488,7 @@ class Dock(Gtk.Window):
         # A tap on nothing closes it. Buttons take their own presses, so the
         # event box only ever hears about the space between them.
         backdrop = Gtk.EventBox()
+        backdrop.get_style_context().add_class("grid-stage")
         backdrop.add(row)
         backdrop.connect("button-release-event",
                          lambda *_a: self._toggle_grid(False) or False)
@@ -367,64 +530,8 @@ class Dock(Gtk.Window):
         return scroller
 
     def _on_grid_app(self, button, info, side):
-        self._toggle_grid(False)
+        self._animate_to(0.0)
         self._on_clicked(button, info, side)
-
-    def _on_drag_begin(self, _gesture, _x, _y):
-        # One gesture, one decision, taken against the state at its start.
-        # Opening the grid grows the window upward, and the finger that has
-        # not moved is suddenly hundreds of pixels lower in the window's
-        # coordinates - which read as a swipe down and closed the grid the
-        # instant it had opened.
-        self.drag_open_at_start = self.grid_open
-        self.drag_decided = False
-
-    def _on_drag(self, gesture, _dx, dy):
-        if self.drag_decided:
-            return
-        if not self.drag_open_at_start and dy < -SWIPE_PX:
-            self.drag_decided = True
-            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-            self._toggle_grid(True)
-        elif self.drag_open_at_start and dy > SWIPE_PX:
-            self.drag_decided = True
-            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-            self._toggle_grid(False)
-
-    def _toggle_grid(self, open_=None):
-        """Slide the grid up out of the dock, or back down into it.
-
-        Opening grows the window to the display first - it is black, and so
-        is the desktop, so nothing is seen to change - and then reveals the
-        grid, which slides up from the strip. Closing reveals nothing and
-        shrinks the window back once the slide has finished.
-        """
-        if open_ is None:
-            open_ = not self.grid_open
-        if open_ == self.grid_open:
-            return
-        self.grid_open = open_
-        for button in getattr(self, "grid_buttons", []):
-            ctx = button.get_style_context()
-            ctx.add_class("open") if open_ else ctx.remove_class("open")
-
-        if open_:
-            GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.TOP, True)
-            GtkLayerShell.set_exclusive_zone(self, -1)
-            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, PANEL_HEIGHT)
-            self.set_size_request(-1, -1)
-            # The strip goes as the grid comes: the grid is the launcher now,
-            # and the room is better spent on a fourth row of it.
-            self.row.set_visible(False)
-        self.grid_revealer.set_reveal_child(open_)
-
-    def _on_grid_settled(self, revealer, _pspec):
-        if not revealer.get_child_revealed() and not self.grid_open:
-            self.row.set_visible(True)
-            GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.TOP, False)
-            GtkLayerShell.set_exclusive_zone(self, DOCK_HEIGHT)
-            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, 0)
-            self.set_size_request(-1, DOCK_HEIGHT)
 
     @staticmethod
     def _icon_button(icon, tooltip, callback, *args):
@@ -460,9 +567,10 @@ class Dock(Gtk.Window):
         ends up that much wider and the seam slides off the hinge - 32 px off,
         in the arrangement this was first noticed with.
         """
-        span = max(allocation.width, allocation.height)
+        width = allocation.width
+        span = max(width, allocation.height)
         gap = max(1, round(span * HINGE_FRACTION))
-        half = max(1, (allocation.width - gap) // 2)
+        half = max(1, (width - gap) // 2)
         if (self.seam.get_size_request().width != gap
                 or self.left.get_size_request().width != half):
             self.seam.set_size_request(gap, 1)
@@ -471,6 +579,7 @@ class Dock(Gtk.Window):
             self.grid_seam.set_size_request(gap, 1)
             self.grid_left.set_size_request(half, -1)
             self.grid_right.set_size_request(half, -1)
+
 
     def _on_clicked(self, _button, info, side):
         app_id = wayland_app_id(info)

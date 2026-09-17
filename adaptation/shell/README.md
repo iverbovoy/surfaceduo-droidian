@@ -183,21 +183,40 @@ what other surfaces reserved and is the only way to hide the strip phosh keeps
 for its home bar - the grid shows through it otherwise. The top panel is spared
 by hand, with a 32px top margin, because a status bar is worth keeping.
 
-Everything that is not on the dock is behind the first button: a grid of
-every application, dealt across the two panels alphabetically - the first
-half on the left, the second on the right, three columns each, each half
-scrolling on its own - and launching onto the panel that was tapped, exactly
-like the dock. It lives in a `GtkRevealer` above the strip and slides up out
-of the dock (280ms) and back down into it; the window grows to the display
-first, which is invisible because both it and the desktop are black. The
-strip goes as the grid comes - the grid is the launcher then, and the room
-is better spent on a fifth row of it. A finger moving up across the strip
-opens it; the button does too. Moving down across the grid, a tap on empty
-space, or launching something closes it. The gesture watches in the capture
-phase and claims the sequence once it is clearly a swipe, which takes it
-away from whatever button the finger started on - a swipe does not also
-launch the app it began over. `pkill -USR1 -f sfduo-dock` toggles it from
+Everything that is not on the dock is behind a swipe up across the strip
+(or the first button): a grid of every application, dealt across the two
+panels alphabetically - the first half on the left, the second on the right,
+three columns each, each half scrolling on its own - and launching onto the
+panel that was tapped, exactly like the dock. The strip fades as the grid
+rises over it. Moving down across the grid, a tap on empty space, or
+launching something closes it. `pkill -USR1 -f sfduo-dock` toggles it from
 outside, for a keybinding.
+
+The grid follows the finger, and the window does no work at the moment of
+opening. Three things make that so, each found by doing it the other way
+first:
+
+- **The window is always the height of the stage** - the space between
+  phosh's bars - transparent where it is nothing, with an input region of
+  just the strip while closed, so touches above it fall through to the
+  application underneath. Growing the window at the moment of opening was a
+  round trip to the compositor, a relayout and the first paint of forty
+  icons, all on the first frame of the gesture.
+- **The grid is scrolled into view, not moved.** A viewport the height of
+  the stage holds a transparent spacer with the grid beneath it, and the
+  scroll position is the grid's position. Scrolling a viewport shifts its
+  window without laying anything out again. No other GTK3 container will
+  park a widget below the edge: a GtkFixed grows to hold it, a GtkLayout
+  hands it its natural size and ignores the move, a GtkOverlay clamps the
+  margin so it fits. And a bare viewport asks for its child's height, so
+  the viewport here is subclassed to ask for the stage's.
+- **The finger sets the position directly while it is down**; letting go
+  hands over to a frame-clock animation that eases out over what is left of
+  220ms. A flick decides by direction, a slow release by which side of
+  halfway the grid was left on. One gesture makes one decision, against the
+  state it began in: opening used to grow the window upward, and the finger
+  that had not moved was suddenly hundreds of pixels lower in the window's
+  coordinates, which read as a swipe down.
 
 That matters more than it sounds: with phosh's own grid pushed off the
 screen, this is the only way to everything else.
