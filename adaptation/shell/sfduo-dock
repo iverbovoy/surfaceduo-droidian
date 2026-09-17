@@ -52,7 +52,9 @@ PLACED = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-placed.j
 PANEL_HEIGHT = 32         # phosh's top bar
 HOME_BAR_HEIGHT = 15      # phosh's home bar, under the dock
 SCREEN_HEIGHT = 600       # logical, landscape - like every other number here
-STAGE_HEIGHT = SCREEN_HEIGHT - PANEL_HEIGHT - HOME_BAR_HEIGHT   # what is ours
+STAGE_HEIGHT = SCREEN_HEIGHT - PANEL_HEIGHT   # everything below the top bar
+EDGE = 22                 # the gesture band along the bottom of a busy panel
+CLOSE_PX = 220            # a swipe this long over an app closes it, not just hides it
 GRID_ICON = 64            # the app grid's icons, phosh's own size
 GRID_COLUMNS = 3          # per panel: 450px gives three of ~140
 SLIDE_MS = 220            # the grid settling after the finger lets go
@@ -93,7 +95,7 @@ viewport { background-color: transparent; }
   background-color: rgba(255,255,255,0.14);
   border-radius: 14px;
 }
-.dock-button.open { background-color: rgba(255,255,255,0.10); border-radius: 14px; }
+.running-dot { color: #e8e4d9; font-size: 9px; margin-bottom: 1px; }
 /* The grid: one flow box per panel, icons over their names. */
 .grid-pane { padding: 12px 14px; }
 .grid-app {
@@ -172,11 +174,15 @@ class Dock(Gtk.Window):
                      GtkLayerShell.Edge.RIGHT,
                      GtkLayerShell.Edge.BOTTOM):
             GtkLayerShell.set_anchor(self, edge, True)
-        # Nothing is reserved. The dock lives on whichever panel has no
-        # window, so a window never needs room made for it: on the Duo an
-        # application fills its panel to the bottom edge, and the dock is on
-        # the other one - or gone, when both are taken.
-        GtkLayerShell.set_exclusive_zone(self, 0)
+        # Nothing is reserved, and nothing reserved by others is honoured:
+        # the window runs to the very bottom, over the strip phosh keeps for
+        # its home bar, so that the bottom edge of every panel is this
+        # window's - the dock on a free panel, a gesture band on a busy one.
+        # A window never needs room made for it: on the Duo an application
+        # fills its panel to the bottom edge, and the dock is on the other
+        # one, or gone when both are taken.
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, PANEL_HEIGHT)
         GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
 
         # One dock, cut in half by the bezel rather than two docks side by
@@ -232,6 +238,8 @@ class Dock(Gtk.Window):
         self.stage.add(viewport)
         for row in self.rows.values():
             row.set_valign(Gtk.Align.END)
+            row.set_halign(Gtk.Align.FILL)    # the display's width, not its own
+            row.set_hexpand(True)
             self.stage.add_overlay(row)
         self.add(self.stage)
 
@@ -307,15 +315,18 @@ class Dock(Gtk.Window):
                 ids = [line.split(":", 1)[0].strip()
                        for line in out.splitlines() if ":" in line]
                 busy = set()
+                running = {}
                 for app_id in ids:
                     minimized = subprocess.run(
                         ["wlrctl", "toplevel", "find", f"app_id:{app_id}",
                          "state:minimized"], check=False).returncode == 0
+                    running[app_id] = minimized
                     if minimized:
                         continue
                     # A window we placed is on the panel we put it on; one
                     # we did not is assumed to span both.
                     busy.add(self.placed.get(app_id, "both"))
+                GLib.idle_add(self._set_running, running)
                 if not busy:
                     mode = "both"
                 elif busy == {"left"}:
@@ -328,6 +339,71 @@ class Dock(Gtk.Window):
             except Exception as err:      # noqa: BLE001 - keep the beat going
                 print(f"sfduo-dock: windows: {err}", file=sys.stderr)
             time.sleep(WATCH_MS / 1000)
+
+    def _set_running(self, running):
+        """running: app_id -> minimized. Dots on favourites, buttons for the
+        rest, in every strip and both halves of the grid."""
+        if running == getattr(self, "running", None):
+            return False
+        self.running = running
+        for row in self.rows.values():
+            for wrapper in (row.pane_left, row.pane_right):
+                slab = getattr(wrapper, "slab", None)
+                if slab is None:
+                    continue
+                for app_id, button in slab.buttons.items():
+                    button.dot.set_visible(app_id in running)
+                for child in slab.running.get_children():
+                    slab.running.remove(child)
+                for app_id in sorted(running):
+                    if app_id in slab.buttons:
+                        continue
+                    if row is not self.rows["both"] or self.placed.get(app_id, "right") == slab.side:
+                        info = self._info_for(app_id)
+                        if info is None:
+                            continue
+                        button = self._app_button(info, slab.side, slab.size)
+                        button.dot.set_visible(True)
+                        slab.running.pack_start(button, False, False, 0)
+                        button.show_all()
+        for app_id, button in self.grid_apps.items():
+            button.dot.set_visible(app_id in running)
+        self._relayout()
+        return False
+
+    def _relayout(self):
+        """Ask for the layout pass outright, a frame from now.
+
+        Queueing one was not enough: a button added to a strip stayed one
+        pixel wide, and the strip at the width it had at startup, for as
+        long as nothing else made the window lay itself out again. And
+        asking synchronously from inside the change did nothing either -
+        the tree is not marked yet at that point. A frame later, it works.
+        """
+        def pass_():
+            # Both: the window's own pass finds nothing to do, the
+            # overlay's re-allocates its children from their current
+            # requests. Measured, not understood.
+            self.check_resize()
+            self.stage.check_resize()
+            self.queue_draw()
+            return False
+        GLib.timeout_add(16, pass_)
+
+    @staticmethod
+    def _info_for(app_id):
+        info = Gio.DesktopAppInfo.new(app_id + ".desktop")
+        if info is not None:
+            return info
+        for candidate in Gio.AppInfo.get_all():
+            if wayland_app_id(candidate) == app_id:
+                return candidate
+        return None
+
+    def _close_app(self, app_id):
+        subprocess.Popen(["wlrctl", "toplevel", "close", f"app_id:{app_id}"])
+        self.placed.pop(app_id, None)
+        self._save_placed()
 
     def _set_mode(self, mode):
         """Cross-fade the dock to where it should be now."""
@@ -343,6 +419,7 @@ class Dock(Gtk.Window):
         fading_out = [r for r in self.rows.values() if r is not target and r.get_visible()]
         for row in fading_in:
             row.set_visible(True)
+        self._relayout()         # a strip shown after it changed is stale until this
         starts = {r: r.get_opacity() for r in fading_in + fading_out}
         t0 = self.get_frame_clock().get_frame_time()
 
@@ -383,9 +460,6 @@ class Dock(Gtk.Window):
         if self.mode != "hidden" and self.move is None:
             self.row.set_opacity(1.0 - self.progress)
             self.row.set_visible(self.progress < 1.0)
-        for button in getattr(self, "grid_buttons", []):
-            ctx = button.get_style_context()
-            ctx.add_class("open") if self.grid_open else ctx.remove_class("open")
         self._shape()
 
     def _shape(self):
@@ -399,16 +473,15 @@ class Dock(Gtk.Window):
         half = (width - gap) // 2
         top = STAGE_HEIGHT - DOCK_HEIGHT
         if self.progress > 0.0:
-            rect = cairo.RectangleInt(0, 0, width, STAGE_HEIGHT)
-        elif self.mode == "both":
-            rect = cairo.RectangleInt(0, top, width, DOCK_HEIGHT)
-        elif self.mode == "left":
-            rect = cairo.RectangleInt(0, top, half, DOCK_HEIGHT)
-        elif self.mode == "right":
-            rect = cairo.RectangleInt(half + gap, top, half, DOCK_HEIGHT)
+            region = cairo.Region(cairo.RectangleInt(0, 0, width, STAGE_HEIGHT))
         else:
-            rect = cairo.RectangleInt(0, 0, 0, 0)
-        win.input_shape_combine_region(cairo.Region(rect), 0, 0)
+            region = cairo.Region()
+            for side, x in (("left", 0), ("right", half + gap)):
+                if self.mode in ("both", side):     # the dock is here
+                    region.union(cairo.RectangleInt(x, top, half, DOCK_HEIGHT))
+                else:                               # a window is here
+                    region.union(cairo.RectangleInt(x, STAGE_HEIGHT - EDGE, half, EDGE))
+        win.input_shape_combine_region(region, 0, 0)
 
     def _animate_to(self, target):
         """Finish the journey from wherever the grid is, easing out."""
@@ -446,12 +519,23 @@ class Dock(Gtk.Window):
 
     # ---- the finger -------------------------------------------------------
 
-    def _on_drag_begin(self, _gesture, _x, y):
+    def _panel_at(self, x):
+        width = self.get_allocated_width()
+        gap = max(1, round(width * HINGE_FRACTION))
+        return "left" if x < (width - gap) // 2 else "right"
+
+    def _on_drag_begin(self, _gesture, x, _y):
         self._stop_animation()
         self.drag_start = self.progress
         self.drag_claimed = False
         self.drag_last = (GLib.get_monotonic_time(), 0.0)
         self.drag_velocity = 0.0
+        # A swipe that starts over a panel with a window on it is about that
+        # window, not the grid: up hides it, further up closes it.
+        panel = self._panel_at(x)
+        self.drag_app = None
+        if self.progress <= 0.0 and self.mode not in ("both", panel):
+            self.drag_app = next((a for a, p in self.placed.items() if p == panel), None)
 
     def _on_drag_update(self, gesture, _dx, dy):
         # Once it is a swipe, it is ours: the button it started over does
@@ -461,6 +545,9 @@ class Dock(Gtk.Window):
                 return
             self.drag_claimed = True
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        if self.drag_app is not None:
+            self.drag_last = (GLib.get_monotonic_time(), dy)
+            return
         now = GLib.get_monotonic_time()
         then, last_dy = self.drag_last
         if now > then:
@@ -469,8 +556,20 @@ class Dock(Gtk.Window):
         # A finger going up raises the grid by exactly as much.
         self._set_progress(self.drag_start - dy / STAGE_HEIGHT)
 
-    def _on_drag_end(self, _gesture, _dx, _dy):
+    def _on_drag_end(self, _gesture, _dx, dy):
         if not self.drag_claimed:
+            return
+        if self.drag_app is not None:
+            if dy < -CLOSE_PX:
+                action = "close"
+            elif dy < -SWIPE_PX:
+                action = "minimize"
+            else:
+                return
+            subprocess.Popen(["wlrctl", "toplevel", action, f"app_id:{self.drag_app}"])
+            if action == "close":
+                self.placed.pop(self.drag_app, None)
+                self._save_placed()
             return
         # A flick decides by direction; a slow release, by which side of
         # halfway the grid was left on.
@@ -590,21 +689,48 @@ class Dock(Gtk.Window):
             outer.set_halign(Gtk.Align.CENTER)
         size = (BUTTON_SIZE - 8, ICON_SIZE - 6) if alone else (BUTTON_SIZE, ICON_SIZE)
 
+        outer.buttons = {}
         for info in items:
-            if info is None:
-                button = self._icon_button(
-                    Gio.ThemedIcon.new("view-app-grid-symbolic"), "All apps",
-                    lambda _b: self._toggle_grid(), size=size)
-                self.grid_buttons = getattr(self, "grid_buttons", []) + [button]
-            else:
-                button = self._icon_button(
-                    info.get_icon(), info.get_display_name(),
-                    self._on_clicked, info, side, size=size)
+            button = self._app_button(info, side, size)
+            outer.buttons[wayland_app_id(info)] = button
             outer.pack_start(button, False, False, 0)
+        # Whatever is running and is not a favourite goes here, after them,
+        # so that a hidden window can always be found again.
+        outer.running = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        outer.pack_start(outer.running, False, False, 0)
+        outer.side = side
+        outer.size = size
 
         wrapper = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         wrapper.pack_start(outer, True, True, 0)
+        wrapper.slab = outer
         return wrapper
+
+    def _app_button(self, info, side, size):
+        """A dock button for an app, with a dot under it while it runs and
+        a long press to close it."""
+        button = self._icon_button(info.get_icon(), info.get_display_name(),
+                                   self._on_clicked, info, side, size=size)
+        dot = Gtk.Label(label="●")
+        dot.get_style_context().add_class("running-dot")
+        dot.set_valign(Gtk.Align.END)
+        dot.set_halign(Gtk.Align.CENTER)
+        dot.set_no_show_all(True)
+        image = button.get_child()
+        button.remove(image)
+        overlay = Gtk.Overlay()
+        overlay.add(image)
+        overlay.add_overlay(dot)
+        overlay.set_overlay_pass_through(dot, True)
+        button.add(overlay)
+        overlay.show()
+        button.dot = dot
+        button.app_id = wayland_app_id(info)
+        press = Gtk.GestureLongPress.new(button)
+        press.set_touch_only(True)
+        press.connect("pressed", lambda g, *_a: self._close_app(button.app_id))
+        button.long_press = press                  # keep it alive
+        return button
 
     def _build_grid(self):
         """Every application, dealt across the two panels.
@@ -661,7 +787,14 @@ class Dock(Gtk.Window):
             box.pack_start(image, False, False, 0)
             box.pack_start(label, False, False, 0)
             button.add(box)
+            dot = Gtk.Label(label="●")
+            dot.get_style_context().add_class("running-dot")
+            dot.set_no_show_all(True)
+            box.pack_start(dot, False, False, 0)
+            button.dot = dot
             button.connect("clicked", self._on_grid_app, info, side)
+            self.grid_apps = getattr(self, "grid_apps", {})
+            self.grid_apps[wayland_app_id(info)] = button
             flow.add(button)
 
         scroller = Gtk.ScrolledWindow()
@@ -724,6 +857,11 @@ class Dock(Gtk.Window):
 
     def _on_clicked(self, _button, info, side):
         app_id = wayland_app_id(info)
+        if app_id in getattr(self, "running", {}):
+            # It has a window: bring that back rather than start another.
+            # Where it goes is where it was; a hidden window keeps its panel.
+            subprocess.Popen(["wlrctl", "toplevel", "focus", f"app_id:{app_id}"])
+            return
         try:
             # An app that is already running is raised rather than started
             # again; either way the window we want ends up focused.
