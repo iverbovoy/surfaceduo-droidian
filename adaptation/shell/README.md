@@ -334,6 +334,16 @@ never arrives", and both of which cost a debugging round here:
 - **A bus connection held in a local variable takes its subscriptions with it
   when it is collected.** Keep it on the instance.
 
+### Seeing what a gesture did
+
+`SFDUO_DOCK_DEBUG=1` in the dock's environment makes it say, on stderr, where
+each drag began, how it ended, and when one was cancelled. Start it the way
+the session does, not from a bare ssh shell: launched with an empty
+environment it works, but what it launches inherits that environment, and
+GNOME Settings, for one, refuses to start without `XDG_CURRENT_DESKTOP`
+("only supported under GNOME and Unity") - which looks exactly like a dock
+that ignores a tap.
+
 ## Brightness
 
 The screen came back at 100% every time the device was opened, and there were

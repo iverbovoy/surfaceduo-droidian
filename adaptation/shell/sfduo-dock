@@ -127,6 +127,12 @@ scrollbar { opacity: 0; }
 """
 
 
+def debug(message):
+    """SFDUO_DOCK_DEBUG=1 in the environment: say what the gestures did."""
+    if os.environ.get("SFDUO_DOCK_DEBUG"):
+        print(f"sfduo-dock: {message}", file=sys.stderr, flush=True)
+
+
 def favourites():
     """The apps on the dock: our own list if there is one, else the shell's."""
     try:
@@ -324,6 +330,11 @@ class Dock(Gtk.Window):
         self.drag.connect("drag-begin", self._on_drag_begin)
         self.drag.connect("drag-update", self._on_drag_update)
         self.drag.connect("drag-end", self._on_drag_end)
+        # A touch can also be taken away - the compositor cancels it when a
+        # gesture of its own starts, a device goes away mid-swipe - and then
+        # there is no drag-end at all: the grid stayed wherever the finger
+        # had left it, half way up the screen with the strip half faded.
+        self.drag.connect("cancel", self._on_drag_cancel)
         # `pkill -USR1 -f sfduo-dock` toggles the grid: a keybinding can be
         # pointed at it, and so can a test that has no finger.
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1,
@@ -592,6 +603,7 @@ class Dock(Gtk.Window):
         return "left" if x < (width - gap) // 2 else "right"
 
     def _on_drag_begin(self, _gesture, x, _y):
+        debug("drag begin x=%.0f y=%.0f mode=%s" % (x, _y, self.mode))
         self._stop_animation()
         self.drag_start = self.progress
         self.drag_claimed = False
@@ -627,7 +639,15 @@ class Dock(Gtk.Window):
         # A finger going up raises the grid by exactly as much.
         self._set_progress(self.drag_start - dy / STAGE_HEIGHT)
 
+    def _on_drag_cancel(self, _gesture, _sequence):
+        debug("drag cancelled at %.2f" % self.progress)
+        if getattr(self, "drag_claimed", False) and getattr(self, "drag_app", None) is None:
+            self._animate_to(1.0 if self.progress >= 0.5 else 0.0)
+        self.drag_claimed = False
+
     def _on_drag_end(self, _gesture, _dx, dy):
+        debug("drag end dy=%.0f claimed=%s velocity=%.2f progress=%.2f"
+              % (dy, self.drag_claimed, self.drag_velocity, self.progress))
         if not self.drag_claimed:
             return
         if self.drag_app is not None:
