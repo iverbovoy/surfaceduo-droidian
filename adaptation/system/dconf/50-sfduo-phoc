@@ -1,0 +1,5 @@
+# Surface Duo: windows tile to a panel, they do not fill the display.
+# phosh writes auto-maximize=true on every start unless it believes the
+# device is docked; the lock in locks/ keeps this value in force.
+[sm/puri/phoc]
+auto-maximize=false

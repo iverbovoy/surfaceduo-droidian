@@ -49,6 +49,7 @@ BUTTON_SIZE = 64          # the box it sits in - equal for every app
 DOCK_HEIGHT = 84          # the strip the dock reserves along the bottom
 CONFIG = os.path.expanduser("~/.config/sfduo/dock.json")
 PLACED = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-placed.json")
+APP_IDS = os.path.expanduser("~/.config/sfduo/app-ids.json")   # desktop id -> what its window is called
 PANEL_HEIGHT = 32         # phosh's top bar
 HOME_BAR_HEIGHT = 15      # phosh's home bar, under the dock
 SCREEN_HEIGHT = 600       # logical, landscape - like every other number here
@@ -124,12 +125,50 @@ def favourites():
     return apps
 
 
+def load_app_ids():
+    try:
+        with open(APP_IDS) as fp:
+            return dict(json.load(fp))
+    except (OSError, ValueError):
+        return {}
+
+
+LEARNED = load_app_ids()
+
+
 def wayland_app_id(info):
-    """What the toplevel will call itself. Apps that say so are believed."""
+    """What the toplevel will call itself.
+
+    A window learned once is remembered: the desktop file's name is only a
+    guess at it. Settings is org.gnome.Settings.desktop and its window is
+    gnome-control-center, and a dock waiting for the wrong name never tiled
+    it, so it opened across both panels with no way to close it.
+    """
+    learned = LEARNED.get(info.get_id())
+    if learned:
+        return learned
     declared = info.get_string("StartupWMClass")
     if declared:
         return declared
     return info.get_id().removesuffix(".desktop")
+
+
+def learn_app_id(info, app_id):
+    if LEARNED.get(info.get_id()) == app_id:
+        return
+    LEARNED[info.get_id()] = app_id
+    try:
+        os.makedirs(os.path.dirname(APP_IDS), exist_ok=True)
+        with open(APP_IDS, "w") as fp:
+            json.dump(LEARNED, fp, indent=1, sort_keys=True)
+    except OSError as err:
+        print(f"sfduo-dock: {APP_IDS}: {err}", file=sys.stderr)
+
+
+def toplevel_ids():
+    out = subprocess.run(["wlrctl", "toplevel", "list"], capture_output=True,
+                         text=True, check=False).stdout
+    return {line.split(":", 1)[0].strip() for line in out.splitlines() if ":" in line}
 
 
 class Stage(Gtk.Viewport):
@@ -314,6 +353,16 @@ class Dock(Gtk.Window):
                                      check=False).stdout
                 ids = [line.split(":", 1)[0].strip()
                        for line in out.splitlines() if ":" in line]
+                # A window that is gone takes its placement with it: the
+                # next window of that app is new, and maximized, and the
+                # dock must tile it again rather than believe it is already
+                # where it was. Settings opened across both panels because
+                # of this once.
+                gone = [a for a in self.placed if a not in ids]
+                if gone:
+                    for a in gone:
+                        self.placed.pop(a, None)
+                    self._save_placed()
                 busy = set()
                 running = {}
                 for app_id in ids:
@@ -536,6 +585,10 @@ class Dock(Gtk.Window):
         self.drag_app = None
         if self.progress <= 0.0 and self.mode not in ("both", panel):
             self.drag_app = next((a for a, p in self.placed.items() if p == panel), None)
+            if self.drag_app is None:
+                # A window the dock did not place spans both panels; the
+                # one under the finger is the active one.
+                self.drag_app = "state:active"
 
     def _on_drag_update(self, gesture, _dx, dy):
         # Once it is a swipe, it is ours: the button it started over does
@@ -566,7 +619,8 @@ class Dock(Gtk.Window):
                 action = "minimize"
             else:
                 return
-            subprocess.Popen(["wlrctl", "toplevel", action, f"app_id:{self.drag_app}"])
+            target = self.drag_app if self.drag_app.startswith("state:") else f"app_id:{self.drag_app}"
+            subprocess.Popen(["wlrctl", "toplevel", action, target])
             if action == "close":
                 self.placed.pop(self.drag_app, None)
                 self._save_placed()
@@ -862,6 +916,7 @@ class Dock(Gtk.Window):
             # Where it goes is where it was; a hidden window keeps its panel.
             subprocess.Popen(["wlrctl", "toplevel", "focus", f"app_id:{app_id}"])
             return
+        before = toplevel_ids()
         try:
             # An app that is already running is raised rather than started
             # again; either way the window we want ends up focused.
@@ -869,13 +924,37 @@ class Dock(Gtk.Window):
         except GLib.Error as err:
             print(f"sfduo-dock: {info.get_id()}: {err.message}", file=sys.stderr)
             return
-        threading.Thread(target=self._place, args=(app_id, side),
+        threading.Thread(target=self._place, args=(info, app_id, side, before),
                          daemon=True).start()
 
-    def _place(self, app_id, side):
-        """Wait for the window, then hand it to the panel it was asked for."""
+    def _place(self, info, app_id, side, before):
+        """Wait for the window, then hand it to the panel it was asked for.
+
+        The window is whichever one appears that was not there before the
+        launch - that is how its real name is learned - and failing that,
+        the one the desktop file suggested.
+        """
+        deadline = time.monotonic() + WAIT_TIMEOUT
+        found = None
+        while time.monotonic() < deadline:
+            new = toplevel_ids() - before
+            if new:
+                found = sorted(new)[0]
+                break
+            if app_id in before and subprocess.run(
+                    ["wlrctl", "toplevel", "find", f"app_id:{app_id}", "state:active"],
+                    check=False).returncode == 0:
+                found = app_id            # already running, now raised
+                break
+            time.sleep(0.1)
+        if found is None:
+            print(f"sfduo-dock: no window for {info.get_id()}", file=sys.stderr)
+            return
+        if found != app_id:
+            learn_app_id(info, found)
+        app_id = found
         if not self._wait_for_window(app_id):
-            print(f"sfduo-dock: no window for {app_id}", file=sys.stderr)
+            print(f"sfduo-dock: {app_id} never took focus", file=sys.stderr)
             return
         # The chord is a toggle: sending it to a window already on that side
         # would push it back to full width. Remember where each app was put.
