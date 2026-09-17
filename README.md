@@ -13,10 +13,24 @@ July 2026.
 > boot cycle. See [docs/SAFETY.md](docs/SAFETY.md). If you skip it, you
 > accept the risk of a paperweight.
 
-Cold RAM-boot to a fully working system (both panels, touch, WiFi
-auto-connect, sshd) takes ~75 seconds, hands-off.
+A boot to a fully working system (both panels, touch, WiFi auto-connect,
+sshd over USB) takes about two minutes, hands-off - measured in September
+2026 at 95-135 s from reboot to an ssh login.
 
-## Status (2026-07-13)
+## What it looks like
+
+Screenshots of the one output both panels share (2784x1800; the 84 px column
+the hinge hides is in the middle), taken on a from-scratch install of 0.13.0.
+The two-panel shell is **experimental and in development**.
+
+| | |
+|---|---|
+| ![two apps, one per panel](docs/img/shell-two-apps.png) | ![the dock across both panels](docs/img/shell-desktop.png) |
+| An app per panel: the dock tiles each window onto the side it was launched from. | The dock, cut by the hinge rather than doubled. |
+| ![the app grid](docs/img/shell-grid.png) | ![the lock screen](docs/img/shell-lockscreen.png) |
+| Swipe up from the dock: every app, dealt across the two panels. | The lock screen, kept off the hinge by CSS alone. |
+
+## Status (2026-09-17)
 
 | Subsystem | Status | Notes |
 |---|---|---|
@@ -81,9 +95,19 @@ auto-connect, sshd) takes ~75 seconds, hands-off.
    with the stock DTB, `tools/flash-safely.sh validate` it.
 5. Install the **Droidian 101 release** rootfs from TWRP, not the
    current nightly (a later nightly already broke this port once - the
-   porting guide says how); inject the adaptation package.
+   porting guide says how). Put the release's `.deb` in `out/` and its
+   ssh bundle in `out/ssh-debs/`, and inject both with
+   `adaptation/ssh/inject-ssh-twrp.sh` - the image ships no sshd.
 6. `tools/flash-safely.sh ram-boot` - **RAM-boot only** until you have
    many boring-stable cycles behind you.
+
+7. The first boot installs the package and **reboots itself once**; the
+   second is the real one. When the device is online, `sudo
+   sfduo-shell-setup` gives the experimental two-panel shell what a clean
+   image lacks.
+
+This path was run end to end on an untouched 101 image in September 2026;
+what it found is in the 0.13.0 notes.
 
 Full walkthrough: [docs/PORT-GUIDE.md](docs/PORT-GUIDE.md).
 

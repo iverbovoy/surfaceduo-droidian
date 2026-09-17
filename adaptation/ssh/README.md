@@ -19,8 +19,10 @@ device by the postinst, so each install gets unique keys.
 - `sfduo-ssh-firstboot.{service,sh}` - the on-device one-shot installer
   (`dpkg -i /var/cache/sfduo-ssh/*.deb`, guarded by
   /var/lib/sfduo-ssh-installed).
-- debs live in `out/ssh-debs/` at the repo root (gitignored; build them
-  with the chroot recipe below if lost).
+- debs live in `out/ssh-debs/` at the repo root (gitignored). Releases from
+  0.13.0 carry them as `ssh-debs-droidian-101.tar`, downloaded on a 101
+  image with `apt-get install --download-only openssh-server`; the chroot
+  recipe below rebuilds them for another base.
 
 ## Usage
 
