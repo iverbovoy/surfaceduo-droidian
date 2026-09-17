@@ -180,6 +180,7 @@ class Dock(Gtk.Window):
         self.drag = Gtk.GestureDrag.new(self)
         self.drag.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         self.drag.set_touch_only(True)
+        self.drag.connect("drag-begin", self._on_drag_begin)
         self.drag.connect("drag-update", self._on_drag)
         # `pkill -USR1 -f sfduo-dock` toggles the grid: a keybinding can be
         # pointed at it, and so can a test that has no finger.
@@ -369,11 +370,24 @@ class Dock(Gtk.Window):
         self._toggle_grid(False)
         self._on_clicked(button, info, side)
 
+    def _on_drag_begin(self, _gesture, _x, _y):
+        # One gesture, one decision, taken against the state at its start.
+        # Opening the grid grows the window upward, and the finger that has
+        # not moved is suddenly hundreds of pixels lower in the window's
+        # coordinates - which read as a swipe down and closed the grid the
+        # instant it had opened.
+        self.drag_open_at_start = self.grid_open
+        self.drag_decided = False
+
     def _on_drag(self, gesture, _dx, dy):
-        if not self.grid_open and dy < -SWIPE_PX:
+        if self.drag_decided:
+            return
+        if not self.drag_open_at_start and dy < -SWIPE_PX:
+            self.drag_decided = True
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
             self._toggle_grid(True)
-        elif self.grid_open and dy > SWIPE_PX:
+        elif self.drag_open_at_start and dy > SWIPE_PX:
+            self.drag_decided = True
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
             self._toggle_grid(False)
 
