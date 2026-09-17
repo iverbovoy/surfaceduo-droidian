@@ -48,6 +48,7 @@ ICON_SIZE = 48            # logical px, the glyph itself
 BUTTON_SIZE = 64          # the box it sits in - equal for every app
 DOCK_HEIGHT = 84          # the strip the dock reserves along the bottom
 CONFIG = os.path.expanduser("~/.config/sfduo/dock.json")
+PLACED = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-placed.json")
 PANEL_HEIGHT = 32         # phosh's top bar
 HOME_BAR_HEIGHT = 15      # phosh's home bar, under the dock
 SCREEN_HEIGHT = 600       # logical, landscape - like every other number here
@@ -57,6 +58,8 @@ GRID_COLUMNS = 3          # per panel: 450px gives three of ~140
 SLIDE_MS = 220            # the grid settling after the finger lets go
 SWIPE_PX = 12             # how far a finger travels before it is a swipe
 FLICK = 0.6               # px/ms: faster than this and the direction decides
+MOVE_MS = 240             # the dock crossing to the other panel
+WATCH_MS = 500            # how often to ask which windows are open
 WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
 
 CSS = b"""
@@ -65,7 +68,7 @@ CSS = b"""
    black, so nothing shows through the gap between the two halves. */
 window.sfduo-dock { background-color: transparent; }
 viewport { background-color: transparent; }
-.dock-row { background-color: #000000; }
+.dock-row { background-color: transparent; }
 .grid-stage { background-color: #000000; }
 .dock-pane {
   background-color: rgba(18,18,20,0.92);
@@ -74,6 +77,10 @@ viewport { background-color: transparent; }
 /* Rounded away from the hinge, square against it: one bar, cut by the bezel. */
 .dock-pane.left  { border-radius: 20px 0 0 20px; padding-right: 4px; }
 .dock-pane.right { border-radius: 0 20px 20px 0; padding-left: 4px; }
+/* Alone on a panel there is no seam to be square against - and seven
+   buttons must fit in 450px, so they are a size smaller. */
+.dock-pane.alone { border-radius: 20px; padding: 6px 8px; }
+.dock-pane.alone .dock-button { padding: 4px; }
 .dock-button {
   background: none;
   border: none;
@@ -165,10 +172,11 @@ class Dock(Gtk.Window):
                      GtkLayerShell.Edge.RIGHT,
                      GtkLayerShell.Edge.BOTTOM):
             GtkLayerShell.set_anchor(self, edge, True)
-        # Reserve only the strip: a maximized or tiled window stops above it
-        # and runs on underneath the rest, which is transparent and, when
-        # closed, lets touches through.
-        GtkLayerShell.set_exclusive_zone(self, DOCK_HEIGHT)
+        # Nothing is reserved. The dock lives on whichever panel has no
+        # window, so a window never needs room made for it: on the Duo an
+        # application fills its panel to the bottom edge, and the dock is on
+        # the other one - or gone, when both are taken.
+        GtkLayerShell.set_exclusive_zone(self, 0)
         GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
 
         # One dock, cut in half by the bezel rather than two docks side by
@@ -176,19 +184,24 @@ class Dock(Gtk.Window):
         # appearing once, and the halves are pushed against the seam so the
         # bar reads as a single thing with the hinge lying across it. Which
         # half an app sits in is therefore which panel it opens on.
-        items = [None]                              # the all-apps button
-        items += favourites()
+        # No all-apps button: the swipe up across the strip is the way to
+        # the grid, and without the button the dock fits a panel whole.
+        items = favourites()
         cut = (len(items) + 1) // 2
 
-        self.row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        self.row.get_style_context().add_class("dock-row")
-        self.row.set_size_request(-1, DOCK_HEIGHT)
-        self.left = self._pane("left", items[:cut])
-        self.seam = Gtk.Box()
-        self.right = self._pane("right", items[cut:])
-        self.row.pack_start(self.left, True, True, 0)
-        self.row.pack_start(self.seam, False, False, 0)
-        self.row.pack_start(self.right, True, True, 0)
+        # Three strips, one per place the dock can be: across both panels
+        # when nothing is open, or on the left or the right alone when the
+        # other panel has a window. They are stacked in the same place and
+        # cross-faded, which is the only way a row of buttons moves smoothly
+        # in GTK3 - reflowing them would jump. Which strip is showing
+        # decides which panel a tap opens onto.
+        self.rows = {
+            "both": self._row(("left", items[:cut]), ("right", items[cut:])),
+            "left": self._row(("left", items, True), ("right", [])),
+            "right": self._row(("left", []), ("right", items, True)),
+        }
+        self.row = self.rows["both"]
+        self.mode = "both"
 
         # The grid stands on a stage below the visible edge and is moved,
         # not revealed: its position is a number, the finger sets it while
@@ -215,19 +228,26 @@ class Dock(Gtk.Window):
         viewport.set_shadow_type(Gtk.ShadowType.NONE)
         viewport.add(column)
 
-        self.row.set_valign(Gtk.Align.END)
         self.stage = Gtk.Overlay()
         self.stage.add(viewport)
-        self.stage.add_overlay(self.row)
+        for row in self.rows.values():
+            row.set_valign(Gtk.Align.END)
+            self.stage.add_overlay(row)
         self.add(self.stage)
 
         self.progress = 0.0       # 0 closed .. 1 open
-        self.animation = None     # (tick id, from, to, start time)
-        self.placed = {}          # app_id -> the panel it was last sent to
+        self.animation = None     # tick id of the grid's motion
+        self.move = None          # tick id of the dock's crossing
+        self.placed = self._load_placed()   # app_id -> the panel it was sent to
         self.connect("size-allocate", self._on_size_allocate)
         self.connect("map", lambda *_a: self._shape())
         self.show_all()
+        for name, row in self.rows.items():
+            if name != "both":
+                row.set_opacity(0.0)
+                row.set_visible(False)
         self._follow_lockscreen()
+        threading.Thread(target=self._watch_windows, daemon=True).start()
 
         # The finger drives the grid. In the capture phase, so that the
         # sequence can be claimed once it is a swipe and taken away from the
@@ -244,6 +264,109 @@ class Dock(Gtk.Window):
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1,
                              lambda: self._toggle_grid() or True)
 
+    @staticmethod
+    def _load_placed():
+        """Which panel each app was put on, remembered across a restart of
+        the dock - it is the only record there is. The compositor will say
+        which windows exist but not where they are."""
+        try:
+            with open(PLACED) as fp:
+                return {k: v for k, v in json.load(fp).items() if v in ("left", "right")}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_placed(self):
+        try:
+            with open(PLACED, "w") as fp:
+                json.dump(self.placed, fp)
+        except OSError as err:
+            print(f"sfduo-dock: {PLACED}: {err}", file=sys.stderr)
+
+    def _row(self, left, right):
+        """One strip: a pane per panel, either of which may hold nothing."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        row.get_style_context().add_class("dock-row")
+        row.set_size_request(-1, DOCK_HEIGHT)
+        row.pane_left = self._pane(*left)
+        row.seam = Gtk.Box()
+        row.pane_right = self._pane(*right)
+        row.pack_start(row.pane_left, True, True, 0)
+        row.pack_start(row.seam, False, False, 0)
+        row.pack_start(row.pane_right, True, True, 0)
+        return row
+
+    # ---- where the dock is ------------------------------------------------
+
+    def _watch_windows(self):
+        """Ask, on a beat, which panels have a window on them."""
+        while True:
+            try:
+                out = subprocess.run(["wlrctl", "toplevel", "list"],
+                                     capture_output=True, text=True,
+                                     check=False).stdout
+                ids = [line.split(":", 1)[0].strip()
+                       for line in out.splitlines() if ":" in line]
+                busy = set()
+                for app_id in ids:
+                    minimized = subprocess.run(
+                        ["wlrctl", "toplevel", "find", f"app_id:{app_id}",
+                         "state:minimized"], check=False).returncode == 0
+                    if minimized:
+                        continue
+                    # A window we placed is on the panel we put it on; one
+                    # we did not is assumed to span both.
+                    busy.add(self.placed.get(app_id, "both"))
+                if not busy:
+                    mode = "both"
+                elif busy == {"left"}:
+                    mode = "right"
+                elif busy == {"right"}:
+                    mode = "left"
+                else:
+                    mode = "hidden"
+                GLib.idle_add(self._set_mode, mode)
+            except Exception as err:      # noqa: BLE001 - keep the beat going
+                print(f"sfduo-dock: windows: {err}", file=sys.stderr)
+            time.sleep(WATCH_MS / 1000)
+
+    def _set_mode(self, mode):
+        """Cross-fade the dock to where it should be now."""
+        if mode == self.mode:
+            return False
+        self.mode = mode
+        if self.move is not None:
+            self.remove_tick_callback(self.move)
+            self.move = None
+
+        target = self.rows.get(mode)            # None when hidden
+        fading_in = [] if target is None else [target]
+        fading_out = [r for r in self.rows.values() if r is not target and r.get_visible()]
+        for row in fading_in:
+            row.set_visible(True)
+        starts = {r: r.get_opacity() for r in fading_in + fading_out}
+        t0 = self.get_frame_clock().get_frame_time()
+
+        def tick(_widget, clock):
+            k = min(1.0, (clock.get_frame_time() - t0) / 1000.0 / MOVE_MS)
+            eased = 1.0 - (1.0 - k) ** 3
+            for r in fading_in:
+                r.set_opacity(starts[r] + (1.0 - starts[r]) * eased)
+            for r in fading_out:
+                r.set_opacity(starts[r] * (1.0 - eased))
+            if k >= 1.0:
+                for r in fading_out:
+                    r.set_visible(False)
+                self.row = target if target is not None else self.row
+                self.move = None
+                self._shape()
+                return GLib.SOURCE_REMOVE
+            return GLib.SOURCE_CONTINUE
+
+        self.row = target if target is not None else self.row
+        self._shape()
+        self.move = self.add_tick_callback(tick)
+        return False
+
     # ---- the grid's motion ------------------------------------------------
 
     @property
@@ -257,8 +380,9 @@ class Dock(Gtk.Window):
         self.scroll.set_value(STAGE_HEIGHT - y)
         # The strip fades as the grid rises over it; the grid is the
         # launcher then, and the room is better spent on a fifth row.
-        self.row.set_opacity(1.0 - self.progress)
-        self.row.set_visible(self.progress < 1.0)
+        if self.mode != "hidden" and self.move is None:
+            self.row.set_opacity(1.0 - self.progress)
+            self.row.set_visible(self.progress < 1.0)
         for button in getattr(self, "grid_buttons", []):
             ctx = button.get_style_context()
             ctx.add_class("open") if self.grid_open else ctx.remove_class("open")
@@ -271,10 +395,19 @@ class Dock(Gtk.Window):
         if win is None:
             return
         width = self.get_allocated_width()
-        if self.progress <= 0.0:
-            rect = cairo.RectangleInt(0, STAGE_HEIGHT - DOCK_HEIGHT, width, DOCK_HEIGHT)
-        else:
+        gap = max(1, round(width * HINGE_FRACTION))
+        half = (width - gap) // 2
+        top = STAGE_HEIGHT - DOCK_HEIGHT
+        if self.progress > 0.0:
             rect = cairo.RectangleInt(0, 0, width, STAGE_HEIGHT)
+        elif self.mode == "both":
+            rect = cairo.RectangleInt(0, top, width, DOCK_HEIGHT)
+        elif self.mode == "left":
+            rect = cairo.RectangleInt(0, top, half, DOCK_HEIGHT)
+        elif self.mode == "right":
+            rect = cairo.RectangleInt(half + gap, top, half, DOCK_HEIGHT)
+        else:
+            rect = cairo.RectangleInt(0, 0, 0, 0)
         win.input_shape_combine_region(cairo.Region(rect), 0, 0)
 
     def _animate_to(self, target):
@@ -437,29 +570,36 @@ class Dock(Gtk.Window):
             print(f"sfduo-dock: lock state: {err}", file=sys.stderr)
         return True
 
-    def _pane(self, side, items):
-        """Half of the dock, pushed up against the seam.
+    def _pane(self, side, items, alone=False):
+        """Half of the dock, pushed up against the seam - or nothing at all,
+        when the dock is on the other panel.
 
         The half that ends at the hinge is rounded only on its outer side, so
         that across the bezel the two halves read as one bar rather than as
         two slabs that happen to be near each other.
         """
+        if not items:
+            return Gtk.Box()
         outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         outer.set_halign(Gtk.Align.END if side == "left" else Gtk.Align.START)
         outer.set_valign(Gtk.Align.CENTER)
         outer.get_style_context().add_class("dock-pane")
         outer.get_style_context().add_class(side)
+        if alone:
+            outer.get_style_context().add_class("alone")
+            outer.set_halign(Gtk.Align.CENTER)
+        size = (BUTTON_SIZE - 8, ICON_SIZE - 6) if alone else (BUTTON_SIZE, ICON_SIZE)
 
         for info in items:
             if info is None:
                 button = self._icon_button(
                     Gio.ThemedIcon.new("view-app-grid-symbolic"), "All apps",
-                    lambda _b: self._toggle_grid())
+                    lambda _b: self._toggle_grid(), size=size)
                 self.grid_buttons = getattr(self, "grid_buttons", []) + [button]
             else:
                 button = self._icon_button(
                     info.get_icon(), info.get_display_name(),
-                    self._on_clicked, info, side)
+                    self._on_clicked, info, side, size=size)
             outer.pack_start(button, False, False, 0)
 
         wrapper = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
@@ -534,7 +674,7 @@ class Dock(Gtk.Window):
         self._on_clicked(button, info, side)
 
     @staticmethod
-    def _icon_button(icon, tooltip, callback, *args):
+    def _icon_button(icon, tooltip, callback, *args, size=(BUTTON_SIZE, ICON_SIZE)):
         """One dock button: same box, same glyph size, whatever the icon is.
 
         Both halves matter. Themed icons come in whatever sizes the theme
@@ -546,10 +686,10 @@ class Dock(Gtk.Window):
         button.get_style_context().add_class("dock-button")
         button.set_relief(Gtk.ReliefStyle.NONE)
         button.set_tooltip_text(tooltip)
-        button.set_size_request(BUTTON_SIZE, BUTTON_SIZE)
+        button.set_size_request(size[0], size[0])
 
         image = Gtk.Image()
-        image.set_pixel_size(ICON_SIZE)
+        image.set_pixel_size(size[1])
         image.set_from_gicon(icon, Gtk.IconSize.INVALID)
         image.set_halign(Gtk.Align.CENTER)
         image.set_valign(Gtk.Align.CENTER)
@@ -571,11 +711,12 @@ class Dock(Gtk.Window):
         span = max(width, allocation.height)
         gap = max(1, round(span * HINGE_FRACTION))
         half = max(1, (width - gap) // 2)
-        if (self.seam.get_size_request().width != gap
-                or self.left.get_size_request().width != half):
-            self.seam.set_size_request(gap, 1)
-            self.left.set_size_request(half, -1)
-            self.right.set_size_request(half, -1)
+        if (self.grid_seam.get_size_request().width != gap
+                or self.grid_left.get_size_request().width != half):
+            for row in self.rows.values():
+                row.seam.set_size_request(gap, 1)
+                row.pane_left.set_size_request(half, -1)
+                row.pane_right.set_size_request(half, -1)
             self.grid_seam.set_size_request(gap, 1)
             self.grid_left.set_size_request(half, -1)
             self.grid_right.set_size_request(half, -1)
@@ -606,6 +747,7 @@ class Dock(Gtk.Window):
         if subprocess.run(["wtype", "-M", "logo", "-k", key, "-m", "logo"],
                           check=False).returncode == 0:
             self.placed[app_id] = side
+            self._save_placed()
 
     @staticmethod
     def _wait_for_window(app_id):
