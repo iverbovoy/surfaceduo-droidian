@@ -49,6 +49,25 @@ phosh-lockscreen label.dim-label {
 
 /* The PIN keypad is centred inside the unlocker, which has already moved. */
 
+/* Notifications go the other way. The clock and the keypad sit on the panel
+   the thumb is on; something to read belongs on the other one, where the eyes
+   already are and where no hand is covering it.
+
+   The shift goes on the scrolled window that holds them rather than on the
+   list inside it: the list lives in a 360px clamp, and a 478px margin on
+   something 360 wide leaves nothing. Moving the whole area works out to the
+   left panel, and the clamp then centres within it. */
+phosh-lockscreen scrolledwindow {
+  margin-left: 0;
+  margin-right: 478px;
+}
+
+/* The margin above stops short: a widget is never given less than it asks
+   for, and the card asks for 332px, which from the left edge of the area
+   reaches 465 - fifteen pixels into the bezel. So the card is narrowed by
+   that much rather than pushed, which it does honour. */
+phosh-lockscreen .phosh-notification-tray { margin-right: 28px; }
+
 /* ---- home bar --------------------------------------------------------- */
 
 /* The drag handle is 200px wide and centred, i.e. entirely inside the bezel:
