@@ -95,6 +95,7 @@ def output_size():
 SCREEN_WIDTH, SCREEN_HEIGHT = output_size()
 STAGE_HEIGHT = SCREEN_HEIGHT - PANEL_HEIGHT   # everything below the top bar
 EDGE = 22                 # the gesture band along the bottom of a busy panel
+EDGE_MARGIN = 10          # a half's distance from its panel's outer edge when apart
 CLOSE_PX = 220            # a swipe this long over an app closes it, not just hides it
 GRID_ICON = ICON_SIZE     # the app grid's icons: the dock's size, not phosh's 64
 GRID_COLUMNS = 4          # on one panel: 540px at scale 2.5 gives four of ~130
@@ -127,10 +128,12 @@ viewport { background-color: transparent; }
   background-color: rgba(18,18,20,0.92);
   padding: 6px 10px;
 }
-/* Rounded on the outer side, square on the side facing the other half: one
-   bar, cut by the bezel across both panels, whole when the halves meet. */
-.dock-pane.left  { border-radius: 20px 0 0 20px; padding-right: 4px; }
-.dock-pane.right { border-radius: 0 20px 20px 0; padding-left: 4px; }
+/* Apart - one half at each panel's outer edge, under the thumbs - each is
+   a rounded slab of its own. Joined on one panel they are square where they
+   meet, so the two read as one bar. */
+.dock-pane { border-radius: 20px; }
+.dock-pane.joined.left  { border-radius: 20px 0 0 20px; padding-right: 4px; }
+.dock-pane.joined.right { border-radius: 0 20px 20px 0; padding-left: 4px; }
 .dock-button {
   background: none;
   border: none;
@@ -510,10 +513,10 @@ class PaneWindow(Gtk.Window):
 
     @property
     def width(self):
-        width = self.get_allocated_width()
-        if width <= 1:
-            width = self.get_preferred_width()[1]
-        return width
+        """The slab's natural width - not the window's allocation, which a
+        GTK3 toplevel keeps after its content shrank (a running app's button
+        gone) until told to shrink (see Dock._relayout)."""
+        return self.slab.get_preferred_width()[1]
 
     def move(self, x=None, y=None, settle=False):
         """Put the window at x (left margin) and y (bottom margin, <= 0).
@@ -861,6 +864,7 @@ class Dock(Gtk.Window):
         """
         def pass_():
             for pane in self.panes.values():
+                pane.resize(1, 1)       # to the natural size: a toplevel does not shrink on its own
                 pane.check_resize()
                 pane.queue_draw()
             return False
@@ -936,6 +940,7 @@ class Dock(Gtk.Window):
         if mode != self.mode:
             debug("mode %s -> %s, with the grid" % (self.mode, mode))
             self.mode = mode
+            self._style_for(mode)
             self._shape()
         a, b = self._pane_targets(closed), self._pane_targets(opened)
         if opened == "hidden":          # straight down from where it stands closed
@@ -948,27 +953,41 @@ class Dock(Gtk.Window):
     def _pane_targets(self, mode):
         """Where each half stands in a mode: its left margin on the screen.
 
-        Across both panels each half hugs the hinge from its own side. On one
-        panel the two stand side by side, the left half first, centred on
-        the panel - unless together they are wider than it, in which case
-        they start at its edge and the tail runs over the hinge (a dock of
-        favourites and a few running apps at scale 3; rare).
+        Across both panels each half stands at its panel's outer edge - the
+        thumbs of two hands holding the open device rest there, and the
+        hinge is the far reach (the halves hugged the hinge until 0.15.4;
+        the owner moved them). On one panel the two stand side by side, the
+        left half first, centred on the panel - unless together they are
+        wider than it, in which case they start at its edge and the tail
+        runs over the hinge (a dock of favourites and a few running apps at
+        scale 3; rare).
         """
         left, right = self.panes["left"], self.panes["right"]
         if mode == "hidden":            # below the edge, wherever it stands
             return {s: (p.x, -DOCK_HEIGHT) for s, p in self.panes.items()}
         if mode == "both":
-            return {"left": (self.half - left.width, 0), "right": (self.half + self.gap, 0)}
+            return {"left": (EDGE_MARGIN, 0),
+                    "right": (2 * self.half + self.gap - right.width - EDGE_MARGIN, 0)}
         start = max(0, (self.half - left.width - right.width) // 2)
         if mode == "right":
             start += self.half + self.gap
         return {"left": (start, 0), "right": (start + left.width, 0)}
+
+    def _style_for(self, mode):
+        """Square where the halves meet, rounded all round when apart."""
+        for pane in self.panes.values():
+            context = pane.slab.get_style_context()
+            if mode == "both":
+                context.remove_class("joined")
+            else:
+                context.add_class("joined")
 
     def _place_panes(self):
         """Put the halves where the mode says, now, no motion: after the
         display's size came in, or a half changed width."""
         if self.mode == "hidden":
             return
+        self._style_for(self.mode)
         for side, (x, y) in self._pane_targets(self.mode).items():
             self.panes[side].move(x=x, y=y, settle=True)
         self._shape()
@@ -995,6 +1014,8 @@ class Dock(Gtk.Window):
         was_hidden = self.mode == "hidden"
         debug("mode %s -> %s (move running: %s)" % (self.mode, mode, self.move is not None))
         self.mode = mode
+        if mode != "hidden":
+            self._style_for(mode)           # one small repaint, at the start of the move
         if self.move is not None:
             GLib.source_remove(self.move)
             self.move = None
@@ -1576,6 +1597,9 @@ class Dock(Gtk.Window):
         it - stands where its new width says, unless it is on its way."""
         if allocation.width != getattr(pane, "placed_width", None):
             pane.placed_width = allocation.width
+            debug("%s half: window %d, slab natural %d, slab allocated %d"
+                  % (pane.side, allocation.width, pane.slab.get_preferred_width()[1],
+                     pane.slab.get_allocated_width()))
             if self.move is None and self.half > 1:
                 self._place_panes()
 
