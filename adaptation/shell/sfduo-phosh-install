@@ -1,27 +1,59 @@
 #!/bin/sh
 # sfduo-phosh-install: put the port's patched phosh in place of the packaged
-# one - or, with --restore, put the packaged one back.
+# one - or, with --restore, put the packaged one back and keep it there.
 #
-# The patched binary is phosh 0.49.0 at Droidian's cf38ab5 plus the two
-# patches 0001-0003 in adaptation/shell/phosh-patches of the port's repository:
-# it tells logind it came up locked, it says LTE rather than 4G, and its home
+# The patched binary is phosh 0.49.0 at Droidian's cf38ab5 plus the patches
+# 0001-0003 in adaptation/shell/phosh-patches of the port's repository: it
+# tells logind it came up locked, it says LTE rather than 4G, and its home
 # overview lets go of the keyboard when a window opens, so windows can take
-# the focus and be tiled. It is built
-# against exactly that package's libraries and resources, so it is installed
-# only beside exactly that version. A phosh upgrade overwrites it with the
-# new stock binary, which is the safe way for this to stop applying.
+# the focus and be tiled. It is built against exactly that package's
+# libraries and resources, so it is installed only beside exactly that
+# version. A phosh upgrade overwrites it with the new stock binary, which is
+# the safe way for this to stop applying.
+#
+# The package's postinst runs this on every install and upgrade. A restore
+# has to survive that, so --restore leaves a marker, and while the marker is
+# there this script installs nothing. --patched removes the marker and puts
+# the patched binary back.
 set -e
 OURS=/usr/lib/sfduo/phosh/phosh
 WANT=$(cat /usr/lib/sfduo/phosh/version 2>/dev/null || true)
 BIN=/usr/libexec/phosh
 STOCK=/usr/libexec/phosh.stock
+KEEP_STOCK=/etc/sfduo/phosh-stock
 
-if [ "$1" = "--restore" ]; then
+case "$1" in
+--restore)
     [ -f "$STOCK" ] || { echo "sfduo-phosh: no $STOCK to restore" >&2; exit 1; }
-    cp -a "$STOCK" "$BIN.tmp" && mv -f "$BIN.tmp" "$BIN"
-    echo "sfduo-phosh: packaged phosh restored - restart the shell"
+    mkdir -p "$(dirname "$KEEP_STOCK")"
+    : > "$KEEP_STOCK"
+    if cmp -s "$STOCK" "$BIN"; then
+        echo "sfduo-phosh: packaged phosh already in place; it now stays through package upgrades"
+    else
+        cp -a "$STOCK" "$BIN.tmp" && mv -f "$BIN.tmp" "$BIN"
+        echo "sfduo-phosh: packaged phosh restored - restart the shell (sudo systemctl restart phosh)"
+        echo "sfduo-phosh: it stays through package upgrades until 'sfduo-phosh-install --patched'"
+    fi
+    echo "sfduo-phosh: only the phosh binary changed. The dock, the CSS and the black"
+    echo "sfduo-phosh: background are separate - see adaptation/shell/README.md to turn them off."
+    echo "sfduo-phosh: the packaged phosh does not tell logind about its first lock screen:"
+    echo "sfduo-phosh: after a reboot the dock is visible over it until the first unlock."
     exit 0
-fi
+    ;;
+--patched)
+    rm -f "$KEEP_STOCK"
+    ;;
+"")
+    if [ -f "$KEEP_STOCK" ]; then
+        echo "sfduo-phosh: packaged phosh kept, as --restore asked ($KEEP_STOCK); 'sfduo-phosh-install --patched' undoes that"
+        exit 0
+    fi
+    ;;
+*)
+    echo "usage: sfduo-phosh-install [--restore | --patched]" >&2
+    exit 2
+    ;;
+esac
 
 [ -f "$OURS" ] && [ -n "$WANT" ] || { echo "sfduo-phosh: no patched binary in this package"; exit 0; }
 HAVE=$(dpkg-query -W -f='${Version}' phosh 2>/dev/null || true)
@@ -37,4 +69,4 @@ fi
 [ -f "$STOCK" ] || cp -a "$BIN" "$STOCK"
 # a running binary cannot be written over, only replaced
 cp -a "$OURS" "$BIN.tmp" && chmod 755 "$BIN.tmp" && mv -f "$BIN.tmp" "$BIN"
-echo "sfduo-phosh: patched phosh installed (packaged one kept as $STOCK)"
+echo "sfduo-phosh: patched phosh installed (packaged one kept as $STOCK) - restart the shell (sudo systemctl restart phosh)"

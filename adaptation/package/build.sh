@@ -684,9 +684,9 @@ fi
 # panels that tiles what it launches onto the panel that was tapped, and the
 # CSS that keeps phosh's own furniture off the hinge. It autostarts with the
 # session; removing /etc/xdg/autostart/sfduo-dock.desktop turns it off.
-# The patched phosh it works best with is NOT in this package - see
-# ../shell/phosh-patches; with a stock phosh the dock can sit on the lock
-# screen after a reboot until the first unlock.
+# With a stock phosh the dock can sit on the lock screen after a reboot until
+# the first unlock; the patched phosh below fixes that, and
+# `sfduo-phosh-install --restore` is how a user goes back to the stock one.
 install -m755 "$SHELLDIR/sfduo-dock"       "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-brightness" "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-shell-setup" "$PKG/usr/local/sbin/"

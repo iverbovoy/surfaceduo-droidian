@@ -303,7 +303,15 @@ The package carries the patched binary (0001-0003, not the unfinished 0004) and
 `sudo sfduo-phosh-install` puts it in place at install time - but only beside
 exactly the phosh version it was built for; on any other it says so and
 leaves the packaged shell alone. `sudo sfduo-phosh-install --restore` puts the
-packaged binary back, and a phosh upgrade does the same on its own.
+packaged binary back and leaves a marker (`/etc/sfduo/phosh-stock`) so that
+the next install or upgrade of this package, whose postinst runs the same
+script, does not quietly put the patched one back again - it did until 0.13.1,
+and a restore made just before an upgrade looked as if it had never happened.
+`--patched` removes the marker and installs the patched binary again. A phosh
+upgrade replaces the binary on its own either way. Restoring changes the
+binary only: the dock, the CSS and the black background stay until they are
+turned off as described under Installing, and on the packaged phosh the dock
+is visible over the first lock screen after a reboot, until the first unlock.
 
 The patches are against droidian/phosh at cf38ab5, the tree the installed
 package was built from, configured as the package is (`--prefix=/usr
