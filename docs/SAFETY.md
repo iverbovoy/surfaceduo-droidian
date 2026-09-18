@@ -119,7 +119,15 @@ nothing.** This is not a bad image and not a lock problem: the
 bootloader on this device can refuse to write that UFS LUN at all.
 The same image written with `dd` from a booted system goes in without
 complaint. Reading the fastboot failure as "the image must be broken"
-and rebuilding images from scratch is chasing a ghost.
+and rebuilding images from scratch is chasing a ghost. Seen again on
+2026-09-18 with the perf kernel: `flash-safely.sh flash-boot` got the
+"Device Error" and stopped, as it should; a RAM-boot of the same image,
+a read of `boot_a` from Linux (sha unchanged - the failed flash wrote
+nothing), then `dd if=<img> of=/dev/disk/by-partlabel/boot_a bs=4M
+conv=fsync`, a read-back of the image's length compared against it, and
+a normal reboot. That is the flashing sequence that works on this
+device; take the `boot_a` backup from the running system first
+(`out/backups/`), and RAM-boot the image before it, every time.
 
 **A flashed boot has to satisfy AVB; a RAM-booted one does not.**
 `fastboot boot` bypasses verification entirely, so an image that
