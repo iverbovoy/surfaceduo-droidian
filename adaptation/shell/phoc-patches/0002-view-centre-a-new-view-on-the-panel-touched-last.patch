@@ -1,0 +1,57 @@
+From 65a592fd07cca159d4f77be5c7b262467afb8806 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Fri, 18 Sep 2026 18:14:59 +0300
+Subject: [PATCH] view: centre a new view on the panel touched last, on an
+ output with a seam
+
+On an output with a tiling-seam a new view was centred on the output,
+which is the hinge: half of it on each panel until something tiled it.
+Now it is centred on the panel that was touched last - the panel its
+launcher was tapped on - and made no wider than that panel. Without a
+seam nothing changes.
+---
+ src/view.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/src/view.c b/src/view.c
+index c48d95b..022d02f 100644
+--- a/src/view.c
++++ b/src/view.c
+@@ -1162,6 +1162,34 @@ view_center (PhocView *view, PhocOutput *output)
+   const struct wlr_output_layout_output *l_output = wlr_output_layout_get (desktop->layout,
+                                                                            output->wlr_output);
+   struct wlr_box usable_area = output->usable_area;
++  PhocOutputConfig *oc;
++
++  /* An output made of two panels with a hinge between them (a `tiling-seam`
++   * in its configuration): a new view is centred on the panel that was
++   * touched last - the one its launcher was tapped on - and made no wider
++   * than that panel, instead of being centred on the hinge across both. */
++  oc = phoc_config_get_output (phoc_server_get_config (phoc_server_get_default ()), output);
++  if (oc && oc->seam > 0 && usable_area.width > usable_area.height) {
++    struct wlr_box output_box;
++    int seam, centre;
++    double px;
++
++    wlr_output_layout_get_box (desktop->layout, output->wlr_output, &output_box);
++    seam = (int) (oc->seam * output_box.width + 0.5);
++    centre = output_box.width / 2;
++    px = (seat->touch_x > 0 ? seat->touch_x : cursor->cursor->x) - l_output->x;
++    if (px < centre) {
++      usable_area.width = centre - seam / 2 - usable_area.x;
++    } else {
++      int right = usable_area.x + usable_area.width;
++      usable_area.x = centre + (seam - seam / 2);
++      usable_area.width = right - usable_area.x;
++    }
++    if (box.width > usable_area.width) {
++      phoc_view_resize (view, usable_area.width / priv->scale, box.height / priv->scale);
++      box.width = usable_area.width;
++    }
++  }
+ 
+   double view_x = (double)(usable_area.width - box.width) / 2 +
+     usable_area.x + l_output->x - geom.x * priv->scale;
+-- 
+2.43.0
+

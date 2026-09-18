@@ -23,6 +23,7 @@
 # now - the alternative is a patch to phoc's view_arrange_tiled to read the
 # same gmobile cutout the shell CSS is built around.
 
+import ctypes
 import filecmp
 import json
 import os
@@ -97,7 +98,9 @@ GRID_ICON = ICON_SIZE     # the app grid's icons: the dock's size, not phosh's 6
 GRID_COLUMNS = 4          # on one panel: 540px at scale 2.5 gives four of ~130
 SLIDE_MS = 220            # the grid settling after the finger lets go
 SWIPE_PX = 12             # how far a finger travels before it is a swipe
-FLICK = 0.6               # px/ms: faster than this and the direction decides
+FLICK = 0.3               # px/ms: faster than this and the direction decides
+GRID_TRAVEL = 0.55        # the finger's share of the stage that opens the grid fully
+GRID_COMMIT = 0.3         # a slow release past this much of the way opens it
 MOVE_MS = 240             # the dock crossing to the other panel
 WATCH_MS = 500            # how often to ask which windows are open
 WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
@@ -114,7 +117,8 @@ CSS = b"""
 /* The window is the whole display and mostly nothing: transparent, with
    input only where the strip is. The strip and the grid paint their own
    black, so nothing shows through the gap between the two halves. */
-window.sfduo-dock { background-color: transparent; }
+window.sfduo-dock, window.sfduo-grid { background-color: transparent; }
+window.sfduo-curtain { background-color: #000000; }
 viewport { background-color: transparent; }
 .dock-row { background-color: transparent; }
 .grid-stage { background-color: transparent; }
@@ -144,8 +148,7 @@ viewport { background-color: transparent; }
 .running-dot { color: #e8e4d9; font-size: 9px; margin-bottom: 1px; }
 /* The launch curtain: black over both panels while a new window is being put
    on its panel, the app's icon where it is going to be. */
-.curtain { background-color: #000000; opacity: 0; transition: opacity 140ms ease-out; }
-.curtain.up { opacity: 1; transition: none; }
+.curtain { background-color: #000000; }
 /* The grid: one flow box per panel, icons over their names. It paints its
    own black - the stage behind it is transparent, so the panel the grid is
    not on shows whatever it was showing. */
@@ -262,20 +265,187 @@ def toplevel_ids():
     return {line.split(":", 1)[0].strip() for line in out.splitlines() if ":" in line}
 
 
-class Stage(Gtk.Viewport):
-    """A viewport that asks for the stage's height and no more.
+# Straight to the protocol, for one request: gtk-layer-shell's set_margin
+# queues a resize, and GTK repaints the whole window for it - a buffer the
+# compositor then copies into a texture, 30 ms of it on this device - although
+# nothing in the window changed. A zwlr_layer_surface_v1.set_margin followed by
+# a wl_surface.commit with no buffer attached moves the surface and repaints
+# nothing. Opcodes from the protocol XML: set_margin is the fourth request of
+# zwlr_layer_surface_v1, commit the seventh of wl_surface.
+_WL = ctypes.CDLL("libwayland-client.so.0")
+_GDK = ctypes.CDLL("libgdk-3.so.0")
+_WL.wl_proxy_marshal.restype = None
+_WL.wl_display_flush.argtypes = [ctypes.c_void_p]
+_GDK.gdk_wayland_window_get_wl_surface.restype = ctypes.c_void_p
+_GDK.gdk_wayland_window_get_wl_surface.argtypes = [ctypes.c_void_p]
+_GDK.gdk_wayland_display_get_wl_display.restype = ctypes.c_void_p
+_GDK.gdk_wayland_display_get_wl_display.argtypes = [ctypes.c_void_p]
+ctypes.pythonapi.PyCapsule_GetPointer.restype = ctypes.c_void_p
+ctypes.pythonapi.PyCapsule_GetPointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
+ZWLR_LAYER_SURFACE_SET_MARGIN = 3
+WL_SURFACE_COMMIT = 6
 
-    A bare viewport asks for its child's height, and this one's child is
-    twice the stage - a spacer and the grid - so the window grew to twice
-    the display and, being anchored at the bottom, put the grid on screen.
-    The height is the stage's, whatever is inside.
+
+def gpointer(obj):
+    """The C pointer behind a PyGObject wrapper."""
+    return ctypes.pythonapi.PyCapsule_GetPointer(obj.__gpointer__, None)
+
+
+def raw_margin_bottom(window, margin):
+    """Move a mapped layer-shell window by its bottom margin without a repaint.
+    Falls back to gtk-layer-shell (a repaint) when the window is not mapped."""
+    layer = GtkLayerShell.get_zwlr_layer_surface_v1(window) if window.get_mapped() else 0
+    surface = _GDK.gdk_wayland_window_get_wl_surface(gpointer(window.get_window())) if layer else 0
+    if not layer or not surface:
+        GtkLayerShell.set_margin(window, GtkLayerShell.Edge.BOTTOM, margin)
+        return
+    _WL.wl_proxy_marshal(ctypes.c_void_p(layer), ctypes.c_uint32(ZWLR_LAYER_SURFACE_SET_MARGIN),
+                         ctypes.c_int32(0), ctypes.c_int32(0), ctypes.c_int32(margin), ctypes.c_int32(0))
+    _WL.wl_proxy_marshal(ctypes.c_void_p(surface), ctypes.c_uint32(WL_SURFACE_COMMIT))
+    _WL.wl_display_flush(_GDK.gdk_wayland_display_get_wl_display(gpointer(Gdk.Display.get_default())))
+
+
+FRAME_MS = 16             # the animations' own clock (see animate)
+
+
+def animate(step):
+    """Run `step(t_ms)` every frame until it returns False.
+
+    Not a GTK tick callback: GDK's frame clock only advances when the
+    compositor sends the window a frame callback, and a layer surface that
+    has slid below the screen edge is not drawn and gets none - the dock's
+    return from "hidden" stalled for 300 ms on that. A timer does not care
+    where the window is. Returns the source id.
+    """
+    t0 = GLib.get_monotonic_time()
+
+    def tick():
+        return bool(step((GLib.get_monotonic_time() - t0) / 1000.0))
+    return GLib.timeout_add(FRAME_MS, tick)
+
+
+class GridPanel(Gtk.Window):
+    """The app grid of one panel: its own layer surface, moved, never redrawn.
+
+    The grid used to live inside the dock's window and be scrolled into view,
+    which meant repainting half the display per frame - at scale 3 that is
+    3 Mpx through pixman and a 13 MB damage upload for the compositor, and it
+    came to 8 frames a second. A layer surface of its own costs nothing to
+    move: the slide is a change of its bottom margin, the compositor puts the
+    same pixels somewhere else, and nothing is rendered or uploaded at all.
+    It is what phosh does with its own sliding surfaces.
+
+    Anchored to the bottom and to its panel's outer edge, one panel wide and
+    the stage tall; parked below the screen with a negative margin when
+    closed, and unmapped once it has stopped there.
     """
 
-    def do_get_preferred_height(self):
-        return STAGE_HEIGHT, STAGE_HEIGHT
+    def __init__(self, dock, side, pane):
+        super().__init__()
+        self.dock = dock
+        self.side = side
+        self.get_style_context().add_class("sfduo-grid")
+        screen = Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+        self.set_app_paintable(True)
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_namespace(self, "sfduo-grid")
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.BOTTOM, True)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT if side == "left"
+                                 else GtkLayerShell.Edge.RIGHT, True)
+        # -1: placed within the whole output, not inside what phosh's home bar
+        # leaves free - with 0 the grid stood 15 px into the top bar
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, -STAGE_HEIGHT)
+        # a tap on nothing closes the grid; buttons take their own presses
+        backdrop = Gtk.EventBox()
+        backdrop.get_style_context().add_class("grid-stage")
+        backdrop.add(pane)
+        backdrop.connect("button-release-event",
+                         lambda *_a: dock._toggle_grid(False) or False)
+        self.add(backdrop)
+        # a finger going down takes the grid with it
+        self.drag = Gtk.GestureDrag.new(self)
+        self.drag.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        self.drag.set_touch_only(True)
+        self.drag.connect("drag-begin", dock._on_grid_drag_begin)
+        self.drag.connect("drag-update", dock._on_drag_update)
+        self.drag.connect("drag-end", dock._on_drag_end)
+        self.drag.connect("cancel", dock._on_drag_cancel)
 
-    def do_get_preferred_height_for_width(self, _width):
-        return STAGE_HEIGHT, STAGE_HEIGHT
+    def place(self, progress):
+        """Where the grid is: 0 parked below the screen, 1 all the way up.
+
+        The ends go through gtk-layer-shell, so that what it believes about
+        the margin is true whenever it next commits on its own; every step
+        between goes straight to the compositor and repaints nothing.
+        """
+        margin = -round(STAGE_HEIGHT * (1.0 - progress))
+        if progress > 0.0 and not self.get_visible():
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, margin)
+            self.show_all()
+            return
+        if progress <= 0.0:
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, margin)
+            if self.get_visible():
+                self.hide()
+            return
+        if progress >= 1.0 or not self.get_mapped():
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, margin)
+            return
+        raw_margin_bottom(self, margin)
+
+
+class CurtainPanel(Gtk.Window):
+    """The launch curtain of one panel: black, the app's icon in the middle.
+
+    A window of its own, one panel wide and the stage tall, shown for the
+    second a new window spends in the wrong place and hidden again. Only the
+    panel the app was launched onto is covered; the other stays what it was
+    and stays touchable. (A new window maps across both panels before it is
+    tiled, so its other half shows through for that second - the price of a
+    responsive panel until phoc places new windows on a panel, #32.)
+    """
+
+    def __init__(self, side):
+        super().__init__()
+        self.side = side
+        self.get_style_context().add_class("sfduo-curtain")
+        screen = Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+        self.set_app_paintable(True)
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_namespace(self, "sfduo-curtain")
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.BOTTOM, True)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT if side == "left"
+                                 else GtkLayerShell.Edge.RIGHT, True)
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        box = Gtk.Box()
+        box.get_style_context().add_class("curtain")
+        self.icon = Gtk.Image()
+        self.icon.set_pixel_size(CURTAIN_ICON)
+        self.icon.set_halign(Gtk.Align.CENTER)
+        self.icon.set_valign(Gtk.Align.CENTER)
+        box.pack_start(self.icon, True, True, 0)
+        self.add(box)
+
+    def raise_(self, gicon):
+        if gicon is not None:
+            self.icon.set_from_gicon(gicon, Gtk.IconSize.DIALOG)
+        else:
+            self.icon.clear()
+        self.show_all()
+
+    def lower(self):
+        self.hide()
 
 
 class Dock(Gtk.Window):
@@ -295,7 +465,13 @@ class Dock(Gtk.Window):
         if visual is not None:
             self.set_visual(visual)
         self.set_app_paintable(True)
-        self.set_size_request(-1, STAGE_HEIGHT)
+        # The window is the strip along the bottom and nothing more (it used
+        # to be the whole stage, for the grid and the curtain, which are
+        # windows of their own now - see GridPanel, CurtainPanel). Small
+        # matters here: every repaint of a window is a buffer the compositor
+        # copies into a texture on the CPU, and the strip's cross-fade repaints
+        # it on every frame.
+        self.set_size_request(-1, DOCK_HEIGHT)
 
         GtkLayerShell.init_for_window(self)
         GtkLayerShell.set_namespace(self, "sfduo-dock")
@@ -312,7 +488,6 @@ class Dock(Gtk.Window):
         # fills its panel to the bottom edge, and the dock is on the other
         # one, or gone when both are taken.
         GtkLayerShell.set_exclusive_zone(self, -1)
-        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, PANEL_HEIGHT)
         GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
 
         # One dock, cut in half by the bezel rather than two docks side by
@@ -350,29 +525,23 @@ class Dock(Gtk.Window):
         # is put in it; a GtkLayout hands children their natural size; an
         # overlay clamps a margin so the child fits. None will park a widget
         # below the edge.)
-        self.grid = self._build_grid()
-        self.grid.set_size_request(-1, STAGE_HEIGHT)
-        spacer = Gtk.Box()
-        spacer.set_size_request(-1, STAGE_HEIGHT)
-        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        column.pack_start(spacer, False, False, 0)
-        column.pack_start(self.grid, False, False, 0)
-        self.scroll = Gtk.Adjustment(value=0, lower=0, upper=2 * STAGE_HEIGHT,
-                                     step_increment=1, page_increment=STAGE_HEIGHT,
-                                     page_size=STAGE_HEIGHT)
-        viewport = Stage(vadjustment=self.scroll)
-        viewport.set_shadow_type(Gtk.ShadowType.NONE)
-        viewport.add(column)
-
+        # The grids are windows of their own (GridPanel); this window holds
+        # the dock's strips and the launch curtain over a transparent stage.
+        self._build_grid()
+        self.grids = {side: GridPanel(self, side, pane)
+                      for side, pane in (("left", self.grid_left), ("right", self.grid_right))}
+        self.curtains = {side: CurtainPanel(side) for side in ("left", "right")}
+        stage_bg = Gtk.Box()
+        stage_bg.set_size_request(-1, DOCK_HEIGHT)
         self.stage = Gtk.Overlay()
-        self.stage.add(viewport)
+        self.stage.add(stage_bg)
         for row in self.rows.values():
             row.set_valign(Gtk.Align.END)
             row.set_halign(Gtk.Align.FILL)    # the display's width, not its own
             row.set_hexpand(True)
             self.stage.add_overlay(row)
-        self.curtain = self._build_curtain()
-        self.stage.add_overlay(self.curtain)
+        self.curtain_up = False
+        self.curtain_timer = None
         self.add(self.stage)
 
         self.progress = 0.0       # 0 closed .. 1 open
@@ -675,8 +844,16 @@ class Dock(Gtk.Window):
         open grid takes the panel it is on, so the dock crosses to the other
         one just as it does for a window."""
         busy = set(getattr(self, "window_busy", set()))
-        if self.progress > 0.0:
+        if self.progress > 0.0 and not getattr(self, "grid_closing", False):
             busy.add(self.grid_side)
+        # a launch in flight takes its panel from the moment of the tap - the
+        # dock is on its way before the window exists, not after it lands -
+        # and the window it brings, spanning both panels until it is tiled,
+        # is not a reason to hide: it is the launch's, headed for its panel
+        launching = getattr(self, "launching", {})
+        if launching:
+            busy.discard("both")
+            busy.update(launching.values())
         if not busy:
             mode = "both"
         elif busy == {"left"}:
@@ -689,43 +866,71 @@ class Dock(Gtk.Window):
         return False
 
     def _set_mode(self, mode):
-        """Cross-fade the dock to where it should be now."""
+        """Move the dock to where it should be now.
+
+        It used to cross-fade, and a fade repaints the window on every frame:
+        on this device each repaint is a buffer the compositor copies into a
+        texture, 40 ms a time, so a 240 ms fade was six frames. Now the strip
+        dips below the screen edge, swaps its buttons while nothing of it is
+        visible, and comes back up on the other panel - two slides that move
+        the surface without repainting it (see raw_margin), one repaint in
+        between. Into "hidden" (both panels taken) it just goes down and stays
+        there; the gesture bands along the bottom stay reachable, because the
+        input region is the window's, wherever it is.
+        """
         if mode == self.mode:
             return False
+        was_hidden = self.mode == "hidden"
+        debug("mode %s -> %s (move running: %s)" % (self.mode, mode, self.move is not None))
         self.mode = mode
         if self.move is not None:
-            self.remove_tick_callback(self.move)
+            GLib.source_remove(self.move)
             self.move = None
-
         target = self.rows.get(mode)            # None when hidden
-        fading_in = [] if target is None else [target]
-        fading_out = [r for r in self.rows.values() if r is not target and r.get_visible()]
-        for row in fading_in:
-            row.set_visible(True)
-        self._relayout()         # a strip shown after it changed is stale until this
-        starts = {r: r.get_opacity() for r in fading_in + fading_out}
-        t0 = self.get_frame_clock().get_frame_time()
 
-        def tick(_widget, clock):
-            k = min(1.0, (clock.get_frame_time() - t0) / 1000.0 / MOVE_MS)
-            eased = 1.0 - (1.0 - k) ** 3
-            for r in fading_in:
-                r.set_opacity(starts[r] + (1.0 - starts[r]) * eased)
-            for r in fading_out:
-                r.set_opacity(starts[r] * (1.0 - eased))
+        def swap():
+            for r in self.rows.values():
+                r.set_visible(r is target)
+                r.set_opacity(1.0)
+            if target is not None:
+                self.row = target
+            self._relayout()         # a strip shown after it changed is stale until this
+            self._shape()
+
+        half = MOVE_MS / 2.0
+        frames = []
+        state = {"swapped": False}
+
+        def step(t):
+            frames.append(t)
+            if t < half and not was_hidden:
+                k = t / half
+                self._raw_margin(-round(DOCK_HEIGHT * (1.0 - (1.0 - k) ** 2)))   # ease-in, down
+                return True
+            if not state["swapped"]:
+                state["swapped"] = True
+                swap()
+                if target is None:
+                    self._raw_margin(-DOCK_HEIGHT + EDGE)   # the bands stay on screen
+                    self.move = None
+                    return False
+            k = min(1.0, (t - (0 if was_hidden else half)) / half)
+            self._raw_margin(-round(DOCK_HEIGHT * (1.0 - k) ** 2))              # ease-out, up
             if k >= 1.0:
-                for r in fading_out:
-                    r.set_visible(False)
-                self.row = target if target is not None else self.row
                 self.move = None
-                self._shape()
-                return GLib.SOURCE_REMOVE
-            return GLib.SOURCE_CONTINUE
+                if len(frames) > 1:
+                    debug("dock crossing to %s: %d frames over %.0f ms, %.0f ms/frame"
+                          % (mode, len(frames), frames[-1], frames[-1] / (len(frames) - 1)))
+                return False
+            return True
 
-        self.row = target if target is not None else self.row
-        self._shape()
-        self.move = self.add_tick_callback(tick)
+        self.move = animate(step)
         return False
+
+    def _raw_margin(self, margin):
+        """The dock's bottom margin, straight to the compositor: the surface
+        moves, nothing is repainted (see the note above GridPanel)."""
+        raw_margin_bottom(self, margin)
 
     # ---- the grid's motion ------------------------------------------------
 
@@ -737,19 +942,13 @@ class Dock(Gtk.Window):
         """Put the grid where a progress of 0..1 says, and the strip with it."""
         was_open = self.progress > 0.0
         self.progress = max(0.0, min(1.0, progress))
-        y = round(STAGE_HEIGHT * (1.0 - self.progress))
-        self.scroll.set_value(STAGE_HEIGHT - y)
+        self.grids[self.grid_side].place(self.progress)
         if (self.progress > 0.0) != was_open and hasattr(self, "mode"):
-            self._apply_mode()              # the grid takes or frees its panel
-        # The strip under the grid fades as the grid rises over it; the grid
-        # is the launcher on that panel then, and the room is better spent on
-        # another row. The other panel's half of the strip stays.
-        if self.mode != "hidden" and self.move is None:
-            pane = self.row.pane_left if self.grid_side == "left" else self.row.pane_right
-            other = self.row.pane_right if self.grid_side == "left" else self.row.pane_left
-            pane.set_opacity(1.0 - self.progress)
-            other.set_opacity(1.0)
-        self._shape()
+            # the grid takes or frees its panel: the dock crosses, and the
+            # input region follows - once per opening, not per frame
+            self._apply_mode()
+            self._shape()
+        debug("progress %.2f grid h=%d" % (self.progress, self.grids[self.grid_side].get_allocated_height()))
 
     def _shape(self):
         """Where the window takes touches: the strip when closed, all of it
@@ -760,26 +959,26 @@ class Dock(Gtk.Window):
         width = self.get_allocated_width()
         gap = max(1, round(width * HINGE_FRACTION))
         half = (width - gap) // 2
-        top = STAGE_HEIGHT - DOCK_HEIGHT
         if self.locked:
             region = cairo.Region()         # nothing: the lock screen's touches are its own
-        elif getattr(self, "curtain_up", False):
-            region = cairo.Region(cairo.RectangleInt(0, 0, width, STAGE_HEIGHT))
         else:
             region = cairo.Region()
             for side, x in (("left", 0), ("right", half + gap)):
                 if self.progress > 0.0 and side == self.grid_side:
-                    # the grid is on this panel: all of it is ours
-                    region.union(cairo.RectangleInt(x, 0, half, STAGE_HEIGHT))
+                    continue                        # the grid window takes this panel
                 elif self.mode in ("both", side):   # the dock is here
-                    region.union(cairo.RectangleInt(x, top, half, DOCK_HEIGHT))
+                    region.union(cairo.RectangleInt(x, 0, half, DOCK_HEIGHT))
                 else:                               # a window is here
-                    region.union(cairo.RectangleInt(x, STAGE_HEIGHT - EDGE, half, EDGE))
+                    region.union(cairo.RectangleInt(x, DOCK_HEIGHT - EDGE, half, EDGE))
         win.input_shape_combine_region(region, 0, 0)
 
     def _animate_to(self, target):
         """Finish the journey from wherever the grid is, easing out."""
         self._stop_animation()
+        # The dock's crossing runs alongside the grid's slide, both ways:
+        # a grid on its way down has already given its panel back.
+        self.grid_closing = target <= 0.0
+        self._apply_mode()
         start = self.progress
         if abs(target - start) < 0.001:
             self._set_progress(target)
@@ -787,23 +986,27 @@ class Dock(Gtk.Window):
         # The remaining distance takes a proportional share of the time, so
         # a grid released near its destination does not crawl the last bit.
         duration = SLIDE_MS * abs(target - start)
-        t0 = self.get_frame_clock().get_frame_time()
+        frames = []
 
-        def tick(_widget, clock):
-            t = (clock.get_frame_time() - t0) / 1000.0
+        def step(t):
+            frames.append(t)
             k = min(1.0, t / duration) if duration > 0 else 1.0
             eased = 1.0 - (1.0 - k) ** 3               # ease-out cubic
             self._set_progress(start + (target - start) * eased)
             if k >= 1.0:
                 self.animation = None
-                return GLib.SOURCE_REMOVE
-            return GLib.SOURCE_CONTINUE
+                if len(frames) > 1:
+                    gaps = [b - a for a, b in zip(frames, frames[1:])]
+                    debug("grid slide to %.0f: %d frames over %.0f ms, %.0f ms/frame (max %.0f)"
+                          % (target, len(frames), frames[-1], sum(gaps) / len(gaps), max(gaps)))
+                return False
+            return True
 
-        self.animation = self.add_tick_callback(tick)
+        self.animation = animate(step)
 
     def _stop_animation(self):
         if self.animation is not None:
-            self.remove_tick_callback(self.animation)
+            GLib.source_remove(self.animation)
             self.animation = None
 
     def _toggle_grid(self, open_=None):
@@ -838,6 +1041,17 @@ class Dock(Gtk.Window):
         elif self.progress <= 0.0:
             # A swipe up on a free panel raises the grid on that panel.
             self._show_grid_on(panel)
+            self.grid_closing = False
+
+    def _on_grid_drag_begin(self, _gesture, x, y):
+        """A drag that starts on the open grid: down closes it."""
+        debug("grid drag begin x=%.0f y=%.0f" % (x, y))
+        self._stop_animation()
+        self.drag_start = self.progress
+        self.drag_claimed = False
+        self.drag_last = (GLib.get_monotonic_time(), 0.0)
+        self.drag_velocity = 0.0
+        self.drag_app = None
 
     def _on_drag_update(self, gesture, _dx, dy):
         # Once it is a swipe, it is ours: the button it started over does
@@ -855,13 +1069,14 @@ class Dock(Gtk.Window):
         if now > then:
             self.drag_velocity = (dy - last_dy) / ((now - then) / 1000.0)  # px/ms
         self.drag_last = (now, dy)
-        # A finger going up raises the grid by exactly as much.
-        self._set_progress(self.drag_start - dy / STAGE_HEIGHT)
+        # A finger going up raises the grid, faster than it moves: a full
+        # swipe of the stage is a stretch, half of it is a gesture.
+        self._set_progress(self.drag_start - dy / (STAGE_HEIGHT * GRID_TRAVEL))
 
     def _on_drag_cancel(self, _gesture, _sequence):
         debug("drag cancelled at %.2f" % self.progress)
         if getattr(self, "drag_claimed", False) and getattr(self, "drag_app", None) is None:
-            self._animate_to(1.0 if self.progress >= 0.5 else 0.0)
+            self._animate_to(1.0 if self.progress >= GRID_COMMIT else 0.0)
         self.drag_claimed = False
 
     def _on_drag_end(self, _gesture, _dx, dy):
@@ -889,7 +1104,7 @@ class Dock(Gtk.Window):
         elif self.drag_velocity > FLICK:
             target = 0.0
         else:
-            target = 1.0 if self.progress >= 0.5 else 0.0
+            target = 1.0 if self.progress >= GRID_COMMIT else 0.0
         self._animate_to(target)
 
     def _follow_lockscreen(self):
@@ -993,10 +1208,12 @@ class Dock(Gtk.Window):
             if self.progress > 0.0:
                 self._stop_animation()
                 self._set_progress(0.0)
-            GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)
+            for w in [self] + list(self.curtains.values()) + list(self.grids.values()):
+                GtkLayerShell.set_layer(w, GtkLayerShell.Layer.TOP)
             self._cover_strangers()
         else:
-            GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+            for w in [self] + list(self.curtains.values()) + list(self.grids.values()):
+                GtkLayerShell.set_layer(w, GtkLayerShell.Layer.OVERLAY)
             if self.curtain_up:
                 # held until now; from here it is an ordinary curtain, lifted
                 # by the adoption on the next beat or by the clock
@@ -1143,32 +1360,17 @@ class Dock(Gtk.Window):
         apps = sorted((a for a in Gio.AppInfo.get_all() if a.should_show()),
                       key=lambda a: a.get_display_name().casefold())
 
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self.grid_left = self._grid_pane("left", apps)
         self.grid_seam = Gtk.Box()
         self.grid_right = self._grid_pane("right", apps)
-        row.pack_start(self.grid_left, True, True, 0)
-        row.pack_start(self.grid_seam, False, False, 0)
-        row.pack_start(self.grid_right, True, True, 0)
         self.grid_side = "right"
-        self._show_grid_on(self.grid_side)
-
-        # A tap on nothing closes it. Buttons take their own presses, so the
-        # event box only ever hears about the space between them.
-        backdrop = Gtk.EventBox()
-        backdrop.get_style_context().add_class("grid-stage")
-        backdrop.add(row)
-        backdrop.connect("button-release-event",
-                         lambda *_a: self._toggle_grid(False) or False)
-        return backdrop
+        return None
 
     def _show_grid_on(self, side):
-        """The pane on `side` is the grid; the other is not there - kept in
-        the layout at full width, drawn at nothing, deaf to touches."""
+        """The grid rises on `side`; the other panel's is parked below."""
+        if side != self.grid_side and self.progress > 0.0:
+            self.grids[self.grid_side].place(0.0)
         self.grid_side = side
-        for pane, here in ((self.grid_left, "left"), (self.grid_right, "right")):
-            pane.set_opacity(1.0 if here == side else 0.0)
-            pane.set_sensitive(here == side)
 
     def _grid_pane(self, side, apps):
         flow = Gtk.FlowBox()
@@ -1255,15 +1457,20 @@ class Dock(Gtk.Window):
         span = max(width, allocation.height)
         gap = max(1, round(span * HINGE_FRACTION))
         half = max(1, (width - gap) // 2)
+        if width != getattr(self, "shaped_width", None):
+            self.shaped_width = width
+            self._shape()               # the input region is in these coordinates
         if (self.grid_seam.get_size_request().width != gap
-                or self.grid_left.get_size_request().width != half):
+                or self.grids["left"].get_size_request().width != half):
             for row in self.rows.values():
                 row.seam.set_size_request(gap, 1)
                 row.pane_left.set_size_request(half, -1)
                 row.pane_right.set_size_request(half, -1)
             self.grid_seam.set_size_request(gap, 1)
-            self.grid_left.set_size_request(half, -1)
-            self.grid_right.set_size_request(half, -1)
+            for grid in self.grids.values():
+                grid.set_size_request(half, STAGE_HEIGHT)
+            for curtain in self.curtains.values():
+                curtain.set_size_request(half, STAGE_HEIGHT)
 
 
     def _launch_from_file(self):
@@ -1296,6 +1503,9 @@ class Dock(Gtk.Window):
         if self.shell_places is not False:
             self._raise_curtain(info, side)
         self.placing += 1
+        self.launching = getattr(self, "launching", {})
+        self.launching[app_id] = side
+        self._apply_mode()
         threading.Thread(target=self._place_and_reveal,
                          args=(info, app_id, side, before), daemon=True).start()
 
@@ -1307,37 +1517,13 @@ class Dock(Gtk.Window):
     # is above everything - covers the stage for that second and lifts when
     # the window is where it belongs.
 
-    def _build_curtain(self):
-        curtain = Gtk.Box()
-        curtain.get_style_context().add_class("curtain")
-        curtain.set_halign(Gtk.Align.FILL)
-        curtain.set_valign(Gtk.Align.FILL)
-        curtain.set_homogeneous(True)
-        self.curtain_icons = {}
-        for side in ("left", "right"):
-            icon = Gtk.Image()
-            icon.set_pixel_size(CURTAIN_ICON)
-            icon.set_halign(Gtk.Align.CENTER)
-            icon.set_valign(Gtk.Align.CENTER)
-            curtain.pack_start(icon, True, True, 0)
-            self.curtain_icons[side] = icon
-        curtain.set_no_show_all(True)
-        self.curtain_up = False
-        self.curtain_timer = None
-        return curtain
-
     def _raise_curtain(self, info=None, side=None, hold=False):
-        for where, icon in self.curtain_icons.items():
-            gicon = info.get_icon() if info is not None and where == side else None
-            if gicon is not None:
-                icon.set_from_gicon(gicon, Gtk.IconSize.DIALOG)
-            else:
-                icon.clear()
-            icon.show()
-        self.curtain.show()
-        self.curtain.get_style_context().add_class("up")
+        """Cover the panel an app is being launched onto (both, for a window
+        nobody launched and nobody has placed yet)."""
+        sides = ("left", "right") if side is None else (side,)
+        for where in sides:
+            self.curtains[where].raise_(info.get_icon() if info is not None else None)
         self.curtain_up = True
-        self._shape()
         # Whatever happens to the launch, the curtain does not stay - unless
         # it is being held under the lock screen, where nobody can see it and
         # the unlock takes over.
@@ -1354,9 +1540,8 @@ class Dock(Gtk.Window):
         if not self.curtain_up:
             return False
         self.curtain_up = False
-        self.curtain.get_style_context().remove_class("up")     # fades, per the CSS
-        self._shape()
-        GLib.timeout_add(180, lambda: self.curtain_up or self.curtain.hide() or False)
+        for curtain in self.curtains.values():
+            curtain.lower()
         return False
 
     def _place_and_reveal(self, info, app_id, side, before):
@@ -1366,6 +1551,7 @@ class Dock(Gtk.Window):
             print(f"sfduo-dock: placing {info.get_id()}: {err}", file=sys.stderr)
             placed = False
         self.placing -= 1
+        self.launching.pop(app_id, None)
         # A tiled window needs a moment to lay itself out at its new size.
         GLib.timeout_add(CURTAIN_SETTLE if placed else 0, self._lift_curtain)
 

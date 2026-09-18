@@ -11,15 +11,31 @@
 # root login 26 s against 2 s. With the port's idle blanking off an open
 # device would stay like that for the whole session.
 #
-# So this waits for the shell, gives the saver its moment, and sets schedutil
-# once. From then on the saver toggles the governor on screen events as it
-# should; nothing here fights it.
+# So this waits for the shell and then, for the first minutes of the session,
+# keeps putting schedutil back whenever the screen is on and the governor
+# says powersave: the saver's user service starts a little after phosh, and a
+# single write 15 s in lost the race to it once (measured: powersave again by
+# the afternoon, launches 8-14 s instead of 2). From then on the saver toggles
+# the governor on screen events as it should; nothing here fights it while
+# the screen is off.
 for i in $(seq 1 120); do
     pgrep -x phosh >/dev/null && break
     sleep 1
 done
-sleep 15
-for p in /sys/devices/system/cpu/cpufreq/policy*; do
-    [ -w "$p/scaling_governor" ] && echo schedutil > "$p/scaling_governor"
+screen_on() {
+    for b in /sys/class/backlight/*/bl_power; do
+        [ -r "$b" ] && [ "$(cat "$b")" = 0 ] && return 0
+    done
+    return 1
+}
+fixed=0
+for i in $(seq 1 18); do          # 3 minutes
+    sleep 10
+    if screen_on && [ "$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor)" = powersave ]; then
+        for p in /sys/devices/system/cpu/cpufreq/policy*; do
+            [ -w "$p/scaling_governor" ] && echo schedutil > "$p/scaling_governor"
+        done
+        fixed=$((fixed + 1))
+    fi
 done
-echo "sfduo-cpufreq: governor $(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor) on all policies"
+echo "sfduo-cpufreq: governor $(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor); put back $fixed time(s) in the first 3 minutes"
