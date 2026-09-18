@@ -1,0 +1,145 @@
+#!/usr/bin/python3
+"""sfduo-touch: a finger made of uinput, for checking gestures over ssh.
+
+    sfduo-touch tap   X Y
+    sfduo-touch swipe X0 Y0 X1 Y1 [SECONDS]
+    sfduo-touch size                 the logical size it assumes
+
+Coordinates are logical pixels of the one output both panels share, at
+the output scale phoc.ini sets: 1392 x 900 at scale 2 (the left panel is
+x < 675, the right x > 717), 1113 x 720 at 2.5, 928 x 600 at 3. Runs as
+root on the device. It creates a second touchscreen for as long as the
+gesture lasts; the compositor maps it to the whole output, like the real
+one. Standard library only - a clean image has no python3-evdev.
+"""
+import fcntl
+import os
+import re
+import struct
+import sys
+import time
+
+PHYSICAL = (2784, 1800)         # both panels and the hinge, landscape
+
+
+def output_scale():
+    """The scale phoc runs the output at: the same file phosh-session
+    reads, the port's /etc/phosh/phoc.ini when it exists."""
+    for path in ("/etc/phosh/phoc.ini", "/usr/share/phosh/phoc.ini"):
+        try:
+            with open(path) as fp:
+                text = fp.read()
+        except OSError:
+            continue
+        section = re.search(r"^\[output:HWCOMPOSER-1\]\n(.*?)(?=^\[|\Z)", text, re.S | re.M)
+        if section:
+            found = re.search(r"^scale\s*=\s*([0-9.]+)", section.group(1), re.M)
+            if found:
+                return float(found.group(1))
+        break                   # phosh-session takes the first file that exists
+    return 3.0
+
+
+_scale = output_scale()
+WIDTH, HEIGHT = int(PHYSICAL[0] / _scale), int(PHYSICAL[1] / _scale)
+SCALE = 10                      # sub-pixel room in the absolute range
+
+EV_SYN, EV_KEY, EV_ABS = 0x00, 0x01, 0x03
+SYN_REPORT = 0
+BTN_TOUCH = 0x14a
+ABS_MT_SLOT, ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_TRACKING_ID = 0x2f, 0x35, 0x36, 0x39
+ABS_X, ABS_Y = 0x00, 0x01
+INPUT_PROP_DIRECT = 0x01
+BUS_VIRTUAL = 0x06
+
+UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_ABSBIT, UI_SET_PROPBIT = 0x40045564, 0x40045565, 0x40045567, 0x4004556e
+UI_DEV_SETUP, UI_ABS_SETUP = 0x405c5503, 0x401c5504
+UI_DEV_CREATE, UI_DEV_DESTROY = 0x5501, 0x5502
+
+
+class Finger:
+    def __init__(self):
+        self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        for bit in (EV_KEY, EV_ABS):
+            fcntl.ioctl(self.fd, UI_SET_EVBIT, bit)
+        fcntl.ioctl(self.fd, UI_SET_KEYBIT, BTN_TOUCH)
+        fcntl.ioctl(self.fd, UI_SET_PROPBIT, INPUT_PROP_DIRECT)
+        for code, top in ((ABS_X, WIDTH * SCALE - 1), (ABS_Y, HEIGHT * SCALE - 1),
+                          (ABS_MT_POSITION_X, WIDTH * SCALE - 1),
+                          (ABS_MT_POSITION_Y, HEIGHT * SCALE - 1),
+                          (ABS_MT_SLOT, 9), (ABS_MT_TRACKING_ID, 65535)):
+            fcntl.ioctl(self.fd, UI_SET_ABSBIT, code)
+            # struct uinput_abs_setup { u16 code; pad; struct input_absinfo }
+            fcntl.ioctl(self.fd, UI_ABS_SETUP,
+                        struct.pack("HHiiiiii", code, 0, 0, 0, top, 0, 0, 0))
+        name = b"sfduo synthetic touch"
+        fcntl.ioctl(self.fd, UI_DEV_SETUP,
+                    struct.pack("HHHH80sI", BUS_VIRTUAL, 0x5fd0, 0x0001, 1,
+                                name.ljust(80, b"\0"), 0))
+        fcntl.ioctl(self.fd, UI_DEV_CREATE)
+        time.sleep(3.0)         # udev tags it, libinput and the compositor pick it up (slow here)
+
+    def _emit(self, etype, code, value):
+        now = time.time()
+        os.write(self.fd, struct.pack("llHHi", int(now), int((now % 1) * 1e6),
+                                      etype, code, value))
+
+    def _at(self, x, y):
+        px, py = int(x * SCALE), int(y * SCALE)
+        self._emit(EV_ABS, ABS_MT_POSITION_X, px)
+        self._emit(EV_ABS, ABS_MT_POSITION_Y, py)
+        self._emit(EV_ABS, ABS_X, px)
+        self._emit(EV_ABS, ABS_Y, py)
+
+    def down(self, x, y):
+        self._emit(EV_ABS, ABS_MT_SLOT, 0)
+        self._emit(EV_ABS, ABS_MT_TRACKING_ID, 1)
+        self._at(x, y)
+        self._emit(EV_KEY, BTN_TOUCH, 1)
+        self._emit(EV_SYN, SYN_REPORT, 0)
+
+    def move(self, x, y):
+        self._at(x, y)
+        self._emit(EV_SYN, SYN_REPORT, 0)
+
+    def up(self):
+        self._emit(EV_ABS, ABS_MT_TRACKING_ID, -1)
+        self._emit(EV_KEY, BTN_TOUCH, 0)
+        self._emit(EV_SYN, SYN_REPORT, 0)
+
+    def close(self):
+        time.sleep(1.0)         # let the release be delivered before the device goes
+        fcntl.ioctl(self.fd, UI_DEV_DESTROY)
+        os.close(self.fd)
+
+
+def main(argv):
+    if len(argv) >= 4 and argv[1] == "tap":
+        x, y = float(argv[2]), float(argv[3])
+        finger = Finger()
+        finger.down(x, y)
+        time.sleep(0.08)
+        finger.up()
+        finger.close()
+    elif len(argv) >= 6 and argv[1] == "swipe":
+        x0, y0, x1, y1 = (float(a) for a in argv[2:6])
+        seconds = float(argv[6]) if len(argv) > 6 else 0.4
+        steps = max(8, int(seconds * 60))
+        finger = Finger()
+        started = time.time()
+        finger.down(x0, y0)
+        for i in range(1, steps + 1):
+            time.sleep(seconds / steps)
+            finger.move(x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps)
+        time.sleep(0.05)
+        finger.up()
+        print("swipe %.3f %.3f" % (started, time.time()))     # when it moved, for whoever measures
+        finger.close()
+    elif len(argv) >= 2 and argv[1] == "size":
+        print(WIDTH, HEIGHT)
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

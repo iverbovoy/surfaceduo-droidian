@@ -73,7 +73,9 @@ are empty:
    16 ms a frame"*.
 7. **Verify** - how: the command, the signal (`pkill -USR1 -x sfduo-dock`),
    the screenshot, the debug line, the journal query. And what is **not**
-   covered.
+   covered. A change to the dock, the shell's CSS, the output scale or a
+   compositor patch runs `sudo sfduo-perfcheck` on the device before it is
+   committed (`docs/PERF.md`, "Keeping it"); so does every release.
 8. **Docs** - which sections change (README row, `PERF.md` numbers, the
    release notes draft, `adaptation/*/README.md`).
 9. **Related** - issues, upstream links, the docs that hold the finding.

@@ -698,6 +698,10 @@ install -m755 "$SYSTEM/sfduo-modem"              "$PKG/usr/local/sbin/"
 # restarts on StopDozing with the screen on)
 install -m644 "$SYSTEM/sfduo-cpufreq.service"    "$PKG/usr/lib/systemd/system/"
 install -m755 "$SYSTEM/sfduo-cpufreq"            "$PKG/usr/local/sbin/"
+# the shell's frame times, measured the same way every time (tools/
+# sfduo-perfcheck, #52), and the synthetic finger it moves (tools/sfduo-touch)
+install -m755 "$ROOT/tools/sfduo-perfcheck"       "$PKG/usr/local/sbin/"
+install -m755 "$ROOT/tools/sfduo-touch"           "$PKG/usr/local/sbin/"
 install -m755 "$SYSTEM/sfduo-screens"            "$PKG/usr/local/sbin/"
 install -Dm644 "$SYSTEM/dconf/50-sfduo-phoc"       "$PKG/etc/dconf/db/local.d/50-sfduo-phoc"
 install -Dm644 "$SYSTEM/dconf/locks/50-sfduo-phoc" "$PKG/etc/dconf/db/local.d/locks/50-sfduo-phoc"

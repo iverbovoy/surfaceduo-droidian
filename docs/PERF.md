@@ -116,6 +116,29 @@ Two more things that looked like slowness and were not the shell's:
   above and costs about 2.4x on process creation and 2x on boot, not the
   15x that was measured with the screen off.
 
+## Keeping it: sfduo-perfcheck
+
+Everything above was measured by hand. `sudo sfduo-perfcheck` on the device
+(`tools/sfduo-perfcheck`, installed by the package) runs the same scenarios
+the same way - Calculator launched onto the right panel and closed, the grid
+by signal and by a flick of the synthetic finger (`sfduo-touch`), a 2 s
+unlock swipe on the lock screen with phosh's frames counted - and prints
+ms per frame against thresholds set a little above the day's numbers; it
+exits 1 on a miss, and refuses to run with the screen off or the governor on
+`powersave`. Baselines on 2026-09-18, output scale 2, perf kernel:
+
+| scenario | measured | threshold |
+| --- | --- | --- |
+| launch, signal to window | 0.8 s | 4 s |
+| dock crossing, every kind | 16.2-16.4 ms/frame | 18 |
+| grid up and down, by signal and by flick | 16.2-16.4 ms/frame | 18 |
+| grid's first open of a session (maps the window) | 17-25 ms/frame | reported, not judged |
+| lock screen unlock swipe, frame gap median / p90 | 20.1 / 25.4 ms | 22 / 28 |
+
+Run it before a release and after any change to the dock, the shell's CSS,
+the output scale or the compositor patches; a red line is a regression to
+explain before the change goes in.
+
 ## What follows for the shell
 
 Animate by moving surfaces, not by repainting them. A surface whose pixels

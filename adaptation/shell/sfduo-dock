@@ -71,6 +71,7 @@ BUTTON_SIZE = 60          # the box it sits in - equal for every app; six of
 DOCK_HEIGHT = 84          # the strip the dock reserves along the bottom
 CONFIG = os.path.expanduser("~/.config/sfduo/dock.json")
 PLACED = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-placed.json")
+PERF_LOG = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-dock.perf")  # one line per animation
 APP_IDS = os.path.expanduser("~/.config/sfduo/app-ids.json")   # desktop id -> what its window is called
 PANEL_HEIGHT = 32         # phosh's top bar
 HOME_BAR_HEIGHT = 15      # phosh's home bar, under the dock
@@ -1059,10 +1060,19 @@ class Dock(Gtk.Window):
 
     @staticmethod
     def _report(what, frames):
-        if len(frames) > 1:
-            gaps = [b - a for a, b in zip(frames, frames[1:])]
-            debug("%s: %d frames over %.0f ms, %.0f ms/frame (max %.0f)"
-                  % (what, len(frames), frames[-1], sum(gaps) / len(gaps), max(gaps)))
+        """One line per animation: to the debug output, and always to
+        $XDG_RUNTIME_DIR/sfduo-dock.perf, which sfduo-perfcheck reads."""
+        if len(frames) <= 1:
+            return
+        gaps = [b - a for a, b in zip(frames, frames[1:])]
+        line = "%s: %d frames over %.0f ms, %.1f ms/frame (max %.0f)" % (
+            what, len(frames), frames[-1], sum(gaps) / len(gaps), max(gaps))
+        debug(line)
+        try:
+            with open(PERF_LOG, "a") as fp:
+                fp.write("%.3f %s\n" % (time.time(), line))
+        except OSError:
+            pass
 
     # ---- the grid's motion ------------------------------------------------
 
@@ -1129,10 +1139,7 @@ class Dock(Gtk.Window):
             self._set_progress(start + (target - start) * eased)
             if k >= 1.0:
                 self.animation = None
-                if len(frames) > 1:
-                    gaps = [b - a for a, b in zip(frames, frames[1:])]
-                    debug("grid slide to %.0f: %d frames over %.0f ms, %.0f ms/frame (max %.0f)"
-                          % (target, len(frames), frames[-1], sum(gaps) / len(gaps), max(gaps)))
+                self._report("grid slide to %.0f" % target, frames)
                 return False
             return True
 

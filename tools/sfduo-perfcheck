@@ -1,0 +1,306 @@
+#!/usr/bin/python3
+"""sfduo-perfcheck: the shell's frame times, measured the same way every time.
+
+    sudo sfduo-perfcheck            run every scenario, print the table
+    sudo sfduo-perfcheck --no-lock  skip the lock-screen scenario
+
+Runs as root on the device with the shell up and nobody using it: it moves a
+synthetic finger, launches and closes Calculator, opens and closes the app
+grid, and locks the screen for a few seconds (and unlocks it). It refuses to
+run with the screen off or the CPU governor on powersave, because numbers
+taken that way mean nothing (docs/PERF.md). Exit status 1 when a threshold is
+missed - run it before a release and after any change to the dock, the
+shell's CSS, the output scale or the compositor patches.
+
+What it reads: the dock's own frame timings ($XDG_RUNTIME_DIR/sfduo-dock.perf,
+one line per animation), the time from a launch signal to the window's
+appearance, and phosh's frames during the unlock swipe (one sendmsg to the
+compositor per frame, counted with strace).
+"""
+import os
+import re
+import statistics
+import subprocess
+import sys
+import time
+
+THRESHOLDS = {                  # ms/frame unless said otherwise
+    "dock crossing": 18.0,      # baseline: 16.2-16.4 on every crossing
+    "grid slide": 18.0,         # baseline: 16.2-16.4
+    "launch": 4.0,              # seconds, signal to window; baseline 0.8
+    "lock median": 22.0,        # baseline 2026-09-18 at scale 2: 20.1 (docs/PERF.md)
+    "lock p90": 28.0,           # baseline: 25.4
+}
+TOUCH = "/usr/local/sbin/sfduo-touch"
+RED, GREEN, DIM, END = "\033[31m", "\033[32m", "\033[2m", "\033[0m"
+
+
+def die(message):
+    sys.exit("sfduo-perfcheck: " + message)
+
+
+def sh(cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, check=False, **kw)
+
+
+class Session:
+    """The seat's wayland session: its user, runtime dir and display."""
+
+    def __init__(self):
+        sessions = sh(["loginctl", "list-sessions", "--no-legend"]).stdout.split("\n")
+        self.id = None
+        for line in sessions:
+            parts = line.split()
+            if not parts:
+                continue
+            sid = parts[0]
+            if sh(["loginctl", "show-session", sid, "-p", "Type", "--value"]).stdout.strip() == "wayland":
+                self.id = sid
+                self.uid = sh(["loginctl", "show-session", sid, "-p", "User", "--value"]).stdout.strip()
+                self.user = sh(["loginctl", "show-session", sid, "-p", "Name", "--value"]).stdout.strip()
+                break
+        if self.id is None:
+            die("no wayland session - is the shell up?")
+        self.runtime = f"/run/user/{self.uid}"
+        self.env = {"XDG_RUNTIME_DIR": self.runtime, "WAYLAND_DISPLAY": "wayland-0",
+                    "DBUS_SESSION_BUS_ADDRESS": f"unix:path={self.runtime}/bus"}
+
+    def run(self, cmd):
+        return sh(["runuser", "-u", self.user, "--", "env"]
+                  + [f"{k}={v}" for k, v in self.env.items()] + cmd)
+
+    def toplevels(self):
+        out = self.run(["wlrctl", "toplevel", "list"]).stdout
+        return [line.split(":", 1)[0].strip() for line in out.splitlines() if ":" in line]
+
+    def locked(self):
+        return sh(["loginctl", "show-session", self.id, "-p", "LockedHint", "--value"]).stdout.strip() == "yes"
+
+
+def preconditions(session):
+    for path in ("/sys/class/backlight/panel0-backlight/bl_power",
+                 "/sys/class/backlight/panel1-backlight/bl_power"):
+        try:
+            with open(path) as fp:
+                if fp.read().strip() != "0":
+                    die("the screen is off - turn it on first (numbers with it off mean nothing)")
+        except OSError:
+            pass
+    for policy in ("policy0", "policy4", "policy7"):
+        path = f"/sys/devices/system/cpu/cpufreq/{policy}/scaling_governor"
+        try:
+            with open(path) as fp:
+                governor = fp.read().strip()
+        except OSError:
+            continue
+        if governor != "schedutil":
+            die(f"{policy} is on {governor}, not schedutil - is sfduo-cpufreq running? (#41)")
+    for proc in ("phoc", "phosh", "sfduo-dock"):
+        if sh(["pgrep", "-x", proc]).returncode != 0:
+            die(f"{proc} is not running")
+    if not os.path.exists(TOUCH):
+        die(f"{TOUCH} missing")
+    if sh(["which", "strace"]).returncode != 0:
+        die("strace missing (apt install strace)")
+    if session.locked():
+        die("the session is locked - unlock it first")
+    if session.toplevels():
+        die("windows are open (%s) - close them first, the scenarios need free panels"
+            % ", ".join(session.toplevels()))
+
+
+class DockPerf:
+    """The dock's animation log: new lines since the last look."""
+
+    def __init__(self, session):
+        self.path = os.path.join(session.runtime, "sfduo-dock.perf")
+        self.seen = self._count()
+
+    def _count(self):
+        try:
+            with open(self.path) as fp:
+                return sum(1 for _ in fp)
+        except OSError:
+            return 0
+
+    def new(self):
+        try:
+            with open(self.path) as fp:
+                lines = fp.read().splitlines()
+        except OSError:
+            lines = []
+        fresh = lines[self.seen:]
+        self.seen = len(lines)
+        out = []
+        for line in fresh:
+            m = re.match(r"[\d.]+ (.+?): (\d+) frames over (\d+) ms, ([\d.]+) ms/frame \(max (\d+)\)", line)
+            if m:
+                out.append((m.group(1), int(m.group(2)), float(m.group(4)), float(m.group(5))))
+        return out
+
+
+def finger(*args):
+    return sh([TOUCH] + [str(a) for a in args])
+
+
+def signal_dock(sig):
+    sh(["pkill", f"-{sig}", "-x", "sfduo-dock"])
+
+
+results = []                    # (scenario, value, unit, threshold or None, ok)
+
+
+def record(name, value, unit, key=None, note=""):
+    threshold = THRESHOLDS.get(key) if key else None
+    ok = threshold is None or value <= threshold
+    results.append((name, value, unit, threshold, ok, note))
+    colour = GREEN if ok else RED
+    limit = f"  (limit {threshold:g})" if threshold is not None else ""
+    print(f"  {name:<44} {colour}{value:7.1f} {unit}{END}{limit} {DIM}{note}{END}")
+
+
+def dock_lines(perf, wait=1.8):
+    time.sleep(wait)
+    return perf.new()
+
+
+def scenario_launch(session, perf):
+    print("launch Calculator onto the right panel")
+    path = os.path.join(session.runtime, "sfduo-launch")
+    with open(path, "w") as fp:
+        fp.write("org.gnome.Calculator.desktop right\n")
+    os.chown(path, int(session.uid), -1)
+    t0 = time.monotonic()
+    signal_dock("USR2")
+    appeared = None
+    while time.monotonic() - t0 < 20:
+        if "org.gnome.Calculator" in session.toplevels():
+            appeared = time.monotonic() - t0
+            break
+        time.sleep(0.1)
+    if appeared is None:
+        record("launch: signal to window", 99, "s", "launch", "no window in 20 s")
+    else:
+        record("launch: signal to window", appeared, "s", "launch")
+    for what, n, ms, mx in dock_lines(perf, 4.0):
+        if what.startswith("dock crossing"):
+            record(f"dock crossing (both -> one), {n} frames", ms, "ms/frame", "dock crossing", f"max {mx:.0f}")
+
+
+def scenario_close(session, perf):
+    print("close it")
+    session.run(["wlrctl", "toplevel", "close", "app_id:org.gnome.Calculator"])
+    for what, n, ms, mx in dock_lines(perf, 3.0):
+        if what.startswith("dock crossing"):
+            record(f"dock crossing (one -> both), {n} frames", ms, "ms/frame", "dock crossing", f"max {mx:.0f}")
+
+
+def scenario_grid_signal(session, perf):
+    print("app grid by signal, open and close")
+    signal_dock("USR1")
+    for what, n, ms, mx in dock_lines(perf, 1.8):
+        if what.startswith("grid slide"):
+            record(f"grid up (first open of the session), {n} frames", ms, "ms/frame", None,
+                   f"max {mx:.0f} - maps the window, informational")
+        elif what.startswith("dock crossing"):
+            record(f"dock crossing for the grid, {n} frames", ms, "ms/frame", "dock crossing", f"max {mx:.0f}")
+    signal_dock("USR1")
+    for what, n, ms, mx in dock_lines(perf, 1.8):
+        if what.startswith("grid slide"):
+            record(f"grid down, {n} frames", ms, "ms/frame", "grid slide", f"max {mx:.0f}")
+        elif what.startswith("dock crossing"):
+            record(f"dock crossing back, {n} frames", ms, "ms/frame", "dock crossing", f"max {mx:.0f}")
+
+
+def scenario_grid_finger(session, perf, width, height):
+    print("app grid by a flick of the finger, up and down")
+    # short and fast: the finger takes the grid part of the way, the slide
+    # finishes it - a swipe that reaches the top by itself has no slide to time
+    x = width * 0.75
+    finger("swipe", x, height - 30, x, height * 0.72, 0.2)
+    for what, n, ms, mx in dock_lines(perf, 1.5):
+        if what.startswith("grid slide"):
+            record(f"grid up after a flick, {n} frames", ms, "ms/frame", "grid slide", f"max {mx:.0f}")
+    finger("swipe", x, height * 0.35, x, height * 0.6, 0.2)
+    for what, n, ms, mx in dock_lines(perf, 1.5):
+        if what.startswith("grid slide"):
+            record(f"grid down after a flick, {n} frames", ms, "ms/frame", "grid slide", f"max {mx:.0f}")
+
+
+def scenario_lock(session, width, height):
+    print("lock screen: a 2 s unlock swipe, phosh's frames counted")
+    sh(["loginctl", "lock-session", session.id])
+    time.sleep(2.5)
+    if not session.locked():
+        print("  could not lock the session - skipped")
+        return
+    pid = sh(["pgrep", "-x", "phosh"]).stdout.split()[0]
+    log = "/tmp/sfduo-perfcheck-phosh.strace"
+    tracer = subprocess.Popen(["strace", "-tt", "-f", "-e", "trace=sendmsg", "-p", pid, "-o", log],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.8)
+    x = width * 0.6
+    moved = finger("swipe", x, height * 0.8, x, height * 0.3, 2.0).stdout
+    time.sleep(1.0)
+    tracer.terminate()
+    tracer.wait()
+    sh(["loginctl", "unlock-session", session.id])
+    # only the frames while the finger moved: the lock screen animates its
+    # arrow on its own before, and that is not the swipe
+    m = re.search(r"swipe ([\d.]+) ([\d.]+)", moved)
+    if not m:
+        print("  the finger did not report its swipe - skipped")
+        return
+    t_from, t_to = float(m.group(1)), float(m.group(2))
+
+    def day_seconds(epoch):
+        lt = time.localtime(epoch)
+        return lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec + (epoch % 1)
+    lo, hi = day_seconds(t_from), day_seconds(t_to)
+    stamps = []
+    try:
+        with open(log) as fp:
+            for line in fp:
+                m = re.match(r"\d+\s+(\d+):(\d+):([\d.]+) sendmsg", line)
+                if m:
+                    t = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+                    if lo <= t <= hi:
+                        stamps.append(t)
+    except OSError:
+        pass
+    gaps = sorted(b - a for a, b in zip(stamps, stamps[1:]) if 0.004 < b - a < 0.5)
+    if len(gaps) < 20:
+        print("  too few frames seen (%d) - was the swipe on the lock screen?" % len(gaps))
+        return
+    record(f"lock screen swipe, frame gap median ({len(gaps)} frames)", statistics.median(gaps) * 1000,
+           "ms", "lock median")
+    record("lock screen swipe, frame gap p90", gaps[int(len(gaps) * 0.9)] * 1000, "ms", "lock p90")
+
+
+def main(argv):
+    if os.geteuid() != 0:
+        die("run as root")
+    with_lock = "--no-lock" not in argv
+    session = Session()
+    preconditions(session)
+    width, height = (int(v) for v in sh([TOUCH, "size"]).stdout.split())
+    print(f"sfduo-perfcheck: output {width}x{height} logical, session {session.id} ({session.user}), "
+          f"governor schedutil, screen on\n")
+    perf = DockPerf(session)
+    scenario_launch(session, perf)
+    scenario_close(session, perf)
+    scenario_grid_signal(session, perf)
+    scenario_grid_finger(session, perf, width, height)
+    if with_lock:
+        scenario_lock(session, width, height)
+    misses = [r for r in results if not r[4]]
+    print()
+    if misses:
+        print(f"{RED}{len(misses)} threshold(s) missed{END}")
+        return 1
+    print(f"{GREEN}all {len(results)} within thresholds{END}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
