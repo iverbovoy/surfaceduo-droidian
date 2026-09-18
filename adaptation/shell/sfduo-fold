@@ -86,7 +86,12 @@ DIM = num("DIM", 0.8)                  # how dark the outer edge gets, fully fol
 DIM_CURVE = num("DIM_CURVE", 0.7)
 DIM_HINGE = num("DIM_HINGE", 0.15)     # dimming at the hinge edge, as a fraction of the outer
 DIM_REACH = num("DIM_REACH", 0.6)      # where along the sheet the dimming reaches full
-TINT = num("TINT", 0.05)               # the sheet's own faint light, so its shape reads on black
+PIECES = num("PIECES", 1.0)            # 0: turn the whole sheet, black and all
+LIT = num("LIT", 6.0)                  # a cell of the screen this bright is worth drawing
+PAD = num("PAD", 2.0)                  # cells of room around a piece, for the blur to spread into
+MAX_PIECES = num("MAX_PIECES", 14.0)   # per half; above this they are merged
+FULL_AT = num("FULL_AT", 0.45)         # a half this covered is drawn whole instead
+STAGGER = num("STAGGER", 0.35)         # how far the pieces travel out of step with each other
 
 # ---- how it behaves ------------------------------------------------------------
 LEAD_MS = num("LEAD", 70.0)            # extrapolate the hinge by this much: the sensor lags
@@ -111,7 +116,7 @@ GL_TEXTURE_2D, GL_RGB, GL_RGB8, GL_UNSIGNED_BYTE = 0x0DE1, 0x1907, 0x8051, 0x140
 GL_TEXTURE_BASE_LEVEL, GL_TEXTURE_MAX_LEVEL = 0x813C, 0x813D
 GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 = 0x8D40, 0x8CE0
 GL_FRAMEBUFFER_BINDING, GL_FRAMEBUFFER_COMPLETE = 0x8CA6, 0x8CD5
-GL_RGBA8, GL_TEXTURE1 = 0x8058, 0x84C1
+GL_RGBA8, GL_RGBA = 0x8058, 0x1908
 GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER, GL_LINEAR, GL_LINEAR_MIPMAP_LINEAR = 0x2801, 0x2800, 0x2601, 0x2703
 GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE = 0x2802, 0x2803, 0x812F
 GL_VERTEX_SHADER, GL_FRAGMENT_SHADER, GL_COMPILE_STATUS, GL_LINK_STATUS = 0x8B31, 0x8B30, 0x8B81, 0x8B82
@@ -162,9 +167,18 @@ for _name, _restype, _argtypes in (
         ("glGetIntegerv", None, [ctypes.c_uint, ctypes.POINTER(ctypes.c_int)]),
         ("glFinish", None, []),
         ("glTexStorage2D", None, [ctypes.c_uint, ctypes.c_int, ctypes.c_uint, ctypes.c_int, ctypes.c_int]),
+        ("glReadPixels", None, [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]),
         ("glGetError", ctypes.c_uint, [])):
     _fn = getattr(GL, _name)
     _fn.restype, _fn.argtypes = _restype, _argtypes
+
+FILL_FRAGMENT = b"""#version 300 es
+precision mediump float;
+uniform float opacity;
+out vec4 colour;
+void main() { colour = vec4(0.0, 0.0, 0.0, opacity); }
+"""
 
 VERTEX = b"""#version 300 es
 in vec2 pos;                  // clip space
@@ -186,7 +200,6 @@ uniform vec2 sheet;           // the picture x of this sheet's hinge edge, a pan
 uniform vec4 blur;            // strength, hinge floor, levels, unused
 uniform vec4 dim;             // strength, hinge floor, reach, max
 uniform float opacity;
-uniform float tint;           // the sheet's own faint light
 uniform float taps;           // 0: the mip level alone, for measuring
 in vec3 vUvq;
 out vec4 colour;
@@ -209,7 +222,8 @@ void main() {
     vec3 c = sample_blurred(q / screen, level);
     float spread = smoothstep(0.0, max(dim.z, 0.02), t);
     float fade = dim.x * (dim.y + (1.0 - dim.y) * spread);
-    c = (c + vec3(tint) * dim.x) * pow(1.0 - dim.w * fade, 2.2);
+    // multiplicative only: black stays black, which on this OLED means off
+    c *= pow(1.0 - dim.w * fade, 2.2);
     colour = vec4(c, opacity);
 }
 """
@@ -283,8 +297,9 @@ def capture_async(callback):
 
 # ---- the geometry, Mac Duo's turned on its side --------------------------------
 
-def sheet_quad(side, half, gap, height, separation_deg, viewing):
-    """One half's sheet: four (picture point, screen point, 1/depth) corners.
+def quad_for(side, rect, half, gap, height, separation_deg, viewing):
+    """A rectangle of the picture, as it lands on the screen: four (picture
+    point, screen point, one over the depth) corners.
 
     The sheet is hinged at the hinge edge - a vertical line, which is why Mac
     Duo's projection is turned on its side here - and rotated `separation`
@@ -294,22 +309,84 @@ def sheet_quad(side, half, gap, height, separation_deg, viewing):
     D / (D + s·sin a), so the hinge edge stays put and the outer edge shrinks
     towards it. A negative separation brings the outer edge forward instead.
 
-    The scale is one over the depth, and the picture point over the depth and
-    one over the depth are both linear in screen space - so the four corners
-    are all the rasteriser needs to get the perspective right inside.
+    The scale is one over the depth, and both the picture point over the depth
+    and one over the depth are linear in screen space - so four corners are all
+    the rasteriser needs to get the perspective right inside. The sheet is one
+    plane, so any rectangle of it projects by the same rule: that is what lets
+    the lit pieces be drawn on their own, and the black between them left alone.
     """
     a = math.radians(max(-30.0, min(85.0, separation_deg)))
     D = viewing * half
-    hinge_screen = half if side == "left" else half + gap
-    hinge_picture = half if side == "left" else half + gap
+    hinge = half if side == "left" else half + gap
     sign = -1 if side == "left" else 1
 
-    def corner(s, y):
+    def corner(px, py):
+        s = abs(px - hinge)
         scale = D / max(D + s * math.sin(a), D * 0.2)
-        screen = (hinge_screen + sign * s * math.cos(a) * scale,
-                  height / 2 + (y - height / 2) * scale)
-        return (hinge_picture + sign * s, y), screen, scale
-    return [corner(0, 0), corner(half, 0), corner(half, height), corner(0, height)]
+        return ((px, py),
+                (hinge + sign * s * math.cos(a) * scale, height / 2 + (py - height / 2) * scale),
+                scale)
+    x0, y0, x1, y1 = rect
+    return [corner(x0, y0), corner(x1, y0), corner(x1, y1), corner(x0, y1)]
+
+
+def pieces_from_map(cells, columns, rows):
+    """Where the screen is lit, as a few rectangles in fractions of it.
+
+    `cells` is a coarse picture - one byte a cell, the brightest channel - read
+    back from a level of the pyramid. Runs of lit cells in a row become
+    rectangles, rectangles that touch are merged, and what is left is padded so
+    the blur has room to spread into. Fractions, because the picture is in the
+    display's physical pixels and the sheets are drawn in its logical ones.
+    None when there is so much lit that the whole sheet may as well be drawn.
+    """
+    runs = []
+    for row in range(rows):
+        start = None
+        for column in range(columns + 1):
+            lit = column < columns and cells[row * columns + column] > LIT
+            if lit and start is None:
+                start = column
+            elif not lit and start is not None:
+                runs.append([start, row, column - 1, row])
+                start = None
+    boxes = []
+    for run in runs:                      # merge a run into a box it continues
+        for box in boxes:
+            if box[3] == run[1] - 1 and box[0] <= run[2] + 1 and run[0] <= box[2] + 1:
+                box[0], box[2] = min(box[0], run[0]), max(box[2], run[2])
+                box[3] = run[3]
+                break
+        else:
+            boxes.append(run)
+    merged = True
+    near = int(2 * PAD + 1)               # what the padding would make overlap anyway
+    while merged and len(boxes) > 1:      # and then anything near anything
+        merged = False
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                a, b = boxes[i], boxes[j]
+                if (a[0] <= b[2] + near and b[0] <= a[2] + near
+                        and a[1] <= b[3] + near and b[1] <= a[3] + near):
+                    boxes[i] = [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
+                    boxes.pop(j)
+                    merged = True
+                    break
+            if merged:
+                break
+    if not boxes or len(boxes) > MAX_PIECES * 2:
+        return None
+    pad = int(PAD)
+    out = []
+    covered = 0
+    for x0, y0, x1, y1 in boxes:
+        x0, y0 = max(0, x0 - pad), max(0, y0 - pad)
+        x1, y1 = min(columns - 1, x1 + pad), min(rows - 1, y1 + pad)
+        covered += (x1 - x0 + 1) * (y1 - y0 + 1)
+        out.append((x0 / columns, y0 / rows, (x1 + 1) / columns, (y1 + 1) / rows))
+    if covered > FULL_AT * columns * rows:
+        return None                        # busy enough to be the whole sheet again
+    return out
 
 
 class Fold:
@@ -357,6 +434,7 @@ class Fold:
         self.gaussian = False
         self.uploaded = None          # the picture the texture holds
         self.texture_size = None
+        self.pieces = None            # the lit rectangles of the picture, per half
         self.draw_ms = []
         self.last_at = 0.0
         self.opacity = 1.0
@@ -464,13 +542,16 @@ class Fold:
             return
         self.program = self._link(VERTEX, FRAGMENT)
         self.down = self._link(DOWN_VERTEX, DOWN_FRAGMENT)
+        self.fill = self._link(DOWN_VERTEX, FILL_FRAGMENT)
+        self.fill_opacity = GL.glGetUniformLocation(self.fill, b"opacity")
+        self.fill_pos = GL.glGetAttribLocation(self.fill, b"pos")
         self.down_uniforms = {name: GL.glGetUniformLocation(self.down, name.encode())
                               for name in ("src", "texel")}
         self.down_pos = GL.glGetAttribLocation(self.down, b"pos")
         self.tri = (ctypes.c_float * 6)(-1, -1, 3, -1, -1, 3)     # covers a level in one triangle
         self.uniforms = {name: GL.glGetUniformLocation(self.program, name.encode())
                          for name in ("picture", "screen", "sheet", "blur", "dim",
-                                      "opacity", "tint", "taps")}
+                                      "opacity", "taps")}
         self.pos = GL.glGetAttribLocation(self.program, b"pos")
         self.uvq = GL.glGetAttribLocation(self.program, b"uvq")
         self.verts = (ctypes.c_float * 20)()      # four corners, five floats each
@@ -550,6 +631,8 @@ class Fold:
             GL.glUniform2f(self.down_uniforms["texel"],
                            0.0 if level == 0 else 1.0 / src_w, 0.0 if level == 0 else 1.0 / src_h)
             GL.glDrawArrays(GL_TRIANGLES, 0, 3)
+        if ok and PIECES:
+            self._read_map(fbo.value, width, height)
         GL.glBindTexture(GL_TEXTURE_2D, self.texture)
         GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0)
         GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, self.max_level)
@@ -557,6 +640,31 @@ class Fold:
         GL.glDeleteFramebuffers(1, ctypes.byref(fbo))
         self.gaussian = ok
         return ok
+
+    def _read_map(self, fbo, width, height):
+        """The lit pieces of the picture, from a level of the pyramid we have
+        just built: a few kilobytes back from the GPU, and the arithmetic on a
+        map of some five thousand cells."""
+        t0 = time.monotonic()
+        level = min(5, self.max_level - 1)
+        columns, rows = max(1, width >> level), max(1, height >> level)
+        buf = (ctypes.c_ubyte * (columns * rows * 4))()
+        GL.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                                  self.texture, level)
+        if GL.glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
+            return
+        GL.glReadPixels(0, 0, columns, rows, GL_RGBA, GL_UNSIGNED_BYTE, buf)
+        cells = bytearray(columns * rows)
+        for i in range(columns * rows):
+            j = i * 4
+            cells[i] = max(buf[j], buf[j + 1], buf[j + 2])
+        self.pieces = pieces_from_map(cells, columns, rows)
+        log("pieces: %s, from %dx%d cells in %.0f ms"
+            % ("%d lit" % len(self.pieces) if self.pieces else "the whole sheet",
+               columns, rows, (time.monotonic() - t0) * 1000))
+        for piece in self.pieces or []:
+            log("    piece x %.2f..%.2f  y %.2f..%.2f"
+                % (piece[0], piece[2], piece[1], piece[3]))
 
     def _gl_render(self, area, context):
         if self.program is None:
@@ -574,6 +682,13 @@ class Fold:
         p = progress_for(self.angle, self.top)
         if p <= 0.0:
             return True
+        # the screen the effect replaces must not show through where nothing
+        # is drawn: the clear leaves those pixels clear, so black goes down
+        GL.glUseProgram(self.fill)
+        GL.glUniform1f(self.fill_opacity, self.opacity)
+        GL.glEnableVertexAttribArray(self.fill_pos)
+        GL.glVertexAttribPointer(self.fill_pos, 2, GL_FLOAT, GL_FALSE, 0, self.tri)
+        GL.glDrawArrays(GL_TRIANGLES, 0, 3)
         gap = max(1, round(width * HINGE_FRACTION))
         half = (width - gap) // 2
         # the turn follows the effect's own progress, not the hinge's travel:
@@ -590,25 +705,37 @@ class Fold:
                        min(BLUR_LEVELS, self.max_level), 0)
         GL.glUniform4f(self.uniforms["dim"], p ** DIM_CURVE, DIM_HINGE, DIM_REACH, DIM)
         GL.glUniform1f(self.uniforms["opacity"], self.opacity)
-        GL.glUniform1f(self.uniforms["tint"], TINT)
         GL.glUniform1f(self.uniforms["taps"], 0.0 if self.gaussian else 1.0)
         GL.glEnableVertexAttribArray(self.pos)
         GL.glEnableVertexAttribArray(self.uvq)
         base = ctypes.addressof(self.verts)
         GL.glVertexAttribPointer(self.pos, 2, GL_FLOAT, GL_FALSE, 20, ctypes.c_void_p(base))
         GL.glVertexAttribPointer(self.uvq, 3, GL_FLOAT, GL_FALSE, 20, ctypes.c_void_p(base + 8))
-        for side in ("left", "right"):
-            quad = sheet_quad(side, half, gap, height, separation, VIEWING)
-            # a triangle strip wants the corners crossed: 0, 1, 3, 2
-            for slot, corner in enumerate((quad[0], quad[1], quad[3], quad[2])):
-                (px, py), (sx, sy), scale = corner
-                self.verts[slot * 5 + 0] = 2.0 * sx / width - 1.0
-                self.verts[slot * 5 + 1] = 1.0 - 2.0 * sy / height
-                self.verts[slot * 5 + 2] = px * scale
-                self.verts[slot * 5 + 3] = py * scale
-                self.verts[slot * 5 + 4] = scale
+        for side, (lo, hi) in (("left", (0, half)), ("right", (half + gap, width))):
+            if PIECES and self.pieces:
+                rects = []
+                for fx0, fy0, fx1, fy1 in self.pieces:
+                    x0, x1 = max(lo, fx0 * width), min(hi, fx1 * width)
+                    if x1 > x0:
+                        rects.append((x0, fy0 * height, x1, fy1 * height))
+            else:
+                rects = [(lo, 0, hi, height)]
             GL.glUniform2f(self.uniforms["sheet"], half if side == "left" else half + gap, half)
-            GL.glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+            for index, rect in enumerate(rects):
+                # each piece travels at its own pace and they all arrive
+                # together: the exponent differs, the ends do not
+                lag = 1.0 + STAGGER * math.sin(rect[0] * 0.07 + rect[1] * 0.11 + index)
+                its_own = SEPARATION * (p ** max(0.2, SEPARATION_CURVE * lag))
+                quad = quad_for(side, rect, half, gap, height, its_own, VIEWING)
+                # a triangle strip wants the corners crossed: 0, 1, 3, 2
+                for slot, corner in enumerate((quad[0], quad[1], quad[3], quad[2])):
+                    (px, py), (sx, sy), scale = corner
+                    self.verts[slot * 5 + 0] = 2.0 * sx / width - 1.0
+                    self.verts[slot * 5 + 1] = 1.0 - 2.0 * sy / height
+                    self.verts[slot * 5 + 2] = px * scale
+                    self.verts[slot * 5 + 3] = py * scale
+                    self.verts[slot * 5 + 4] = scale
+                GL.glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
         if TIME:
             GL.glFinish()
             self.draw_ms.append((time.monotonic() - t_draw) * 1000)
