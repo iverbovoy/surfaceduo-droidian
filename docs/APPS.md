@@ -10,10 +10,10 @@ separate, private repository, but none of this is about that app.
 Phosh presents both panels as a single output:
 
 ```
-output    HWCOMPOSER-1, 2784x1800 @ 60 Hz, phoc scale 2.5  ->  1113x720 logical
+output    HWCOMPOSER-1, 2784x1800 @ 60 Hz, phoc scale 2  ->  1392x900 logical
 panels    two 1350x1800 DSI, side by side across the long edge
 hinge     84 physical pixels between them: addressable, and physically hidden
-zones     left [0,540]   seam [540,573]   right [573,1113]   (logical, scale 2.5)
+zones     left [0,675]   seam [675,717]   right [717,1392]   (logical, scale 2)
 ```
 
 The scale is the port's choice (`/etc/phosh/phoc.ini`, since 0.14.1; before
@@ -29,10 +29,10 @@ column between them - and it turned out that a desktop layout becomes a
 two-page one by moving three elements, without touching anything that draws.
 
 **Fullscreen or nothing.** The phosh panel (32 logical px) and home bar take
-their strip off the top and bottom of the 720. A `.desktop` launch that
+their strip off the top and bottom of the 900. A `.desktop` launch that
 calls `fullscreen()` gets it all.
 
-**Rotation.** Rotate the device and the logical output becomes 720x1113; the
+**Rotation.** Rotate the device and the logical output becomes 900x1392; the
 panels are now one above the other and the seam is a horizontal band. Compute
 the seam as a *fraction of the span* (84/2784), not as 84 divided by GTK's
 scale factor - rotated, GTK reported a scale of 5 where the output is scaled

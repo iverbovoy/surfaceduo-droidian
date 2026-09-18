@@ -776,8 +776,9 @@ install -Dm644 "$SHELLDIR/sfduo-brightness.desktop" "$PKG/etc/xdg/autostart/sfdu
 install -Dm644 "$SHELLDIR/dock.json" "$PKG/usr/share/sfduo/dock.json.example"
 # The output scale (2026-09-18): Droidian's generic phoc.ini says 3, which
 # makes the panels 928x600 logical - a phone's worth of space, in which GNOME
-# Calculator does not fit. 2.5 is Android's density for these panels and
-# gives 1113x720. phosh-session takes /etc/phosh/phoc.ini whole when it is
+# Calculator does not fit. 2 gives 1392x900 and, GTK3 drawing at integer
+# scales, 60 fps on the lock screen where 2.5 (drawn at 3) gave 40 - see
+# docs/PERF.md. phosh-session takes /etc/phosh/phoc.ini whole when it is
 # there, so the package ships Droidian's file with the one line changed. The
 # shell's CSS depends on the scale, so it is a template filled in by
 # sfduo-shell-css: here for the scale shipped, and again in postinst for

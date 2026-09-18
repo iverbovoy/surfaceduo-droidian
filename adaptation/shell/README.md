@@ -56,12 +56,16 @@ clock in an odd place.
 Droidian's generic `phoc.ini` scales every phone's output by 3, which makes
 the Duo's two panels 928x600 logical - a phone's worth of space in which GNOME
 Calculator loses its bottom row. Android runs these panels at 400 dpi, a
-scale of 2.5, and since 0.14.1 so does the port: `phoc.ini` (this directory,
-Droidian's file with that one line changed - phosh-session takes
-`/etc/phosh/phoc.ini` whole when it exists) makes the output 1113x720
-logical, with the hinge at [540, 573]. It is a conffile: change the scale
-there, run `sudo sfduo-shell-css`, restart the shell. GTK3 draws at the next
-integer scale and phoc scales it down; it looks fine.
+scale of 2.5, and from 0.14.1 to 0.15.3 so did the port. But GTK3 has no
+fractional scale: at 2.5 it draws at 3 into a 27 MB buffer per frame and
+phoc scales it down, and the lock screen's unlock swipe ran at 40 fps that
+way; at 2 the same swipe runs at 55-60 (`docs/PERF.md`, "The lock screen,
+measured"). So since 0.15.4 the port's scale is 2: `phoc.ini` (this
+directory, Droidian's file with that one line changed - phosh-session takes
+`/etc/phosh/phoc.ini` whole when it exists) makes the output 1392x900
+logical, with the hinge at [675, 717]. It is a conffile: change the scale
+there (2.5 is still there to try), run `sudo sfduo-shell-css`, restart the
+shell.
 
 Everything below is in logical pixels and therefore depends on the scale.
 The dock asks the compositor for the output's size; the CSS cannot, so it is
@@ -75,8 +79,8 @@ reads user CSS from the user config directory only; there is no system-wide
 `gtk.css.in` holds the rules with tokens where the geometry goes, and
 `sfduo-shell-css` fills them in for the scale in `phoc.ini` (the package does
 it at build time and again in postinst). The numbers in this section are
-the scale-3 ones the rules were worked out with; at 2.5 read 573 for 478,
-540 for 450 and 1113 for 928.
+the scale-3 ones the rules were worked out with; at 2 read 717 for 478,
+675 for 450 and 1392 for 928 (at 2.5: 573, 540, 1113).
 
 Each widget the shell centres is given `margin-left: 478px` - the near panel
 plus the hinge - so that what was centred on the whole screen is centred on
@@ -139,7 +143,7 @@ a file of their own is already there (GTK reads a user stylesheet from nowhere
 else). By hand, the CSS alone is:
 
 ```
-./sfduo-shell-css --scale 2.5 --template gtk.css.in -o /tmp/gtk.css
+./sfduo-shell-css --scale 2 --template gtk.css.in -o /tmp/gtk.css
 install -Dm644 -o droidian -g droidian /tmp/gtk.css /home/droidian/.config/gtk-3.0/gtk.css
 systemctl restart phosh
 ```
@@ -280,7 +284,7 @@ Two things worth knowing:
 
 - phoc's halves are exactly half the output, and the middle of the output is
   the middle of the hinge, so a tiled window reached half the hinge into the
-  bezel on its inner edge - 14 logical pixels at scale 3, 17 at 2.5 - and
+  bezel on its inner edge - 14 logical pixels at scale 3, 21 at 2 - and
   lost that much of its content. Since 0.14.2 the package carries a patched
   phoc (`phoc-patches/0001`, installed by `sfduo-phoc-install` beside exactly
   the phoc version it was built for, with the same version lock, `--restore`

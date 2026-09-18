@@ -23,7 +23,7 @@ Microsoft's debugging (`kernel-packaging/droidian/surfaceduo-perf.config`,
 
 Screenshots of the one output both panels share (2784x1800; the 84 px column
 the hinge hides is in the middle), taken on a from-scratch install of 0.14.2
-at the port's output scale of 2.5. The two-panel shell is **experimental and
+at the port's output scale of 2.5 (since 0.15.4 it is 2, see the status table). The two-panel shell is **experimental and
 in development**.
 
 | | |
@@ -38,7 +38,7 @@ in development**.
 | Subsystem | Status | Notes |
 |---|---|---|
 | Boot (RAM-boot) | ✅ | `fastboot boot`, no flashing required for testing |
-| Both displays | ✅ | Phosh session, panel power management works; output scale 2.5 (1113x720 logical, Android's density) since 0.14.1 - Droidian's generic 3 gave a phone's worth of space |
+| Both displays | ✅ | Phosh session, panel power management works; output scale 2 (1392x900 logical) since 0.15.4: GTK3 has no fractional scale, and at 2.5 (Android's density, 0.14.1-0.15.3) it drew at 3 and the lock screen ran at 40 fps; at 2 it runs at 60 (`docs/PERF.md`) - Droidian's generic 3 gave a phone's worth of space |
 | Touch | ✅ | MS D5 controller: kernel spi-hid → vendor HAL → uinput + udev rule |
 | USB networking + ssh | ✅ | RNDIS gadget, 172.16.42.1 |
 | System stability | ✅ | unlimited uptime once the ADSP is booted at start (adaptation handles it) |

@@ -5,8 +5,8 @@
 
 The shell's stylesheet keeps phosh's own furniture off the hinge with margins
 in logical pixels, and logical pixels depend on the output scale: at scale 3
-the two panels are 928x600 with the hinge at [450, 478], at 2.5 they are
-1113x720 with it at [540, 573]. GTK CSS cannot compute, so this does, from
+the two panels are 928x600 with the hinge at [450, 478], at 2 they are
+1392x900 with it at [675, 717]. GTK CSS cannot compute, so this does, from
 the panel geometry that does not change - two 1350x1800 panels with 84 px of
 hinge between them - and the scale.
 

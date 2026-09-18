@@ -18,7 +18,7 @@
 # everything is a protocol phoc already speaks.
 #
 # The halves phoc tiles are exactly half the output, which is half the hinge
-# (14 logical pixels at scale 3, 17 at 2.5) into it on each inner edge -
+# (14 logical pixels at scale 3, 21 at 2) into it on each inner edge -
 # the hinge column is the middle of the span. Living with that is deliberate for
 # now - the alternative is a patch to phoc's view_arrange_tiled to read the
 # same gmobile cutout the shell CSS is built around.
@@ -67,7 +67,7 @@ HINGE_FRACTION = 84 / 2784
 ICON_SIZE = 48            # logical px, the glyph itself
 BUTTON_SIZE = 60          # the box it sits in - equal for every app; six of
                           # them and the two halves' padding side by side on
-                          # one panel: 388 px of a 540 px panel at scale 2.5
+                          # one panel: 388 px of a 675 px panel at scale 2
 DOCK_HEIGHT = 84          # the strip the dock reserves along the bottom
 CONFIG = os.path.expanduser("~/.config/sfduo/dock.json")
 PLACED = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-placed.json")
@@ -78,7 +78,7 @@ HOME_BAR_HEIGHT = 15      # phosh's home bar, under the dock
 
 def output_size():
     """The output's logical size, asked of the compositor: 928x600 at phoc's
-    scale 3, 1113x720 at 2.5. Every other number here is logical too, and
+    scale 3, 1392x900 at 2. Every other number here is logical too, and
     the shell's furniture (the 32 px top bar, this dock's 84 px strip) keeps
     its logical size across scales, so only the span has to be asked for.
     Landscape is assumed, like everywhere else in this file."""
@@ -98,7 +98,7 @@ EDGE = 22                 # the gesture band along the bottom of a busy panel
 EDGE_MARGIN = 10          # a half's distance from its panel's outer edge when apart
 CLOSE_PX = 220            # a swipe this long over an app closes it, not just hides it
 GRID_ICON = ICON_SIZE     # the app grid's icons: the dock's size, not phosh's 64
-GRID_COLUMNS = 4          # on one panel: 540px at scale 2.5 gives four of ~130
+GRID_COLUMNS = 5          # on one panel: 675px at scale 2 gives five of ~130
 SLIDE_MS = 220            # the grid settling after the finger lets go
 SWIPE_PX = 12             # how far a finger travels before it is a swipe
 FLICK = 0.3               # px/ms: faster than this and the direction decides
