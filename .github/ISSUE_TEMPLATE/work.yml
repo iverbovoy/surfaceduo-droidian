@@ -6,7 +6,7 @@ body:
     id: why
     attributes:
       label: Why
-      description: Who saw what, when, in their words if there were any. What it should feel like after.
+      description: What was seen, when, and what it should be like instead - as a statement of the project, no quotes of anyone.
     validations:
       required: true
   - type: textarea

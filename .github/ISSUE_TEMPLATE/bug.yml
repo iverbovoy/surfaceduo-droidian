@@ -6,7 +6,7 @@ body:
     id: what
     attributes:
       label: What happens
-      description: Who saw it and when; the steps; what was expected instead. Nothing private - no names, no serials.
+      description: When it was seen; the steps; what was expected instead. Nothing private and nothing conversational - no names, no serials, no quotes.
     validations:
       required: true
   - type: textarea

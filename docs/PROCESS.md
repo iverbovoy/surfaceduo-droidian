@@ -51,9 +51,11 @@ An issue is written so that the work can be done from it without the
 conversation that produced it. Sections, in this order, dropping the ones that
 are empty:
 
-1. **Why** - who saw what, when, in their words if there were any. For a bug:
-   what happens, and the evidence (a journal excerpt, a screenshot, numbers).
-   For a request: what the owner asked for and what it should feel like.
+1. **Why** - what was seen, when, and what it should be like instead. In
+   the project's own voice: no quotes of what anybody said in conversation,
+   no "the owner wants" - an issue states the problem and the goal as facts
+   of the port, not as a transcript. For a bug: what happens, and the
+   evidence (a journal excerpt, a screenshot, numbers).
 2. **Root cause** - for a bug, once known. When there are several parts, a
    table: what is seen, what reads it, why it is wrong, what it should read.
 3. **Now / After** - the behaviour before and the behaviour after, as a user
@@ -118,6 +120,10 @@ its closing comment. No attribution trailers.
   closing comment. Move the card.
 - Nothing private in an issue: no outside users' names, no serial numbers,
   no addresses. The outside collaborator is "the first outside user".
+- Nothing conversational either: do not quote the maintainer or anyone else,
+  do not refer to "the owner" - write what is wrong and what is wanted as
+  the project's own statement. A date ("found in testing on 2026-09-18")
+  is the provenance an issue needs.
 - Numbers in an issue were measured with the screen on and the governor
   read first (`docs/PERF.md`, "The texture upload, measured twice").
 
