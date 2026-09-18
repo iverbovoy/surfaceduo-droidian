@@ -18,10 +18,15 @@
 #                                 archived it); fastfetch is its successor
 #   cool-retro-term             - the terminal in the dock: a QML terminal
 #                                 with CRT shaders, and they render through
-#                                 hybris on this device. Font scaling and the
-#                                 profile are in its own settings (a QML
-#                                 LocalStorage sqlite per user). Console
-#                                 stays in the grid.
+#                                 hybris on this device. Its settings live in
+#                                 a QML LocalStorage sqlite per user; a user
+#                                 without one gets the port's (IBM DOS font,
+#                                 white, scaling 0.5, flat screen, a little
+#                                 bloom - /usr/lib/sfduo/apps/cool-retro-term
+#                                 .json, chosen on the device 2026-09-18).
+#                                 The menu bar is on: Settings lives there,
+#                                 and a right click is not a thing on touch.
+#                                 Console stays in the grid.
 # What it cannot install: Spotify. There is no Spotify client for arm64
 # Linux - not in Debian, not on Flathub (x86_64 only) - and the web player
 # needs Widevine, which Firefox does not have on arm64. spotifyd (a headless
@@ -47,6 +52,28 @@ if [ "$1" = "--purge" ]; then
     apt-get autoremove -y --purge
 fi
 apt-get install -y telegram-desktop nodejs npm git ripgrep curl fastfetch htop cool-retro-term
+# cool-retro-term's settings for the session user, if they have none yet.
+# The storage name is fixed in the app ("coolretroterm1"), and so is the
+# hashed file name QML derives from it.
+H=$(getent passwd droidian | cut -d: -f6)
+SEED=/usr/lib/sfduo/apps/cool-retro-term.json
+if [ -n "$H" ] && [ -f "$SEED" ] && [ ! -d "$H/.local/share/cool-retro-term" ]; then
+    D="$H/.local/share/cool-retro-term/cool-retro-term/QML/OfflineStorage/Databases"
+    install -d "$D"
+    printf '[General]\nDescription=StorageDatabase\nDriver=QSQLITE\nEstimatedSize=100000\nName=coolretroterm1\nVersion=1.0\n' \
+        > "$D/27e743fe85b8912a46804fed99e8a9ab.ini"
+    python3 - "$SEED" "$D/27e743fe85b8912a46804fed99e8a9ab.sqlite" <<'PY'
+import json, sqlite3, sys
+seed = json.load(open(sys.argv[1]))
+db = sqlite3.connect(sys.argv[2])
+db.execute("CREATE TABLE IF NOT EXISTS settings(setting TEXT UNIQUE, value TEXT)")
+db.execute("INSERT OR REPLACE INTO settings VALUES ('_CURRENT_SETTINGS', ?)", (json.dumps(seed["settings"], indent=2),))
+db.execute("INSERT OR REPLACE INTO settings VALUES ('_CURRENT_PROFILE', ?)", (json.dumps(seed["profile"], indent=2),))
+db.execute("INSERT OR REPLACE INTO settings VALUES ('_CUSTOM_PROFILES', '[]')")
+db.commit()
+PY
+    chown -R droidian:droidian "$H/.local/share/cool-retro-term"
+fi
 # npm's global prefix is /usr/local: the binary lands in /usr/local/bin
 npm install -g @anthropic-ai/claude-code
 echo "sfduo-apps: done. Telegram is in the app grid and the dock; \`claude\` is on the PATH"

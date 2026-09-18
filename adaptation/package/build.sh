@@ -710,7 +710,8 @@ install -Dm644 "$SYSTEM/dconf/53-sfduo-apps"       "$PKG/etc/dconf/db/local.d/53
 # packages stay, see the list for why) and sfduo-apps installs what it adds
 # once the device is online (Telegram, what Claude Code needs).
 install -m755  "$SYSTEM/sfduo-apps"       "$PKG/usr/local/sbin/"
-install -Dm644 "$SYSTEM/apps/hidden.list" "$PKG/usr/lib/sfduo/apps/hidden.list"
+install -Dm644 "$SYSTEM/apps/hidden.list"           "$PKG/usr/lib/sfduo/apps/hidden.list"
+install -Dm644 "$SYSTEM/apps/cool-retro-term.json"  "$PKG/usr/lib/sfduo/apps/cool-retro-term.json"
 mkdir -p "$PKG/usr/local/share/applications"
 sed 's/#.*//' "$SYSTEM/apps/hidden.list" | awk 'NF' | while read -r id; do
     printf '[Desktop Entry]\nType=Application\nName=%s\nNoDisplay=true\nHidden=true\n# hidden by adaptation-droidian-surfaceduo - see /usr/lib/sfduo/apps/hidden.list\n' "${id%.desktop}" \
