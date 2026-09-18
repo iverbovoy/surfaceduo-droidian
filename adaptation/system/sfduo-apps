@@ -1,0 +1,53 @@
+#!/bin/sh
+# sfduo-apps: the applications the port adds to a Droidian image. Needs the
+# network, so it is a step to run once rather than something the package
+# does in postinst (which runs offline, from dpkg, on a fresh install).
+#
+#   sudo sfduo-apps            # install what the port adds
+#   sudo sfduo-apps --purge    # also remove what the package only hides
+#
+# What it installs and why:
+#   telegram-desktop            - in the dock by default (dconf/53-sfduo-apps)
+#   nodejs npm git ripgrep curl - what Claude Code needs; the CLI itself
+#                                 comes from npm (@anthropic-ai/claude-code).
+#                                 It declares node >= 22 and Debian has 20;
+#                                 npm warns and installs, and 2.1.276 runs.
+#                                 If a later one refuses, Anthropic's native
+#                                 installer (no node) is the way.
+#   fastfetch htop              - neofetch is gone from Debian (upstream
+#                                 archived it); fastfetch is its successor
+#   cool-retro-term             - the terminal in the dock: a QML terminal
+#                                 with CRT shaders, and they render through
+#                                 hybris on this device. Font scaling and the
+#                                 profile are in its own settings (a QML
+#                                 LocalStorage sqlite per user). Console
+#                                 stays in the grid.
+# What it cannot install: Spotify. There is no Spotify client for arm64
+# Linux - not in Debian, not on Flathub (x86_64 only) - and the web player
+# needs Widevine, which Firefox does not have on arm64. spotifyd (a headless
+# player from GitHub, Premium only) or the Android app in Waydroid are the
+# ways that exist; neither is set up here.
+set -e
+[ "$(id -u)" = 0 ] || { echo "run as root: sudo $0" >&2; exit 1; }
+apt-get update
+if [ "$1" = "--purge" ]; then
+    # The package hides these from the app grid (/usr/lib/sfduo/apps/hidden.list)
+    # rather than removing them, because they are dependencies of the
+    # droidian-phosh-full metapackage: purge one and the metapackage goes,
+    # and everything it pulled in becomes "automatically installed" - the
+    # next apt autoremove would take the shell's own applications with it.
+    # So first everything the metapackage depends on is marked as wanted,
+    # then the unwanted go. phosh-tour stays: droidian-quirks-initial-setup
+    # needs it, and a fresh install needs that.
+    for meta in droidian-phosh-full; do
+        apt-cache depends --installed "$meta" 2>/dev/null | sed -n 's/^ *Depends: //p' | grep -v "^<" \
+            | xargs -r apt-mark manual >/dev/null
+    done
+    apt-get purge -y epiphany-browser eog file-roller gnome-usage gnome-software || true
+    apt-get autoremove -y --purge
+fi
+apt-get install -y telegram-desktop nodejs npm git ripgrep curl fastfetch htop cool-retro-term
+# npm's global prefix is /usr/local: the binary lands in /usr/local/bin
+npm install -g @anthropic-ai/claude-code
+echo "sfduo-apps: done. Telegram is in the app grid and the dock; \`claude\` is on the PATH"
+echo "sfduo-apps: (open Console and run it - it signs in through the browser)."

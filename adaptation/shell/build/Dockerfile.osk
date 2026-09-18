@@ -1,0 +1,11 @@
+# Build phosh-osk-stub the way this device's was built: the phosh build
+# image (Droidian rolling, arm64 under qemu) plus what debian/control asks
+# for beyond it.
+FROM phosh-duo-build:latest
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends --allow-downgrades \
+      libhunspell-dev json-glib-tools libgirepository1.0-dev gobject-introspection \
+      libhandy-1-dev libfeedback-dev libgmobile-dev libgnome-desktop-3-dev \
+      gsettings-desktop-schemas-dev libsystemd-dev wayland-protocols libwayland-dev \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src

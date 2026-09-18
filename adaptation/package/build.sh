@@ -699,6 +699,19 @@ install -Dm644 "$SYSTEM/dconf/locks/50-sfduo-phoc" "$PKG/etc/dconf/db/local.d/lo
 install -Dm644 "$SYSTEM/dconf/profile-user"        "$PKG/etc/dconf/profile/user"
 install -Dm644 "$SYSTEM/dconf/51-sfduo-background" "$PKG/etc/dconf/db/local.d/51-sfduo-background"
 install -Dm644 "$SYSTEM/dconf/52-sfduo-idle"       "$PKG/etc/dconf/db/local.d/52-sfduo-idle"
+install -Dm644 "$SYSTEM/dconf/53-sfduo-apps"       "$PKG/etc/dconf/db/local.d/53-sfduo-apps"
+# Applications (2026-09-18): the grid hides what the port does not want
+# (../system/apps/hidden.list - an override per desktop id in
+# /usr/local/share/applications, which XDG_DATA_DIRS lists first; the
+# packages stay, see the list for why) and sfduo-apps installs what it adds
+# once the device is online (Telegram, what Claude Code needs).
+install -m755  "$SYSTEM/sfduo-apps"       "$PKG/usr/local/sbin/"
+install -Dm644 "$SYSTEM/apps/hidden.list" "$PKG/usr/lib/sfduo/apps/hidden.list"
+mkdir -p "$PKG/usr/local/share/applications"
+sed 's/#.*//' "$SYSTEM/apps/hidden.list" | awk 'NF' | while read -r id; do
+    printf '[Desktop Entry]\nType=Application\nName=%s\nNoDisplay=true\nHidden=true\n# hidden by adaptation-droidian-surfaceduo - see /usr/lib/sfduo/apps/hidden.list\n' "${id%.desktop}" \
+        > "$PKG/usr/local/share/applications/$id"
+done
 # A clean image has no `dconf` to compile these with until the shell's setup
 # step has run, and until then neither the lock nor the black background
 # would apply. Ship the database compiled; postinst's `dconf update` rebuilds
@@ -741,6 +754,16 @@ if [ -f "$PHOC_BIN" ]; then
     echo "0.47.0-1~git20250520212245.98211ea.next.phosh.0.47" > "$PKG/usr/lib/sfduo/phoc/version"
 else
     echo "NOTE: $PHOC_BIN not found - building without the patched phoc"
+fi
+# The patched on-screen keyboard (../shell/osk-patches/0001): on this display
+# it takes the right panel instead of both. Version-locked like the others.
+install -m755 "$SHELLDIR/sfduo-osk-install" "$PKG/usr/local/sbin/"
+OSK_BIN="$ROOT/out/osk/phosh-osk-stub-0.47.0-43ef51f-sfduo"
+if [ -f "$OSK_BIN" ]; then
+    install -Dm755 "$OSK_BIN" "$PKG/usr/lib/sfduo/osk/phosh-osk-stub"
+    echo "0.47.0+git20250520212740.43ef51f.next.phosh.0.47" > "$PKG/usr/lib/sfduo/osk/version"
+else
+    echo "NOTE: $OSK_BIN not found - building without the patched keyboard"
 fi
 install -Dm644 "$SHELLDIR/sfduo-dock.desktop"       "$PKG/etc/xdg/autostart/sfduo-dock.desktop"
 install -Dm644 "$SHELLDIR/sfduo-brightness.desktop" "$PKG/etc/xdg/autostart/sfduo-brightness.desktop"
@@ -869,6 +892,7 @@ command -v dconf >/dev/null 2>&1 && dconf update || true
 # the patched shell, if this is the phosh it was built for
 /usr/local/sbin/sfduo-phosh-install || true
 /usr/local/sbin/sfduo-phoc-install || true
+/usr/local/sbin/sfduo-osk-install || true
 # the shell's CSS for the output scale actually configured (a user may have
 # changed /etc/phosh/phoc.ini - it is a conffile and theirs to change)
 /usr/local/sbin/sfduo-shell-css || true

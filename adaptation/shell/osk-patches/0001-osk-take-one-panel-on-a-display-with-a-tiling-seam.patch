@@ -1,0 +1,125 @@
+From f68bd40393632c43e2799fd7ca597cff842ae241 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Fri, 18 Sep 2026 13:45:48 +0300
+Subject: [PATCH] osk: take one panel on a display with a tiling seam
+
+A display made of two panels with a hinge between them - the Surface Duo,
+whose phoc.ini names the hidden column as a `tiling-seam` - is one output
+to the compositor, and a keyboard anchored to both edges runs across the
+bezel: half the keys on each panel, a dead column through the middle. On
+such a display, in landscape, the keyboard is anchored to the bottom right
+with the width of one panel, read from the monitor's geometry and the
+seam. In portrait the panels are stacked and it spans the output as
+before. Without a seam nothing changes.
+---
+ src/phosh-osk-stub.c | 69 ++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 66 insertions(+), 3 deletions(-)
+
+diff --git a/src/phosh-osk-stub.c b/src/phosh-osk-stub.c
+index bdcfa66..678a54e 100644
+--- a/src/phosh-osk-stub.c
++++ b/src/phosh-osk-stub.c
+@@ -23,6 +23,7 @@
+ #include <glib-unix.h>
+ 
+ #include <gtk/gtk.h>
++#include <string.h>
+ #include <gdk/gdkwayland.h>
+ 
+ #include <libfeedback.h>
+@@ -291,6 +292,60 @@ phosh_osk_stub_has_wl_protcols (PhoshOskStub *self)
+ }
+ 
+ 
++
++/*
++ * A display made of two panels with a hinge between them (the Surface Duo:
++ * phoc's configuration names the hidden column as a `tiling-seam`, a
++ * fraction of the output's width) is one output to the compositor, and a
++ * keyboard anchored to both edges runs across the bezel - half the keys on
++ * each panel and a dead column through the middle. On such a display the
++ * keyboard takes one panel: the right one, under the thumb, in landscape.
++ * In portrait the panels are stacked and a full-width keyboard is right.
++ *
++ * Returns the panel's width in logical pixels, or 0 for an ordinary display.
++ */
++static int
++panel_width_for_seam (void)
++{
++  const char *paths[] = { "/etc/phosh/phoc.ini", "/usr/share/phosh/phoc.ini", NULL };
++  double seam = 0.0;
++  GdkDisplay *display;
++  GdkMonitor *monitor;
++  GdkRectangle geom;
++
++  for (int i = 0; paths[i]; i++) {
++    g_autofree char *contents = NULL;
++    g_auto (GStrv) lines = NULL;
++    gboolean in_output = FALSE;
++
++    if (!g_file_get_contents (paths[i], &contents, NULL, NULL))
++      continue;
++    lines = g_strsplit (contents, "\n", -1);
++    for (int l = 0; lines[l]; l++) {
++      g_strstrip (lines[l]);
++      if (lines[l][0] == '[')
++        in_output = g_str_has_prefix (lines[l], "[output:");
++      else if (in_output && g_str_has_prefix (lines[l], "tiling-seam"))
++        seam = g_ascii_strtod (strchr (lines[l], '=') ? strchr (lines[l], '=') + 1 : "0", NULL);
++    }
++    break;              /* phosh-session takes the first file that exists */
++  }
++  if (seam <= 0.0 || seam >= 1.0)
++    return 0;
++
++  display = gdk_display_get_default ();
++  monitor = gdk_display_get_primary_monitor (display);
++  if (!monitor)
++    monitor = gdk_display_get_monitor (display, 0);
++  if (!monitor)
++    return 0;
++  gdk_monitor_get_geometry (monitor, &geom);
++  if (geom.width <= geom.height)
++    return 0;           /* portrait: the panels are stacked, the keyboard spans one */
++
++  return (geom.width - (int) (seam * geom.width + 0.5)) / 2;
++}
++
+ static void
+ create_input_surface (PhoshOskStub *self)
+ {
+@@ -300,6 +355,7 @@ create_input_surface (PhoshOskStub *self)
+   g_autoptr (PosCompleterManager) completer_manager = NULL;
+   g_autoptr (PosClipboardManager) clipboard_manager = NULL;
+   gboolean force_completion;
++  int panel;
+ 
+   g_assert (PHOSH_IS_OSK_STUB (self));
+   g_assert (self->seat);
+@@ -316,13 +372,20 @@ create_input_surface (PhoshOskStub *self)
+   im = pos_input_method_new (self->input_method_manager, self->seat);
+ 
+   force_completion = !!(_debug_flags & POS_DEBUG_FLAG_FORCE_COMPLETEION);
++  panel = panel_width_for_seam ();
++  if (panel)
++    g_debug ("Two-panel display: keyboard on the right panel, %d px wide", panel);
+   self->input_surface = g_object_new (POS_TYPE_INPUT_SURFACE,
+                                       /* layer-surface */
+                                       "layer-shell", self->layer_shell,
+                                       "height", INPUT_SURFACE_HEIGHT,
+-                                      "anchor", ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
+-                                      ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
+-                                      ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT,
++                                      "width", panel,
++                                      "anchor", panel ?
++                                      (ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
++                                       ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT) :
++                                      (ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
++                                       ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
++                                       ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT),
+                                       "layer", ZWLR_LAYER_SHELL_V1_LAYER_TOP,
+                                       "kbd-interactivity", FALSE,
+                                       "exclusive-zone", INPUT_SURFACE_HEIGHT,
+-- 
+2.43.0
+

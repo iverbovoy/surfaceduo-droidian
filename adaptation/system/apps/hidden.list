@@ -1,0 +1,13 @@
+# Desktop entries the port hides from the app grid (2026-09-18). The packages
+# stay installed: purging any of them takes the droidian-phosh-full
+# metapackage with it, and the next `apt autoremove` would take half the
+# system. Hiding is an override with the same file name in
+# /usr/local/share/applications, which XDG_DATA_DIRS lists before /usr/share.
+# One desktop id per line; `#` starts a comment.
+org.gnome.Epiphany.desktop      # Web - Firefox is the browser
+org.gnome.eog.desktop           # Eye of GNOME - Image Viewer (Loupe) is newer
+vim.desktop                     # vim stays, its grid entry does not
+mobi.phosh.PhoshTour.desktop    # the phone tour, shown once by the first-run quirk
+org.gnome.FileRoller.desktop    # archives - rarely on a phone
+org.gnome.Usage.desktop
+org.gnome.Software.desktop      # GNOME Software - not useful on Droidian; apt is

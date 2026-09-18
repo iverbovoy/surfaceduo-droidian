@@ -144,3 +144,20 @@ shell's README) owns it from 0.14: on the packaged phosh no window can be
 tiled anyway, and a locked-off auto-maximize only leaves every window at its
 own size under the top bar, so the script drops the lock whenever the
 packaged binary is what runs and puts it back with the patched one.
+
+## Applications
+
+The image's app grid is Droidian's; the port hides what it does not want
+(`apps/hidden.list` - an override per desktop id in
+`/usr/local/share/applications`, which `XDG_DATA_DIRS` lists before
+`/usr/share`; the packages stay, because purging any of them takes the
+`droidian-phosh-full` metapackage with it and the next `apt autoremove`
+would take half the system), sets the dock's six apps as a dconf default
+(`dconf/53-sfduo-apps`; a user's own favourites win, and `dock.json` wins
+over both), and adds what a fresh image lacks once it is online:
+`sudo sfduo-apps` installs Telegram, cool-retro-term (the terminal in the
+dock - its CRT shaders render through hybris), what Claude Code needs and
+Claude Code itself from npm, fastfetch and htop. `sfduo-apps --purge` does
+remove the hidden packages, after marking the metapackage's other
+dependencies as wanted. No Spotify: there is no client for arm64 Linux and
+the web player needs Widevine, which Firefox lacks here.

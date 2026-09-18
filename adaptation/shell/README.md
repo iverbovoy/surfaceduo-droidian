@@ -475,6 +475,22 @@ GNOME Settings, for one, refuses to start without `XDG_CURRENT_DESKTOP`
 ("only supported under GNOME and Unity") - which looks exactly like a dock
 that ignores a tap.
 
+## The on-screen keyboard takes one panel
+
+phosh-osk-stub anchors its surface to the left and right edges, so on this
+display the keyboard ran across the bezel: half the keys on each panel and a
+dead column through the middle. Since 0.15 the package carries a patched one
+(`osk-patches/0001`, `sfduo-osk-install`, the same version lock, marker and
+`--restore` as phosh and phoc): when phoc.ini names a `tiling-seam` and the
+output is in landscape, the keyboard is anchored bottom-right with the width
+of one panel, computed from the monitor's geometry and the seam - the same
+arithmetic as the CSS and the dock. In portrait the panels are stacked and it
+spans the output as before. The right panel always, for now; following the
+window being typed into would need phosh to tell the keyboard where that
+window is. Built with `build/Dockerfile.osk` from droidian/phosh-osk-stub at
+43ef51f, `meson setup _build --prefix=/usr --libdir=lib/aarch64-linux-gnu`,
+`ninja -C _build`; the binary goes to `out/osk/`.
+
 ## Brightness
 
 The screen came back at 100% every time the device was opened, and there were

@@ -1,0 +1,61 @@
+#!/bin/sh
+# sfduo-osk-install: put the port's patched on-screen keyboard in place of the
+# packaged one - or, with --restore, put the packaged one back and keep it there.
+#
+# The patched binary is phosh-osk-stub at Droidian's 43ef51f (0.47) plus
+# adaptation/shell/osk-patches/0001: on a display whose phoc.ini names a
+# `tiling-seam`, the keyboard takes the right panel in landscape instead of
+# running across both. Version-locked, with the marker and --restore of
+# sfduo-phosh-install. The keyboard is restarted by phosh; restarting the
+# shell picks the new binary up.
+set -e
+OURS=/usr/lib/sfduo/osk/phosh-osk-stub
+WANT=$(cat /usr/lib/sfduo/osk/version 2>/dev/null || true)
+BIN=/usr/bin/phosh-osk-stub
+STOCK=/usr/bin/phosh-osk-stub.stock
+KEEP_STOCK=/etc/sfduo/osk-stock
+
+case "$1" in
+--restore)
+    [ -f "$STOCK" ] || { echo "sfduo-osk: no $STOCK to restore" >&2; exit 1; }
+    mkdir -p "$(dirname "$KEEP_STOCK")"
+    : > "$KEEP_STOCK"
+    if cmp -s "$STOCK" "$BIN"; then
+        echo "sfduo-osk: packaged phosh-osk-stub already in place; it now stays through package upgrades"
+    else
+        cp -a "$STOCK" "$BIN.tmp" && mv -f "$BIN.tmp" "$BIN"
+        echo "sfduo-osk: packaged phosh-osk-stub restored - restart the shell (sudo systemctl restart phosh)"
+    fi
+    echo "sfduo-osk: it stays through package upgrades until 'sfduo-osk-install --patched'."
+    echo "sfduo-osk: tiled windows reach half the hinge into the bezel again on this phoc."
+    exit 0
+    ;;
+--patched)
+    rm -f "$KEEP_STOCK"
+    ;;
+"")
+    if [ -f "$KEEP_STOCK" ]; then
+        echo "sfduo-osk: packaged phosh-osk-stub kept, as --restore asked ($KEEP_STOCK); 'sfduo-osk-install --patched' undoes that"
+        exit 0
+    fi
+    ;;
+*)
+    echo "usage: sfduo-osk-install [--restore | --patched]" >&2
+    exit 2
+    ;;
+esac
+
+[ -f "$OURS" ] && [ -n "$WANT" ] || { echo "sfduo-osk: no patched binary in this package"; exit 0; }
+HAVE=$(dpkg-query -W -f='${Version}' phosh-osk-stub 2>/dev/null || true)
+if [ "$HAVE" != "$WANT" ]; then
+    echo "sfduo-osk: phoc is $HAVE, the patched binary is for $WANT - left alone;"
+    echo "sfduo-osk: tiled windows reach half the hinge into the bezel on this phoc"
+    exit 0
+fi
+if cmp -s "$OURS" "$BIN"; then
+    echo "sfduo-osk: patched phosh-osk-stub already in place"
+    exit 0
+fi
+[ -f "$STOCK" ] || cp -a "$BIN" "$STOCK"
+cp -a "$OURS" "$BIN.tmp" && chmod 755 "$BIN.tmp" && mv -f "$BIN.tmp" "$BIN"
+echo "sfduo-osk: patched phosh-osk-stub installed (packaged one kept as $STOCK) - restart the shell (sudo systemctl restart phosh)"
