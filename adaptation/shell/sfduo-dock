@@ -65,7 +65,9 @@ from gi.repository import Gdk, Gio, GLib, Gtk, GtkLayerShell  # noqa: E402
 HINGE_FRACTION = 84 / 2784
 
 ICON_SIZE = 48            # logical px, the glyph itself
-BUTTON_SIZE = 64          # the box it sits in - equal for every app
+BUTTON_SIZE = 60          # the box it sits in - equal for every app; six of
+                          # them and the two halves' padding side by side on
+                          # one panel: 388 px of a 540 px panel at scale 2.5
 DOCK_HEIGHT = 84          # the strip the dock reserves along the bottom
 CONFIG = os.path.expanduser("~/.config/sfduo/dock.json")
 PLACED = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-placed.json")
@@ -114,25 +116,21 @@ SHELL_BIN = "/usr/libexec/phosh"
 PATCHED_PHOSH = "/usr/lib/sfduo/phosh/phosh"
 
 CSS = b"""
-/* The window is the whole display and mostly nothing: transparent, with
-   input only where the strip is. The strip and the grid paint their own
-   black, so nothing shows through the gap between the two halves. */
-window.sfduo-dock, window.sfduo-grid { background-color: transparent; }
+/* The dock's own window is the strip across the display and nothing to
+   see: transparent, input only. The halves, the grid and the curtain are
+   windows of their own and paint their own black. */
+window.sfduo-dock, window.sfduo-grid, window.sfduo-pane { background-color: transparent; }
 window.sfduo-curtain { background-color: #000000; }
 viewport { background-color: transparent; }
-.dock-row { background-color: transparent; }
 .grid-stage { background-color: transparent; }
 .dock-pane {
   background-color: rgba(18,18,20,0.92);
   padding: 6px 10px;
 }
-/* Rounded away from the hinge, square against it: one bar, cut by the bezel. */
+/* Rounded on the outer side, square on the side facing the other half: one
+   bar, cut by the bezel across both panels, whole when the halves meet. */
 .dock-pane.left  { border-radius: 20px 0 0 20px; padding-right: 4px; }
 .dock-pane.right { border-radius: 0 20px 20px 0; padding-left: 4px; }
-/* Alone on a panel there is no seam to be square against - and seven
-   buttons must fit in 450px, so they are a size smaller. */
-.dock-pane.alone { border-radius: 20px; padding: 6px 8px; }
-.dock-pane.alone .dock-button { padding: 4px; }
 .dock-button {
   background: none;
   border: none;
@@ -291,18 +289,26 @@ def gpointer(obj):
     return ctypes.pythonapi.PyCapsule_GetPointer(obj.__gpointer__, None)
 
 
-def raw_margin_bottom(window, margin):
-    """Move a mapped layer-shell window by its bottom margin without a repaint.
-    Falls back to gtk-layer-shell (a repaint) when the window is not mapped."""
+def raw_margins(window, top=0, right=0, bottom=0, left=0):
+    """Move a mapped layer-shell window by its margins without a repaint.
+    Falls back to gtk-layer-shell (a repaint) when the window is not mapped.
+    Returns True when it went to the protocol."""
     layer = GtkLayerShell.get_zwlr_layer_surface_v1(window) if window.get_mapped() else 0
     surface = _GDK.gdk_wayland_window_get_wl_surface(gpointer(window.get_window())) if layer else 0
     if not layer or not surface:
-        GtkLayerShell.set_margin(window, GtkLayerShell.Edge.BOTTOM, margin)
-        return
+        for edge, margin in ((GtkLayerShell.Edge.TOP, top), (GtkLayerShell.Edge.RIGHT, right),
+                             (GtkLayerShell.Edge.BOTTOM, bottom), (GtkLayerShell.Edge.LEFT, left)):
+            GtkLayerShell.set_margin(window, edge, margin)
+        return False
     _WL.wl_proxy_marshal(ctypes.c_void_p(layer), ctypes.c_uint32(ZWLR_LAYER_SURFACE_SET_MARGIN),
-                         ctypes.c_int32(0), ctypes.c_int32(0), ctypes.c_int32(margin), ctypes.c_int32(0))
+                         ctypes.c_int32(top), ctypes.c_int32(right), ctypes.c_int32(bottom), ctypes.c_int32(left))
     _WL.wl_proxy_marshal(ctypes.c_void_p(surface), ctypes.c_uint32(WL_SURFACE_COMMIT))
     _WL.wl_display_flush(_GDK.gdk_wayland_display_get_wl_display(gpointer(Gdk.Display.get_default())))
+    return True
+
+
+def raw_margin_bottom(window, margin):
+    raw_margins(window, bottom=margin)
 
 
 FRAME_MS = 16             # the animations' own clock (see animate)
@@ -448,29 +454,101 @@ class CurtainPanel(Gtk.Window):
         self.hide()
 
 
-class Dock(Gtk.Window):
-    def __init__(self):
-        super().__init__()
-        self.get_style_context().add_class("sfduo-dock")
+class PaneWindow(Gtk.Window):
+    """Half of the dock: a layer surface the size of its buttons, put where
+    it belongs by its left margin, moved and never redrawn.
 
-        # Transparent where it is nothing, and it is nothing almost
-        # everywhere: the window is as tall as the space between phosh's
-        # bars, so that the grid can be laid out once and left standing just
-        # below the bottom edge, ready to be dragged up. Growing the window
-        # at the moment of opening is what made opening stutter - a round
-        # trip to the compositor, a relayout and the first paint of forty
-        # icons, all on the first frame of the gesture.
+    The dock used to be one window across both panels with three strips in
+    it - across both panels, on the left alone, on the right alone - and the
+    crossing was a dip below the edge, a swap while nothing showed and a rise
+    on the other panel: the only way to get a row of buttons from one panel
+    to the other in GTK3 without repainting it on every frame. Two windows
+    that never change what they hold can simply travel: from both panels to
+    one the halves slide towards each other until they meet, from one panel
+    to the other they slide together across the hinge, in a straight line,
+    and the compositor moves the same pixels somewhere else, nothing is
+    rendered or uploaded. Only "hidden" - both panels taken - is still a dip
+    below the edge, which is where a thing that has no room goes.
+
+    Anchored to the bottom and the left edge with no width of its own, so it
+    is as wide as its buttons and its left margin is its position on the
+    screen. A negative bottom margin is the dip.
+    """
+
+    def __init__(self, dock, side, slab):
+        super().__init__()
+        self.dock = dock
+        self.side = side
+        self.slab = slab
+        self.x = 0                  # left margin: where on the screen it is
+        self.y = 0                  # bottom margin: 0 up, -DOCK_HEIGHT dipped
+        self.get_style_context().add_class("sfduo-pane")
         screen = Gdk.Screen.get_default()
         visual = screen.get_rgba_visual()
         if visual is not None:
             self.set_visual(visual)
         self.set_app_paintable(True)
-        # The window is the strip along the bottom and nothing more (it used
-        # to be the whole stage, for the grid and the curtain, which are
-        # windows of their own now - see GridPanel, CurtainPanel). Small
-        # matters here: every repaint of a window is a buffer the compositor
-        # copies into a texture on the CPU, and the strip's cross-fade repaints
-        # it on every frame.
+        self.set_size_request(-1, DOCK_HEIGHT)
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_namespace(self, "sfduo-dock")
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.BOTTOM, True)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, True)
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        slab.set_valign(Gtk.Align.END)
+        self.add(slab)
+        # A finger going up from a button is a swipe for the grid, on the
+        # panel this half is on right now (see Dock._panel_of_pane).
+        self.drag = Gtk.GestureDrag.new(self)
+        self.drag.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        self.drag.set_touch_only(True)
+        self.drag.connect("drag-begin", lambda g, x, y: dock._begin_drag(dock._panel_of_pane(self)))
+        self.drag.connect("drag-update", dock._on_drag_update)
+        self.drag.connect("drag-end", dock._on_drag_end)
+        self.drag.connect("cancel", dock._on_drag_cancel)
+
+    @property
+    def width(self):
+        width = self.get_allocated_width()
+        if width <= 1:
+            width = self.get_preferred_width()[1]
+        return width
+
+    def move(self, x=None, y=None, settle=False):
+        """Put the window at x (left margin) and y (bottom margin, <= 0).
+
+        Between the ends of a motion the margins go straight to the
+        compositor; at rest (`settle`) they go through gtk-layer-shell too,
+        so that what it believes is true whenever it next commits on its own.
+        """
+        if x is not None:
+            self.x = int(round(x))
+        if y is not None:
+            self.y = int(round(y))
+        if settle or not self.get_mapped():
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, self.x)
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, self.y)
+            return
+        raw_margins(self, bottom=self.y, left=self.x)
+
+
+class Dock(Gtk.Window):
+    def __init__(self):
+        super().__init__()
+        self.get_style_context().add_class("sfduo-dock")
+
+        # This window is nothing to look at: transparent, the strip along the
+        # bottom of both panels, there for the touches that are not a
+        # button's - a swipe up on a free panel for the grid, a swipe up along
+        # the bottom edge of a busy panel for its window. The dock's buttons
+        # are in two windows of their own (PaneWindow), the grid and the
+        # launch curtain in others (GridPanel, CurtainPanel). Painted once.
+        screen = Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+        self.set_app_paintable(True)
         self.set_size_request(-1, DOCK_HEIGHT)
 
         GtkLayerShell.init_for_window(self)
@@ -500,49 +578,28 @@ class Dock(Gtk.Window):
         items = favourites()
         cut = (len(items) + 1) // 2
 
-        # Three strips, one per place the dock can be: across both panels
-        # when nothing is open, or on the left or the right alone when the
-        # other panel has a window. They are stacked in the same place and
-        # cross-faded, which is the only way a row of buttons moves smoothly
-        # in GTK3 - reflowing them would jump. Which strip is showing
-        # decides which panel a tap opens onto.
-        self.rows = {
-            "both": self._row(("left", items[:cut]), ("right", items[cut:])),
-            "left": self._row(("left", items, True), ("right", [])),
-            "right": self._row(("left", []), ("right", items, True)),
+        # Two halves, each a window of its own that always holds the same
+        # buttons: with nothing open they sit one per panel, pushed against
+        # the hinge so the bar reads as one thing cut by the bezel; when a
+        # panel is taken they sit side by side on the other one. Which panel
+        # a tap opens onto is where the half is at that moment.
+        self.panes = {
+            "left": PaneWindow(self, "left", self._pane("left", items[:cut])),
+            "right": PaneWindow(self, "right", self._pane("right", items[cut:])),
         }
-        self.row = self.rows["both"]
         self.mode = "both"
+        self.half = 1             # a panel's width and the hinge, from size-allocate
+        self.gap = 1
 
-        # The grid stands on a stage below the visible edge and is moved,
-        # not revealed: its position is a number, the finger sets it while
-        # it is down and a frame-clock animation finishes the journey after.
-        # The grid is scrolled into view, not moved: a viewport the height of
-        # the stage holds a transparent spacer with the grid beneath it, and
-        # the scroll position is the grid's position. Scrolling a viewport
-        # shifts its window without laying anything out again, which is what
-        # makes following a finger cheap. (A GtkFixed grows to hold whatever
-        # is put in it; a GtkLayout hands children their natural size; an
-        # overlay clamps a margin so the child fits. None will park a widget
-        # below the edge.)
-        # The grids are windows of their own (GridPanel); this window holds
-        # the dock's strips and the launch curtain over a transparent stage.
         self._build_grid()
         self.grids = {side: GridPanel(self, side, pane)
                       for side, pane in (("left", self.grid_left), ("right", self.grid_right))}
         self.curtains = {side: CurtainPanel(side) for side in ("left", "right")}
-        stage_bg = Gtk.Box()
-        stage_bg.set_size_request(-1, DOCK_HEIGHT)
-        self.stage = Gtk.Overlay()
-        self.stage.add(stage_bg)
-        for row in self.rows.values():
-            row.set_valign(Gtk.Align.END)
-            row.set_halign(Gtk.Align.FILL)    # the display's width, not its own
-            row.set_hexpand(True)
-            self.stage.add_overlay(row)
+        strip = Gtk.Box()
+        strip.set_size_request(-1, DOCK_HEIGHT)
+        self.add(strip)
         self.curtain_up = False
         self.curtain_timer = None
-        self.add(self.stage)
 
         self.progress = 0.0       # 0 closed .. 1 open
         self.animation = None     # tick id of the grid's motion
@@ -556,10 +613,9 @@ class Dock(Gtk.Window):
         self.connect("size-allocate", self._on_size_allocate)
         self.connect("map", lambda *_a: self._shape())
         self.show_all()
-        for name, row in self.rows.items():
-            if name != "both":
-                row.set_opacity(0.0)
-                row.set_visible(False)
+        for pane in self.panes.values():
+            pane.connect("size-allocate", self._on_pane_size_allocate)
+            pane.show_all()
         self._follow_lockscreen()
         threading.Thread(target=self._watch_windows, daemon=True).start()
 
@@ -570,7 +626,7 @@ class Dock(Gtk.Window):
         self.drag = Gtk.GestureDrag.new(self)
         self.drag.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         self.drag.set_touch_only(True)
-        self.drag.connect("drag-begin", self._on_drag_begin)
+        self.drag.connect("drag-begin", lambda g, x, y: self._begin_drag(self._panel_at(x)))
         self.drag.connect("drag-update", self._on_drag_update)
         self.drag.connect("drag-end", self._on_drag_end)
         # A touch can also be taken away - the compositor cancels it when a
@@ -612,19 +668,6 @@ class Dock(Gtk.Window):
                 json.dump(self.placed, fp)
         except OSError as err:
             print(f"sfduo-dock: {PLACED}: {err}", file=sys.stderr)
-
-    def _row(self, left, right):
-        """One strip: a pane per panel, either of which may hold nothing."""
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        row.get_style_context().add_class("dock-row")
-        row.set_size_request(-1, DOCK_HEIGHT)
-        row.pane_left = self._pane(*left)
-        row.seam = Gtk.Box()
-        row.pane_right = self._pane(*right)
-        row.pack_start(row.pane_left, True, True, 0)
-        row.pack_start(row.seam, False, False, 0)
-        row.pack_start(row.pane_right, True, True, 0)
-        return row
 
     # ---- where the dock is ------------------------------------------------
 
@@ -778,26 +821,27 @@ class Dock(Gtk.Window):
         if running == getattr(self, "running", None):
             return False
         self.running = running
-        for row in self.rows.values():
-            for wrapper in (row.pane_left, row.pane_right):
-                slab = getattr(wrapper, "slab", None)
-                if slab is None:
+        favourites_ = set()
+        for pane in self.panes.values():
+            favourites_.update(pane.slab.buttons)
+        for pane in self.panes.values():
+            slab = pane.slab
+            for app_id, button in slab.buttons.items():
+                button.dot.set_visible(app_id in running)
+            for child in slab.running.get_children():
+                slab.running.remove(child)
+            # A running app that is no favourite gets a button in the half
+            # for the panel it was put on, wherever that half is right now.
+            for app_id in sorted(running):
+                if app_id in favourites_ or self.placed.get(app_id, "right") != slab.side:
                     continue
-                for app_id, button in slab.buttons.items():
-                    button.dot.set_visible(app_id in running)
-                for child in slab.running.get_children():
-                    slab.running.remove(child)
-                for app_id in sorted(running):
-                    if app_id in slab.buttons:
-                        continue
-                    if row is not self.rows["both"] or self.placed.get(app_id, "right") == slab.side:
-                        info = self._info_for(app_id)
-                        if info is None:
-                            continue
-                        button = self._app_button(info, slab.side, slab.size)
-                        button.dot.set_visible(True)
-                        slab.running.pack_start(button, False, False, 0)
-                        button.show_all()
+                info = self._info_for(app_id)
+                if info is None:
+                    continue
+                button = self._app_button(info, slab.side, slab.size)
+                button.dot.set_visible(True)
+                slab.running.pack_start(button, False, False, 0)
+                button.show_all()
         for app_id, buttons in self.grid_apps.items():
             for button in buttons:
                 button.dot.set_visible(app_id in running)
@@ -812,14 +856,13 @@ class Dock(Gtk.Window):
         long as nothing else made the window lay itself out again. And
         asking synchronously from inside the change did nothing either -
         the tree is not marked yet at that point. A frame later, it works.
+        A half that changed width is put back where it belongs by its
+        size-allocate (see _on_pane_size_allocate).
         """
         def pass_():
-            # Both: the window's own pass finds nothing to do, the
-            # overlay's re-allocates its children from their current
-            # requests. Measured, not understood.
-            self.check_resize()
-            self.stage.check_resize()
-            self.queue_draw()
+            for pane in self.panes.values():
+                pane.check_resize()
+                pane.queue_draw()
             return False
         GLib.timeout_add(16, pass_)
 
@@ -865,18 +908,42 @@ class Dock(Gtk.Window):
         self._set_mode(mode)
         return False
 
-    def _set_mode(self, mode):
-        """Move the dock to where it should be now.
+    def _pane_targets(self, mode):
+        """Where each half stands in a mode: its left margin on the screen.
 
-        It used to cross-fade, and a fade repaints the window on every frame:
-        on this device each repaint is a buffer the compositor copies into a
-        texture, 40 ms a time, so a 240 ms fade was six frames. Now the strip
-        dips below the screen edge, swaps its buttons while nothing of it is
-        visible, and comes back up on the other panel - two slides that move
-        the surface without repainting it (see raw_margin), one repaint in
-        between. Into "hidden" (both panels taken) it just goes down and stays
-        there; the gesture bands along the bottom stay reachable, because the
-        input region is the window's, wherever it is.
+        Across both panels each half hugs the hinge from its own side. On one
+        panel the two stand side by side, the left half first, centred on
+        the panel - unless together they are wider than it, in which case
+        they start at its edge and the tail runs over the hinge (a dock of
+        favourites and a few running apps at scale 3; rare).
+        """
+        left, right = self.panes["left"], self.panes["right"]
+        if mode == "both":
+            return {"left": self.half - left.width, "right": self.half + self.gap}
+        start = max(0, (self.half - left.width - right.width) // 2)
+        if mode == "right":
+            start += self.half + self.gap
+        return {"left": start, "right": start + left.width}
+
+    def _place_panes(self):
+        """Put the halves where the mode says, now, no motion: after the
+        display's size came in, or a half changed width."""
+        if self.mode == "hidden":
+            return
+        for side, x in self._pane_targets(self.mode).items():
+            self.panes[side].move(x=x, y=0, settle=True)
+        self._shape()
+
+    def _set_mode(self, mode):
+        """Move the dock to where it should be now, in a straight line.
+
+        The halves slide - towards each other onto the free panel when one
+        panel is taken, together across the hinge when the other is freed
+        and this one taken - easing out, so they park rather than stop. A
+        slide moves the surfaces and repaints nothing (see PaneWindow). Into
+        "hidden" (both panels taken) they dip below the edge and stay there;
+        out of it they rise where they are next wanted. The gesture bands
+        along the bottom are this window's, and stay wherever the halves go.
         """
         if mode == self.mode:
             return False
@@ -886,51 +953,58 @@ class Dock(Gtk.Window):
         if self.move is not None:
             GLib.source_remove(self.move)
             self.move = None
-        target = self.rows.get(mode)            # None when hidden
-
-        def swap():
-            for r in self.rows.values():
-                r.set_visible(r is target)
-                r.set_opacity(1.0)
-            if target is not None:
-                self.row = target
-            self._relayout()         # a strip shown after it changed is stale until this
-            self._shape()
-
-        half = MOVE_MS / 2.0
+        panes = self.panes
         frames = []
-        state = {"swapped": False}
 
-        def step(t):
-            frames.append(t)
-            if t < half and not was_hidden:
-                k = t / half
-                self._raw_margin(-round(DOCK_HEIGHT * (1.0 - (1.0 - k) ** 2)))   # ease-in, down
-                return True
-            if not state["swapped"]:
-                state["swapped"] = True
-                swap()
-                if target is None:
-                    self._raw_margin(-DOCK_HEIGHT + EDGE)   # the bands stay on screen
+        if mode == "hidden":
+            start = {s: p.y for s, p in panes.items()}
+
+            def step(t):
+                frames.append(t)
+                k = min(1.0, t / MOVE_MS)
+                eased = 1.0 - (1.0 - k) ** 3
+                for side, pane in panes.items():
+                    pane.move(y=start[side] + (-DOCK_HEIGHT - start[side]) * eased,
+                              settle=k >= 1.0)
+                if k >= 1.0:
                     self.move = None
+                    self._shape()
+                    self._report("dock dipping", frames)
                     return False
-            k = min(1.0, (t - (0 if was_hidden else half)) / half)
-            self._raw_margin(-round(DOCK_HEIGHT * (1.0 - k) ** 2))              # ease-out, up
-            if k >= 1.0:
-                self.move = None
-                if len(frames) > 1:
-                    debug("dock crossing to %s: %d frames over %.0f ms, %.0f ms/frame"
-                          % (mode, len(frames), frames[-1], frames[-1] / (len(frames) - 1)))
-                return False
-            return True
+                return True
+        else:
+            targets = self._pane_targets(mode)
+            if was_hidden:
+                # below the edge nothing shows: stand where the rise is due
+                for side, pane in panes.items():
+                    pane.move(x=targets[side])
+            start = {s: (p.x, p.y) for s, p in panes.items()}
 
+            def step(t):
+                frames.append(t)
+                k = min(1.0, t / MOVE_MS)
+                eased = 1.0 - (1.0 - k) ** 3            # ease-out cubic: parks, does not stop
+                for side, pane in panes.items():
+                    x0, y0 = start[side]
+                    pane.move(x=x0 + (targets[side] - x0) * eased,
+                              y=y0 + (0 - y0) * eased, settle=k >= 1.0)
+                if k >= 1.0:
+                    self.move = None
+                    self._shape()
+                    self._report("dock crossing to %s" % mode, frames)
+                    return False
+                return True
+
+        self._shape()          # the bands: a panel that is now busy, or free
         self.move = animate(step)
         return False
 
-    def _raw_margin(self, margin):
-        """The dock's bottom margin, straight to the compositor: the surface
-        moves, nothing is repainted (see the note above GridPanel)."""
-        raw_margin_bottom(self, margin)
+    @staticmethod
+    def _report(what, frames):
+        if len(frames) > 1:
+            gaps = [b - a for a, b in zip(frames, frames[1:])]
+            debug("%s: %d frames over %.0f ms, %.0f ms/frame (max %.0f)"
+                  % (what, len(frames), frames[-1], sum(gaps) / len(gaps), max(gaps)))
 
     # ---- the grid's motion ------------------------------------------------
 
@@ -951,18 +1025,16 @@ class Dock(Gtk.Window):
         debug("progress %.2f grid h=%d" % (self.progress, self.grids[self.grid_side].get_allocated_height()))
 
     def _shape(self):
-        """Where the window takes touches: the strip when closed, all of it
-        otherwise. Everything else falls through to what is underneath."""
+        """Where this window takes touches: the strip of a free panel, less
+        the halves standing on it (their touches are their own windows'), and
+        the band along the bottom of a busy one. Everything else falls
+        through to what is underneath."""
         win = self.get_window()
         if win is None:
             return
-        width = self.get_allocated_width()
-        gap = max(1, round(width * HINGE_FRACTION))
-        half = (width - gap) // 2
-        if self.locked:
-            region = cairo.Region()         # nothing: the lock screen's touches are its own
-        else:
-            region = cairo.Region()
+        half, gap = self.half, self.gap
+        region = cairo.Region()
+        if not self.locked:                 # locked: the lock screen's touches are its own
             for side, x in (("left", 0), ("right", half + gap)):
                 if self.progress > 0.0 and side == self.grid_side:
                     continue                        # the grid window takes this panel
@@ -970,6 +1042,9 @@ class Dock(Gtk.Window):
                     region.union(cairo.RectangleInt(x, 0, half, DOCK_HEIGHT))
                 else:                               # a window is here
                     region.union(cairo.RectangleInt(x, DOCK_HEIGHT - EDGE, half, EDGE))
+            if self.mode != "hidden":
+                for pane in self.panes.values():
+                    region.subtract(cairo.RectangleInt(pane.x, 0, pane.width, DOCK_HEIGHT))
         win.input_shape_combine_region(region, 0, 0)
 
     def _animate_to(self, target):
@@ -1017,12 +1092,15 @@ class Dock(Gtk.Window):
     # ---- the finger -------------------------------------------------------
 
     def _panel_at(self, x):
-        width = self.get_allocated_width()
-        gap = max(1, round(width * HINGE_FRACTION))
-        return "left" if x < (width - gap) // 2 else "right"
+        """The panel under an x of this window, which spans the display."""
+        return "left" if x < self.half else "right"
 
-    def _on_drag_begin(self, _gesture, x, _y):
-        debug("drag begin x=%.0f y=%.0f mode=%s" % (x, _y, self.mode))
+    def _panel_of_pane(self, pane):
+        """The panel a half of the dock is on right now."""
+        return self.mode if self.mode in ("left", "right") else pane.side
+
+    def _begin_drag(self, panel):
+        debug("drag begin on the %s panel, mode=%s" % (panel, self.mode))
         self._stop_animation()
         self.drag_start = self.progress
         self.drag_claimed = False
@@ -1030,7 +1108,6 @@ class Dock(Gtk.Window):
         self.drag_velocity = 0.0
         # A swipe that starts over a panel with a window on it is about that
         # window, not the grid: up hides it, further up closes it.
-        panel = self._panel_at(x)
         self.drag_app = None
         if self.progress <= 0.0 and self.mode not in ("both", panel):
             self.drag_app = next((a for a, p in self.placed.items() if p == panel), None)
@@ -1208,11 +1285,11 @@ class Dock(Gtk.Window):
             if self.progress > 0.0:
                 self._stop_animation()
                 self._set_progress(0.0)
-            for w in [self] + list(self.curtains.values()) + list(self.grids.values()):
+            for w in self._windows():
                 GtkLayerShell.set_layer(w, GtkLayerShell.Layer.TOP)
             self._cover_strangers()
         else:
-            for w in [self] + list(self.curtains.values()) + list(self.grids.values()):
+            for w in self._windows():
                 GtkLayerShell.set_layer(w, GtkLayerShell.Layer.OVERLAY)
             if self.curtain_up:
                 # held until now; from here it is an ordinary curtain, lifted
@@ -1220,6 +1297,12 @@ class Dock(Gtk.Window):
                 self.curtain_timer = GLib.timeout_add_seconds(
                     WAIT_TIMEOUT + 2, self._lift_curtain)
         self._shape()
+
+    def _windows(self):
+        """Every layer surface of the dock's: this one, the halves, the
+        curtains and the grids."""
+        return ([self] + list(self.panes.values()) + list(self.curtains.values())
+                + list(self.grids.values()))
 
     def _cover_strangers(self):
         """Locked, with a window on the screen that nobody has placed: keep
@@ -1285,25 +1368,17 @@ class Dock(Gtk.Window):
             print(f"sfduo-dock: lock state: {err}", file=sys.stderr)
         return True
 
-    def _pane(self, side, items, alone=False):
-        """Half of the dock, pushed up against the seam - or nothing at all,
-        when the dock is on the other panel.
-
-        The half that ends at the hinge is rounded only on its outer side, so
-        that across the bezel the two halves read as one bar rather than as
-        two slabs that happen to be near each other.
+    def _pane(self, side, items):
+        """Half of the dock: its buttons in a slab that is square on the
+        side facing the other half and rounded on the outer one, so that
+        across the bezel - or side by side on one panel - the two read as
+        one bar rather than as two slabs that happen to be near each other.
         """
-        if not items:
-            return Gtk.Box()
         outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        outer.set_halign(Gtk.Align.END if side == "left" else Gtk.Align.START)
         outer.set_valign(Gtk.Align.CENTER)
         outer.get_style_context().add_class("dock-pane")
         outer.get_style_context().add_class(side)
-        if alone:
-            outer.get_style_context().add_class("alone")
-            outer.set_halign(Gtk.Align.CENTER)
-        size = (BUTTON_SIZE - 8, ICON_SIZE - 6) if alone else (BUTTON_SIZE, ICON_SIZE)
+        size = (BUTTON_SIZE, ICON_SIZE)
 
         outer.buttons = {}
         for info in items:
@@ -1316,17 +1391,19 @@ class Dock(Gtk.Window):
         outer.pack_start(outer.running, False, False, 0)
         outer.side = side
         outer.size = size
+        return outer
 
-        wrapper = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        wrapper.pack_start(outer, True, True, 0)
-        wrapper.slab = outer
-        return wrapper
+    def _on_pane_clicked(self, button, info, pane_side):
+        """A tap on a half opens onto the panel that half is on now: its
+        own when the dock is across both, the free one otherwise."""
+        side = self.mode if self.mode in ("left", "right") else pane_side
+        self._on_clicked(button, info, side)
 
     def _app_button(self, info, side, size):
         """A dock button for an app, with a dot under it while it runs and
         a long press to close it."""
         button = self._icon_button(info.get_icon(), info.get_display_name(),
-                                   self._on_clicked, info, side, size=size)
+                                   self._on_pane_clicked, info, side, size=size)
         dot = Gtk.Label(label="●")
         dot.get_style_context().add_class("running-dot")
         dot.set_valign(Gtk.Align.END)
@@ -1361,7 +1438,6 @@ class Dock(Gtk.Window):
                       key=lambda a: a.get_display_name().casefold())
 
         self.grid_left = self._grid_pane("left", apps)
-        self.grid_seam = Gtk.Box()
         self.grid_right = self._grid_pane("right", apps)
         self.grid_side = "right"
         return None
@@ -1445,32 +1521,30 @@ class Dock(Gtk.Window):
         return button
 
     def _on_size_allocate(self, _widget, allocation):
-        """Keep the gap between the two halves over the hinge, at any rotation.
-
-        Both halves are given the width outright. Letting the box hand out the
-        space instead puts the gap in the wrong place: GtkBox divides the
-        *surplus* equally, not the width, so the half with one more button
-        ends up that much wider and the seam slides off the hinge - 32 px off,
-        in the arrangement this was first noticed with.
-        """
+        """The display's width, from the one window that spans it: where the
+        hinge is, how wide a panel is. The grids and the curtains are given
+        a panel's width outright; the halves are put in their places."""
         width = allocation.width
         span = max(width, allocation.height)
         gap = max(1, round(span * HINGE_FRACTION))
         half = max(1, (width - gap) // 2)
-        if width != getattr(self, "shaped_width", None):
-            self.shaped_width = width
-            self._shape()               # the input region is in these coordinates
-        if (self.grid_seam.get_size_request().width != gap
-                or self.grids["left"].get_size_request().width != half):
-            for row in self.rows.values():
-                row.seam.set_size_request(gap, 1)
-                row.pane_left.set_size_request(half, -1)
-                row.pane_right.set_size_request(half, -1)
-            self.grid_seam.set_size_request(gap, 1)
-            for grid in self.grids.values():
-                grid.set_size_request(half, STAGE_HEIGHT)
-            for curtain in self.curtains.values():
-                curtain.set_size_request(half, STAGE_HEIGHT)
+        if (half, gap) == (self.half, self.gap):
+            return
+        self.half, self.gap = half, gap
+        for grid in self.grids.values():
+            grid.set_size_request(half, STAGE_HEIGHT)
+        for curtain in self.curtains.values():
+            curtain.set_size_request(half, STAGE_HEIGHT)
+        if self.move is None:
+            self._place_panes()
+
+    def _on_pane_size_allocate(self, pane, allocation):
+        """A half that changed width - a running app got a button, or lost
+        it - stands where its new width says, unless it is on its way."""
+        if allocation.width != getattr(pane, "placed_width", None):
+            pane.placed_width = allocation.width
+            if self.move is None and self.half > 1:
+                self._place_panes()
 
 
     def _launch_from_file(self):

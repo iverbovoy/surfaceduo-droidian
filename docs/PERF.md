@@ -19,7 +19,10 @@ at the end.
 - The dock's strip crossing to the other panel as a cross-fade (opacity per
   frame, whole-window repaint): 42-100 ms per frame. As a dip below the
   screen edge and back, with the buttons swapped while nothing is visible
-  (two margin slides, one repaint): **18-29 ms**.
+  (two margin slides, one repaint): 18-29 ms. As two windows, one per half
+  of the dock, sliding in a straight line to where they are next wanted
+  (margin slides only, nothing repainted): **16 ms**, every frame, measured
+  on every kind of crossing.
 
 ## Where the time was
 
