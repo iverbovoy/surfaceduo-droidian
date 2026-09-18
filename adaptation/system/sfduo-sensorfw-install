@@ -1,0 +1,42 @@
+#!/bin/sh
+# sfduo-sensorfw-install: the hinge-angle sensor for sensorfw.
+#
+# The Duo's hinge angle (android.sensor.hinge_angle, the SLPI's sns_fold) is
+# a sensor type sensorfw does not know. sensorfw-hinge-patch/ in the port's
+# tree adds a hybris adaptor and a `hingesensor` plugin; the patch touches the
+# hybris adaptor library itself, so it is a rebuilt sensorfw, not a plugin
+# that can be dropped in. The package carries the rebuilt debs (qt6, and the
+# qt5 transitional stubs from the same build - installing the qt6 half alone
+# deconfigures the stock qt5 stubs and wedges apt) under /usr/lib/sfduo/
+# sensorfw/. dpkg holds its lock while the package installs, so this is a
+# step of its own, run once after the package: `sudo sfduo-sensorfw-install`.
+#
+# A later Droidian sensorfw would replace these; run it again after such an
+# upgrade, and check the port's tree for a rebuild against that version.
+set -e
+DEBS=/usr/lib/sfduo/sensorfw
+CONF=/etc/sensorfw/sensord-hybris.conf      # the file sensorfwd actually reads
+[ "$(id -u)" = 0 ] || { echo "sfduo-sensorfw: run as root" >&2; exit 1; }
+[ -n "$(ls "$DEBS"/*.deb 2>/dev/null)" ] || { echo "sfduo-sensorfw: no debs in $DEBS" >&2; exit 1; }
+want=$(dpkg-deb -f "$DEBS"/sensorfw-qt6_*.deb Version)
+have=$(dpkg-query -W -f='${Version}' sensorfw-qt6 2>/dev/null || true)
+if [ "$have" = "$want" ]; then
+    echo "sfduo-sensorfw: sensorfw $want with the hinge sensor already installed"
+else
+    echo "sfduo-sensorfw: installing sensorfw $want (was ${have:-none}) with the hinge sensor"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$DEBS"/*.deb
+fi
+# The plugin only loads if it is mapped in the config sensorfwd reads
+if ! grep -q '^hingeadaptor = hybrishingeadaptor' "$CONF" 2>/dev/null; then
+    printf '\n[plugins]\nhingeadaptor = hybrishingeadaptor\n' >> "$CONF"
+fi
+systemctl daemon-reload
+systemctl restart sensorfwd
+sleep 3
+if dbus-send --system --print-reply --dest=com.nokia.SensorService /SensorManager \
+       local.SensorManager.loadPlugin string:hingesensor 2>/dev/null | grep -q true; then
+    echo "sfduo-sensorfw: hingesensor loads; the angle is at /SensorManager/hingesensor (local.HingeSensor.hinge)"
+else
+    echo "sfduo-sensorfw: hingesensor did not load - see journalctl -u sensorfwd" >&2
+    exit 1
+fi

@@ -170,3 +170,16 @@ Claude Code itself from npm, fastfetch and htop. `sfduo-apps --purge` does
 remove the hidden packages, after marking the metapackage's other
 dependencies as wanted. No Spotify: there is no client for arm64 Linux and
 the web player needs Widevine, which Firefox lacks here.
+
+## The hinge angle
+
+`sudo sfduo-sensorfw-install`, once after the package: the hinge-angle
+sensor is a rebuilt sensorfw (`sensorfw-hinge-patch/` - the patch touches
+the hybris adaptor library, so it is not a plugin that can be dropped in),
+carried as debs under `/usr/lib/sfduo/sensorfw/`; dpkg holds its lock while
+the package's postinst runs, so it cannot install them itself. The script
+installs the qt6 debs and the qt5 transitional stubs from the same build
+(the qt6 half alone deconfigures the stock stubs and wedges apt), maps the
+adaptor in `sensord-hybris.conf` - the one file sensorfwd reads - restarts
+it and checks that `hingesensor` loads. Found missing on a fresh 101 image
+on 2026-09-18 (#54): the July install had it by hand.

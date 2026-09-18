@@ -702,6 +702,16 @@ install -m755 "$SYSTEM/sfduo-cpufreq"            "$PKG/usr/local/sbin/"
 # sfduo-perfcheck, #52), and the synthetic finger it moves (tools/sfduo-touch)
 install -m755 "$ROOT/tools/sfduo-perfcheck"       "$PKG/usr/local/sbin/"
 install -m755 "$ROOT/tools/sfduo-touch"           "$PKG/usr/local/sbin/"
+# The hinge-angle sensor: a rebuilt sensorfw (sensorfw-hinge-patch/), carried
+# as debs and installed by `sudo sfduo-sensorfw-install` after the package -
+# dpkg holds its lock while postinst runs, so it cannot happen here (#54).
+install -m755 "$SYSTEM/sfduo-sensorfw-install"    "$PKG/usr/local/sbin/"
+if [ -n "$(ls "$ROOT/out/sensorfw/"*.deb 2>/dev/null)" ]; then
+    mkdir -p "$PKG/usr/lib/sfduo/sensorfw"
+    install -m644 "$ROOT/out/sensorfw/"*.deb "$PKG/usr/lib/sfduo/sensorfw/"
+else
+    echo "NOTE: no out/sensorfw/*.deb - sfduo-sensorfw-install will have nothing to install"
+fi
 install -m755 "$SYSTEM/sfduo-screens"            "$PKG/usr/local/sbin/"
 install -Dm644 "$SYSTEM/dconf/50-sfduo-phoc"       "$PKG/etc/dconf/db/local.d/50-sfduo-phoc"
 install -Dm644 "$SYSTEM/dconf/locks/50-sfduo-phoc" "$PKG/etc/dconf/db/local.d/locks/50-sfduo-phoc"

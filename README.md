@@ -43,7 +43,7 @@ two-panel shell is **experimental and in development**.
 | USB networking + ssh | ✅ | RNDIS gadget, 172.16.42.1 |
 | System stability | ✅ | unlimited uptime once the ADSP is booted at start (adaptation handles it) |
 | WiFi | ✅ | qcacld-3.0 built from Microsoft's OSS wlan repos against this kernel; autoloaded by the adaptation package; NetworkManager just works |
-| Hinge angle (posture!) | ✅ | MS sns_fold on the SLPI via the sensorfw patch in this repo - live degrees over DBus |
+| Hinge angle (posture!) | ✅ | MS sns_fold on the SLPI via the sensorfw patch in this repo - live degrees over DBus. The rebuilt sensorfw is carried by the package and installed by `sudo sfduo-sensorfw-install` (one step after the package; dpkg cannot do it from postinst) |
 | Audio | ✅ | 23 techpack modules from MS OSS + ADSP boot ordering; PulseAudio/droid picks the card up; TTS spoken through the speaker |
 | Bluetooth | ✅ | bluebinder exonerated (the lockup was dead-ADSP collateral); needs the timeout drop-in + a provided board-address |
 | Camera | ✅ | droidian-camera (QT_QPA_PLATFORM=wayland) - full 11MP stills |
