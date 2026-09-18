@@ -15,12 +15,37 @@
 # has to survive that, so --restore leaves a marker, and while the marker is
 # there this script installs nothing. --patched removes the marker and puts
 # the patched binary back.
+#
+# The dconf lock on sm.puri.phoc auto-maximize goes with the patched phosh:
+# tiling a window to a panel needs auto-maximize off, and phosh turns it back
+# on at every start unless the lock holds it. On the packaged phosh no window
+# can be tiled (its home keeps the keyboard, so no window takes the focus),
+# and the lock only leaves every window at its own size under the top bar -
+# phoc refuses a maximize request for a window without the focus, so nothing
+# else can put it right. So the lock is there exactly when the patched phosh
+# is, and the packaged phosh maximizes windows itself, as it does anywhere.
 set -e
 OURS=/usr/lib/sfduo/phosh/phosh
 WANT=$(cat /usr/lib/sfduo/phosh/version 2>/dev/null || true)
 BIN=/usr/libexec/phosh
 STOCK=/usr/libexec/phosh.stock
 KEEP_STOCK=/etc/sfduo/phosh-stock
+LOCK=/etc/dconf/db/local.d/locks/50-sfduo-phoc
+
+tiling_lock() {
+    # on: windows tile, off: phosh maximizes them (its own default)
+    if [ "$1" = on ]; then
+        [ -f "$LOCK" ] && return 0
+        mkdir -p "$(dirname "$LOCK")"
+        echo /sm/puri/phoc/auto-maximize > "$LOCK"
+        echo "sfduo-phosh: auto-maximize locked off - windows tile to a panel"
+    else
+        [ -f "$LOCK" ] || return 0
+        rm -f "$LOCK"
+        echo "sfduo-phosh: auto-maximize lock dropped - the packaged phosh maximizes windows itself"
+    fi
+    command -v dconf >/dev/null 2>&1 && dconf update || true
+}
 
 case "$1" in
 --restore)
@@ -31,13 +56,15 @@ case "$1" in
         echo "sfduo-phosh: packaged phosh already in place; it now stays through package upgrades"
     else
         cp -a "$STOCK" "$BIN.tmp" && mv -f "$BIN.tmp" "$BIN"
-        echo "sfduo-phosh: packaged phosh restored - restart the shell (sudo systemctl restart phosh)"
+        echo "sfduo-phosh: packaged phosh restored"
         echo "sfduo-phosh: it stays through package upgrades until 'sfduo-phosh-install --patched'"
     fi
-    echo "sfduo-phosh: only the phosh binary changed. The dock, the CSS and the black"
-    echo "sfduo-phosh: background are separate - see adaptation/shell/README.md to turn them off."
-    echo "sfduo-phosh: the packaged phosh does not tell logind about its first lock screen:"
-    echo "sfduo-phosh: after a reboot the dock is visible over it until the first unlock."
+    tiling_lock off
+    echo "sfduo-phosh: restart the shell (sudo systemctl restart phosh). Only the phosh binary and"
+    echo "sfduo-phosh: the tiling changed: the dock, the CSS and the black background are separate -"
+    echo "sfduo-phosh: see adaptation/shell/README.md to turn them off. The packaged phosh does not"
+    echo "sfduo-phosh: tell logind about its first lock screen: after a reboot the dock is visible"
+    echo "sfduo-phosh: over it until the first unlock."
     exit 0
     ;;
 --patched)
@@ -46,6 +73,7 @@ case "$1" in
 "")
     if [ -f "$KEEP_STOCK" ]; then
         echo "sfduo-phosh: packaged phosh kept, as --restore asked ($KEEP_STOCK); 'sfduo-phosh-install --patched' undoes that"
+        tiling_lock off
         exit 0
     fi
     ;;
@@ -55,18 +83,22 @@ case "$1" in
     ;;
 esac
 
-[ -f "$OURS" ] && [ -n "$WANT" ] || { echo "sfduo-phosh: no patched binary in this package"; exit 0; }
+[ -f "$OURS" ] && [ -n "$WANT" ] || { echo "sfduo-phosh: no patched binary in this package"; tiling_lock off; exit 0; }
 HAVE=$(dpkg-query -W -f='${Version}' phosh 2>/dev/null || true)
 if [ "$HAVE" != "$WANT" ]; then
-    echo "sfduo-phosh: phosh is $HAVE, the patched binary is for $WANT - left alone"
+    echo "sfduo-phosh: phosh is $HAVE, the patched binary is for $WANT - left alone;"
+    echo "sfduo-phosh: windows will not tile to a panel on this phosh (see adaptation/shell/README.md)"
+    tiling_lock off
     exit 0
 fi
 if cmp -s "$OURS" "$BIN"; then
     echo "sfduo-phosh: patched phosh already in place"
+    tiling_lock on
     exit 0
 fi
 # keep the packaged binary, once: never overwrite the copy with our own
 [ -f "$STOCK" ] || cp -a "$BIN" "$STOCK"
 # a running binary cannot be written over, only replaced
 cp -a "$OURS" "$BIN.tmp" && chmod 755 "$BIN.tmp" && mv -f "$BIN.tmp" "$BIN"
+tiling_lock on
 echo "sfduo-phosh: patched phosh installed (packaged one kept as $STOCK) - restart the shell (sudo systemctl restart phosh)"

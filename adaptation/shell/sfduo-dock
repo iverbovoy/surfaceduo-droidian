@@ -22,6 +22,7 @@
 # now - the alternative is a patch to phoc's view_arrange_tiled to read the
 # same gmobile cutout the shell CSS is built around.
 
+import filecmp
 import json
 import os
 import signal
@@ -81,8 +82,14 @@ FLICK = 0.6               # px/ms: faster than this and the direction decides
 MOVE_MS = 240             # the dock crossing to the other panel
 WATCH_MS = 500            # how often to ask which windows are open
 WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
+FOCUS_TIMEOUT = 4         # seconds a mapped window gets to take the focus
 CURTAIN_ICON = 96         # the app's icon on the launch curtain
 CURTAIN_SETTLE = 250      # ms between the tiling chord and lifting the curtain
+
+# The shell's binary and the patched one the package carries: same file, and
+# windows can be placed; see Dock._shell_places.
+SHELL_BIN = "/usr/libexec/phosh"
+PATCHED_PHOSH = "/usr/lib/sfduo/phosh/phosh"
 
 CSS = b"""
 /* The window is the whole display and mostly nothing: transparent, with
@@ -354,6 +361,8 @@ class Dock(Gtk.Window):
         self.locked = False       # see _set_locked
         self.placing = 0          # launches of our own still being placed
         self.adopted = set()      # windows we did not launch and have dealt with
+        self.shell_places = None  # whether windows can be placed at all - see _shell_places
+        self.shell_places = self._shell_places()
         self.connect("size-allocate", self._on_size_allocate)
         self.connect("map", lambda *_a: self._shape())
         self.show_all()
@@ -495,8 +504,11 @@ class Dock(Gtk.Window):
                 GLib.idle_add(self._lift_curtain)
             return
         # It is already on the screen, across both panels; the move to one of
-        # them happens behind the curtain all the same.
-        GLib.idle_add(lambda: self._raise_curtain() or False)
+        # them happens behind the curtain all the same - unless the shell has
+        # shown it cannot place windows, in which case there is nothing to
+        # hide and the curtain would only be a black screen.
+        if self.shell_places is not False:
+            GLib.idle_add(lambda: self._raise_curtain() or False)
         try:
             self._adopt(strangers)
         finally:
@@ -508,17 +520,74 @@ class Dock(Gtk.Window):
             taken = set(self.placed.values())
             side = "left" if taken == {"right"} else "right"
             debug(f"adopting {app_id} onto the {side} panel")
-            subprocess.run(["wlrctl", "toplevel", "focus", f"app_id:{app_id}"],
-                           check=False)
-            if not self._wait_for_window(app_id):
-                print(f"sfduo-dock: {app_id} never took focus - left where it opened",
-                      file=sys.stderr)
+            if not self._take_focus(app_id):
                 continue
             key = "Left" if side == "left" else "Right"
             if subprocess.run(["wtype", "-M", "logo", "-k", key, "-m", "logo"],
                               check=False).returncode == 0:
                 self.placed[app_id] = side
                 self._save_placed()
+
+    # ---- a shell that cannot place windows -----------------------------------
+    #
+    # Placement is a chord to the focused window, and phosh as packaged never
+    # focuses one after its app grid has closed: its home keeps the keyboard
+    # (README, "When a launched app opens across both panels"; phosh-patches/
+    # 0003 is the fix). On such a shell everything the dock does around a
+    # launch is harm: a black curtain for as long as it waits, per launch and
+    # per window it adopts. So the dock finds out, and steps back: no curtain,
+    # no chord. (Maximizing the window instead is not open to it - phoc
+    # refuses maximize, minimize and fullscreen for a window without the
+    # focus; the dconf lock that keeps auto-maximize off for the tiling's
+    # sake is dropped by sfduo-phosh-install on such a shell, and phosh then
+    # maximizes windows itself.)
+    #
+    # shell_places is True, False or None (not known yet). It is read from the
+    # binaries at start when the package's patched phosh is there to compare
+    # with, and from the first window otherwise: one that takes the focus
+    # settles it either way. False is not final - every window is still asked
+    # once, because a shell that starts placing windows should be believed.
+
+    def _shell_places(self):
+        try:
+            if not os.path.exists(PATCHED_PHOSH):
+                return None
+            if filecmp.cmp(SHELL_BIN, PATCHED_PHOSH, shallow=False):
+                return True
+        except OSError:
+            return None
+        self._step_back("the shell is not the patched phosh")
+        return False
+
+    def _step_back(self, why):
+        if self.shell_places is False:
+            debug(f"still cannot place windows: {why}")
+            return
+        self.shell_places = False
+        print(f"sfduo-dock: {why} - this shell does not let a new window take "
+              "the focus, so no window can be placed on a panel: they open "
+              "across both, and the dock stays out of their way. The port's "
+              "patched phosh fixes it; `sudo sfduo-phosh-install` says whether "
+              "it is installed and, if not, why.", file=sys.stderr)
+
+    def _take_focus(self, app_id):
+        """Give the window the focus, and say whether it took it."""
+        # Ask for the focus rather than hope for it: phoc gives it to a new
+        # window on its own, but not when another window was raised meanwhile.
+        subprocess.run(["wlrctl", "toplevel", "focus", f"app_id:{app_id}"],
+                       check=False)
+        if self._wait_for_window(app_id):
+            self.shell_places = True
+            return True
+        # Asking did not help, so it is not a window that has the focus but a
+        # layer surface with exclusive keyboard - phoc's log says "Layer
+        # surface has focus, not focusing view yet" (LogDomains phoc-seat).
+        # Behind the lock screen that is the lock screen, and proves nothing.
+        if self.locked:
+            debug(f"{app_id} never took the focus - the phone is locked")
+            return False
+        self._step_back(f"{app_id} never took the focus")
+        return False
 
     def _set_running(self, running):
         """running: app_id -> minimized. Dots on favourites, buttons for the
@@ -893,7 +962,7 @@ class Dock(Gtk.Window):
         """Locked, with a window on the screen that nobody has placed: keep
         the curtain over it, under the lock screen, until the unlock."""
         ids = getattr(self, "last_ids", [])
-        if self.locked and not self.curtain_up and \
+        if self.locked and not self.curtain_up and self.shell_places is not False and \
                 any(a not in self.placed and a not in self.adopted for a in ids):
             self._raise_curtain(hold=True)
         return False
@@ -1166,7 +1235,8 @@ class Dock(Gtk.Window):
         except GLib.Error as err:
             print(f"sfduo-dock: {info.get_id()}: {err.message}", file=sys.stderr)
             return
-        self._raise_curtain(info, side)
+        if self.shell_places is not False:
+            self._raise_curtain(info, side)
         self.placing += 1
         threading.Thread(target=self._place_and_reveal,
                          args=(info, app_id, side, before), daemon=True).start()
@@ -1267,18 +1337,9 @@ class Dock(Gtk.Window):
         if found != app_id:
             learn_app_id(info, found)
         app_id = found
-        # Ask for the focus rather than hope for it: phoc gives it to a new
-        # window on its own, but not when another window was raised meanwhile.
-        subprocess.run(["wlrctl", "toplevel", "focus", f"app_id:{app_id}"],
-                       check=False)
-        if not self._wait_for_window(app_id):
-            # Asking did not help, so it is not a window that has the focus
-            # but a layer surface with exclusive keyboard - phoc's log says
-            # "Layer surface has focus, not focusing view yet" (LogDomains
-            # phoc-seat). No chord reaches the window from here; it stays
-            # across both panels, and the dock hides as for any such window.
-            print(f"sfduo-dock: {app_id} never took focus - a layer surface "
-                  "is holding the keyboard", file=sys.stderr)
+        if not self._take_focus(app_id):
+            # No chord reaches the window from here; it stays across both
+            # panels, and the dock hides as for any such window.
             return False
         # The chord is a toggle: sending it to a window already on that side
         # would push it back to full width. Remember where each app was put.
@@ -1299,9 +1360,11 @@ class Dock(Gtk.Window):
         `wlrctl toplevel find` is a question, not a wait - asking it on a
         tenth-of-a-second beat is what the wait actions in wlrctl are not.
         Focus matters because the chord goes to whatever is focused, so the
-        window has to have arrived before it is sent.
+        window has to have arrived before it is sent. The window is mapped by
+        now, so the wait is short: the focus comes within the second or not
+        at all (see _take_focus), and every second here is a black one.
         """
-        deadline = time.monotonic() + WAIT_TIMEOUT
+        deadline = time.monotonic() + FOCUS_TIMEOUT
         while time.monotonic() < deadline:
             found = subprocess.run(
                 ["wlrctl", "toplevel", "find",

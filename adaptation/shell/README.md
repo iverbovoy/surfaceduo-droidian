@@ -402,8 +402,33 @@ wlrctl toplevel find app_id:org.gnome.Settings state:active; echo $?   # 1, fore
 ```
 
 `phosh-patches/0003` is the one missing line. With it the same sequence
-answers 0. The dock says so in the journal when it meets the unpatched
-behaviour ("never took focus - a layer surface is holding the keyboard").
+answers 0.
+
+On a shell that cannot do this the dock steps back, since 0.14: with the
+packaged phosh in place of the patched one, everything the dock did around a
+launch was harm - a black curtain for as long as it waited (twenty seconds,
+per launch and per window it tried to adopt), the window then left at its own
+size under the top bar because `auto-maximize` is off for the tiling's sake,
+and a curtain held under the lock screen that stayed for twenty seconds after
+the unlock. Now the dock compares the shell's binary with the patched one the
+package carries at start, and otherwise learns from the first window: one
+that takes the focus within four seconds settles it, one that does not
+(outside the lock screen, which holds the keyboard by right) makes the dock
+step back - no curtain, no chord. It says so once in the journal, with what to
+run (`sudo sfduo-phosh-install`). Every later window is still asked, without a
+curtain: a shell that starts placing windows is believed again.
+
+The window's size is not the dock's to fix: phoc refuses maximize, minimize
+and fullscreen requests for a window that does not have the focus (the
+fullscreen one fails an assertion on it, the others are dropped without a
+word), so on such a shell nothing outside phosh can put a window right. That
+is why the dconf lock keeping `auto-maximize` off belongs to the patched
+phosh: `sfduo-phosh-install` puts the lock in place with the patched binary
+and drops it whenever the packaged phosh is what runs - after `--restore`, and
+when the version lock leaves the packaged one alone - so that phosh
+maximizes windows itself, as it does on any other phone. The first outside
+install ran into all of this at once, on a phosh the version lock had left
+unpatched.
 
 ### Seeing what a gesture did
 

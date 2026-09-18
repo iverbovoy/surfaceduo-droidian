@@ -120,3 +120,9 @@ install -Dm644 dconf/locks/50-sfduo-phoc /etc/dconf/db/local.d/locks/50-sfduo-ph
 install -Dm644 dconf/profile-user        /etc/dconf/profile/user
 dconf update
 ```
+
+The lock belongs to the patched phosh, and `sfduo-phosh-install` (the
+shell's README) owns it from 0.14: on the packaged phosh no window can be
+tiled anyway, and a locked-off auto-maximize only leaves every window at its
+own size under the top bar, so the script drops the lock whenever the
+packaged binary is what runs and puts it back with the patched one.

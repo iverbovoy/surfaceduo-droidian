@@ -44,19 +44,47 @@ install -m644 "$ACCESS/99-sfduo-usb.conf"   "$PKG/etc/NetworkManager/conf.d/"
 # shift the ABI). Kernel must have MODULE_SIG_FORCE=n (v5+). Loaded by
 # sfduo-wlan.service; NetworkManager picks wlan0 up as a normal wifi
 # device. Rebuild recipe: kernel-packaging/README.md.
-WLANKO="$ROOT/out/wlan.ko"  # built per kernel-packaging/README.md
-if [ -f "$WLANKO" ]; then
-    mkdir -p "$PKG/usr/lib/sfduo"
-    install -m644 "$WLANKO" "$PKG/usr/lib/sfduo/wlan.ko"
+#
+# Modules are per kernel release (2026-09): out/modules/<uname -r>/wlan.ko and
+# out/modules/<uname -r>/audio/*_dlkm.ko, installed under
+# /usr/lib/sfduo/modules/<uname -r>/. The 4.14-190 builds and the 4.14-190-perf
+# ones (kernel-packaging/droidian/surfaceduo-perf.config) do not share a
+# module ABI - CONFIG_MODVERSIONS refuses the other kernel's modules - and a
+# device RAM-booting one kernel while the other is flashed needs both sets:
+# without its audio modules a kernel never boots the ADSP, and the system
+# freezes a few minutes in. The units below pick the set for the running
+# kernel, and say so when there is none.
+MODSETS="$ROOT/out/modules"
+HAVE_WLAN=0; HAVE_AUDIO=0
+for set in "$MODSETS"/*/; do
+    [ -d "$set" ] || continue
+    rel=$(basename "$set")
+    if [ -f "$set/wlan.ko" ]; then
+        install -Dm644 "$set/wlan.ko" "$PKG/usr/lib/sfduo/modules/$rel/wlan.ko"
+        HAVE_WLAN=1
+    else
+        echo "NOTE: no wlan.ko for $rel - that kernel gets no wifi"
+    fi
+    if [ -n "$(find "$set/audio" -name '*.ko' 2>/dev/null | head -1)" ]; then
+        mkdir -p "$PKG/usr/lib/sfduo/modules/$rel/audio"
+        find "$set/audio" -name '*.ko' -exec install -m644 {} "$PKG/usr/lib/sfduo/modules/$rel/audio/" \;
+        HAVE_AUDIO=1
+    else
+        echo "NOTE: no audio modules for $rel - that kernel cannot boot the ADSP"
+    fi
+    echo "modules for $rel: wlan=$([ -f "$set/wlan.ko" ] && echo yes || echo no) audio=$(find "$set/audio" -name '*.ko' 2>/dev/null | wc -l)"
+done
+if [ "$HAVE_WLAN" = 1 ]; then
     cat > "$PKG/usr/lib/systemd/system/sfduo-wlan.service" <<'UNIT'
 [Unit]
 Description=sfduo: load the qcacld-3.0 wlan module
-ConditionPathExists=/usr/lib/sfduo/wlan.ko
+ConditionDirectoryNotEmpty=/usr/lib/sfduo/modules
 Before=NetworkManager.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'grep -q ^wlan /proc/modules || insmod /usr/lib/sfduo/wlan.ko'
+# The module for the running kernel; another kernel's would be refused anyway
+ExecStart=/bin/sh -c 'M=/usr/lib/sfduo/modules/$(uname -r)/wlan.ko; [ -f "$M" ] || { echo "sfduo-wlan: no wlan module for $(uname -r) in /usr/lib/sfduo/modules" >&2; exit 0; }; grep -q ^wlan /proc/modules || insmod "$M"'
 # WoWLAN keeps the association alive through deep sleep, so WiFi (and ssh
 # over it) come back instantly after a deliberate wake (wakeonlan <mac>).
 # magic-packet, NOT any: "any" means every LAN broadcast wakes the phone
@@ -71,7 +99,7 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 UNIT
 else
-    echo "NOTE: $WLANKO not found - building without wifi module"
+    echo "NOTE: no wlan.ko in $MODSETS/*/ - building without wifi module"
 fi
 
 # Audio (2026-07-11): 23 techpack modules built from MS's audio-kernel OSS
@@ -81,16 +109,18 @@ fi
 # tame-vendor), so boot it ourselves via adsp_loader's sysfs, then load
 # the chain in vendor order. Codec on Duo 1 answers as TAVIL (wcd934x,
 # chip id 0x108) - the pahu DT node stays silent, ignore its -6 probe.
-AUDIOKO_DIR="$ROOT/out/audio-modules"  # *_dlkm.ko per kernel-packaging/README.md
-if [ -d "$AUDIOKO_DIR" ] && [ -n "$(find "$AUDIOKO_DIR" -name '*.ko' 2>/dev/null | head -1)" ]; then
-    mkdir -p "$PKG/usr/lib/sfduo/audio"
-    find "$AUDIOKO_DIR" -name '*.ko' -exec install -m644 {} "$PKG/usr/lib/sfduo/audio/" \;
+if [ "$HAVE_AUDIO" = 1 ]; then
     cat > "$PKG/usr/local/sbin/sfduo-audio-up.sh" <<'AUDIO'
 #!/bin/sh
 # Boot the ADSP, then load the audio techpack chain in vendor order.
 KVER=$(uname -r)
+SET=/usr/lib/sfduo/modules/$KVER/audio
+[ -n "$(ls $SET/*.ko 2>/dev/null)" ] || {
+    echo "sfduo-audio: no audio modules for kernel $KVER in /usr/lib/sfduo/modules - the ADSP cannot be booted" >&2
+    exit 1
+}
 mkdir -p /lib/modules/$KVER
-cp -un /usr/lib/sfduo/audio/*.ko /lib/modules/$KVER/ 2>/dev/null
+cp -un $SET/*.ko /lib/modules/$KVER/ 2>/dev/null
 depmod -a 2>/dev/null
 [ -e /sys/kernel/boot_adsp/boot ] || modprobe adsp_loader_dlkm 2>/dev/null
 echo 1 > /sys/kernel/boot_adsp/boot 2>/dev/null
@@ -146,7 +176,7 @@ WantedBy=multi-user.target
 UNIT
 else
     cat >&2 <<'NOAUDIO'
-ERROR: no audio modules found in out/audio-modules.
+ERROR: no audio modules found in out/modules/<kernel release>/audio/.
 
 They are not optional, and this costs far more than sound.
 sfduo-audio.service is the only thing that boots the ADSP (via
@@ -750,12 +780,23 @@ rm -f /etc/systemd/system/bluebinder.service \
 # "Q6 is Up" and the sound card never registers for that boot. Measured on a
 # clean image - the first boot after an install had no sound, every later
 # one did.
-if [ -d /usr/lib/sfduo/audio ]; then
-    KVER=$(uname -r)
-    mkdir -p "/lib/modules/$KVER"
-    cp -un /usr/lib/sfduo/audio/*.ko "/lib/modules/$KVER/" 2>/dev/null || true
-    depmod -a 2>/dev/null || true
-fi
+# Every set the package carries, not only the running kernel's: the first
+# boot of another kernel (a RAM-boot of the perf build, say) found an empty
+# /lib/modules/<release>/, the audio unit loaded the chain itself at 80 s,
+# after the ADSP, and no sound card registered on that boot. depmod takes a
+# release explicitly, so the index for a kernel that is not running is fine.
+for set in /usr/lib/sfduo/modules/*/; do
+    [ -d "$set/audio" ] || continue
+    rel=$(basename "$set")
+    mkdir -p "/lib/modules/$rel"
+    cp -un "$set/audio/"*.ko "/lib/modules/$rel/" 2>/dev/null || true
+    depmod -a "$rel" 2>/dev/null || true
+done
+KVER=$(uname -r)
+[ -d "/usr/lib/sfduo/modules/$KVER/audio" ] || \
+    echo "sfduo: no modules for the running kernel ($KVER) in this package - sets: $(ls /usr/lib/sfduo/modules 2>/dev/null | tr '\n' ' ')" >&2
+# older packages put them here; the units read /usr/lib/sfduo/modules now
+rm -f /usr/lib/sfduo/wlan.ko; rm -rf /usr/lib/sfduo/audio
 # pre-0.12 installs shipped an experimental wayfire session; its units
 # are gone from the package - drop the leftover enable symlink
 rm -f /etc/systemd/system/multi-user.target.wants/sfduo-powerkey.service \
@@ -840,7 +881,7 @@ if [ -d /run/systemd/system ]; then
     udevadm trigger -s backlight -s leds 2>/dev/null || true
     # geoclue is a static unit; the drop-in adds [Install] so it can start at boot
     en_now geoclue.service 2>/dev/null || START="$START geoclue.service"
-    [ -f /usr/lib/sfduo/wlan.ko ] && en_now sfduo-wlan.service || true
+    [ -d /usr/lib/sfduo/modules ] && en_now sfduo-wlan.service || true
     # sfduo-tame-vendor kills adsprpcd, and sfduo-audio.service is what
     # boots the ADSP afterwards. Measured on hardware: adsprpcd cannot
     # bring the ADSP up on this port at all, so with no starter the
