@@ -881,13 +881,13 @@ class Dock(Gtk.Window):
         self.placed.pop(app_id, None)
         self._save_placed()
 
-    def _apply_mode(self):
+    def _mode_for(self, grid_open):
         """Where the dock goes: the panel with nothing on it. A window the
         dock placed takes its panel, one it did not takes both - and the
         open grid takes the panel it is on, so the dock crosses to the other
         one just as it does for a window."""
         busy = set(getattr(self, "window_busy", set()))
-        if self.progress > 0.0 and not getattr(self, "grid_closing", False):
+        if grid_open:
             busy.add(self.grid_side)
         # a launch in flight takes its panel from the moment of the tap - the
         # dock is on its way before the window exists, not after it lands -
@@ -898,15 +898,52 @@ class Dock(Gtk.Window):
             busy.discard("both")
             busy.update(launching.values())
         if not busy:
-            mode = "both"
-        elif busy == {"left"}:
-            mode = "right"
-        elif busy == {"right"}:
-            mode = "left"
-        else:
-            mode = "hidden"
-        self._set_mode(mode)
+            return "both"
+        if busy == {"left"}:
+            return "right"
+        if busy == {"right"}:
+            return "left"
+        return "hidden"
+
+    def _apply_mode(self):
+        """Put the dock where the windows and the grid say.
+
+        While the grid is on its way - under a finger, or settling after one
+        - the dock goes with it: the halves stand where the grid's progress
+        says, between where they are with it closed and where they are with
+        it open, and so a slow swipe moves them slowly and a flick sends
+        them across, parking with the grid's own ease-out. Only once the
+        grid is all the way up or down does the mode settle.
+        """
+        closed = self._mode_for(False)
+        opened = self._mode_for(True)
+        closing = getattr(self, "grid_closing", False)
+        in_motion = 0.0 < self.progress < 1.0 or (self.progress >= 1.0 and closing)
+        if in_motion and closed != opened and closed != "hidden":
+            self._drive(closed, opened, self.progress)
+            return False
+        self._set_mode(opened if self.progress > 0.0 and not getattr(self, "grid_closing", False)
+                       else closed)
         return False
+
+    def _drive(self, closed, opened, k):
+        """The halves at k of the way from the `closed` layout to the
+        `opened` one, by hand: the grid's finger is the clock."""
+        mode = opened if not getattr(self, "grid_closing", False) else closed
+        if self.move is not None:
+            GLib.source_remove(self.move)
+            self.move = None
+        if mode != self.mode:
+            debug("mode %s -> %s, with the grid" % (self.mode, mode))
+            self.mode = mode
+            self._shape()
+        a, b = self._pane_targets(closed), self._pane_targets(opened)
+        if opened == "hidden":          # straight down from where it stands closed
+            b = {side: (a[side][0], -DOCK_HEIGHT) for side in a}
+        for side, pane in self.panes.items():
+            (x0, y0), (x1, y1) = a[side], b[side]
+            pane.move(x=x0 + (x1 - x0) * k, y=y0 + (y1 - y0) * k)
+        self.driven = True
 
     def _pane_targets(self, mode):
         """Where each half stands in a mode: its left margin on the screen.
@@ -918,20 +955,22 @@ class Dock(Gtk.Window):
         favourites and a few running apps at scale 3; rare).
         """
         left, right = self.panes["left"], self.panes["right"]
+        if mode == "hidden":            # below the edge, wherever it stands
+            return {s: (p.x, -DOCK_HEIGHT) for s, p in self.panes.items()}
         if mode == "both":
-            return {"left": self.half - left.width, "right": self.half + self.gap}
+            return {"left": (self.half - left.width, 0), "right": (self.half + self.gap, 0)}
         start = max(0, (self.half - left.width - right.width) // 2)
         if mode == "right":
             start += self.half + self.gap
-        return {"left": start, "right": start + left.width}
+        return {"left": (start, 0), "right": (start + left.width, 0)}
 
     def _place_panes(self):
         """Put the halves where the mode says, now, no motion: after the
         display's size came in, or a half changed width."""
         if self.mode == "hidden":
             return
-        for side, x in self._pane_targets(self.mode).items():
-            self.panes[side].move(x=x, y=0, settle=True)
+        for side, (x, y) in self._pane_targets(self.mode).items():
+            self.panes[side].move(x=x, y=y, settle=True)
         self._shape()
 
     def _set_mode(self, mode):
@@ -946,7 +985,13 @@ class Dock(Gtk.Window):
         along the bottom are this window's, and stay wherever the halves go.
         """
         if mode == self.mode:
+            if getattr(self, "driven", False):
+                # the grid's finger brought the halves here; let gtk-layer-shell know
+                self.driven = False
+                for pane in self.panes.values():
+                    pane.move(settle=True)
             return False
+        self.driven = False
         was_hidden = self.mode == "hidden"
         debug("mode %s -> %s (move running: %s)" % (self.mode, mode, self.move is not None))
         self.mode = mode
@@ -955,47 +1000,34 @@ class Dock(Gtk.Window):
             self.move = None
         panes = self.panes
         frames = []
-
-        if mode == "hidden":
-            start = {s: p.y for s, p in panes.items()}
-
-            def step(t):
-                frames.append(t)
-                k = min(1.0, t / MOVE_MS)
-                eased = 1.0 - (1.0 - k) ** 3
-                for side, pane in panes.items():
-                    pane.move(y=start[side] + (-DOCK_HEIGHT - start[side]) * eased,
-                              settle=k >= 1.0)
-                if k >= 1.0:
-                    self.move = None
-                    self._shape()
-                    self._report("dock dipping", frames)
-                    return False
-                return True
-        else:
-            targets = self._pane_targets(mode)
-            if was_hidden:
-                # below the edge nothing shows: stand where the rise is due
-                for side, pane in panes.items():
-                    pane.move(x=targets[side])
-            start = {s: (p.x, p.y) for s, p in panes.items()}
-
-            def step(t):
-                frames.append(t)
-                k = min(1.0, t / MOVE_MS)
-                eased = 1.0 - (1.0 - k) ** 3            # ease-out cubic: parks, does not stop
-                for side, pane in panes.items():
-                    x0, y0 = start[side]
-                    pane.move(x=x0 + (targets[side] - x0) * eased,
-                              y=y0 + (0 - y0) * eased, settle=k >= 1.0)
-                if k >= 1.0:
-                    self.move = None
-                    self._shape()
-                    self._report("dock crossing to %s" % mode, frames)
-                    return False
-                return True
-
+        targets = self._pane_targets(mode)
+        if was_hidden and mode != "hidden":
+            # below the edge nothing shows: stand where the rise is due
+            for side, pane in panes.items():
+                pane.move(x=targets[side][0])
+        start = {s: (p.x, p.y) for s, p in panes.items()}
         self._shape()          # the bands: a panel that is now busy, or free
+        if all(start[s] == targets[s] for s in panes):
+            # brought here by the grid's finger already: just settle
+            for side, pane in panes.items():
+                pane.move(settle=True)
+            return False
+
+        def step(t):
+            frames.append(t)
+            k = min(1.0, t / MOVE_MS)
+            eased = 1.0 - (1.0 - k) ** 3            # ease-out cubic: parks, does not stop
+            for side, pane in panes.items():
+                (x0, y0), (x1, y1) = start[side], targets[side]
+                pane.move(x=x0 + (x1 - x0) * eased, y=y0 + (y1 - y0) * eased,
+                          settle=k >= 1.0)
+            if k >= 1.0:
+                self.move = None
+                self._shape()
+                self._report("dock %s" % ("dipping" if mode == "hidden" else "crossing to " + mode), frames)
+                return False
+            return True
+
         self.move = animate(step)
         return False
 
@@ -1017,11 +1049,12 @@ class Dock(Gtk.Window):
         was_open = self.progress > 0.0
         self.progress = max(0.0, min(1.0, progress))
         self.grids[self.grid_side].place(self.progress)
-        if (self.progress > 0.0) != was_open and hasattr(self, "mode"):
-            # the grid takes or frees its panel: the dock crosses, and the
-            # input region follows - once per opening, not per frame
+        if hasattr(self, "mode"):
+            # the grid takes or frees its panel: the dock goes with it, a
+            # step per step (see _apply_mode); the input region follows once
             self._apply_mode()
-            self._shape()
+            if (self.progress > 0.0) != was_open:
+                self._shape()
         debug("progress %.2f grid h=%d" % (self.progress, self.grids[self.grid_side].get_allocated_height()))
 
     def _shape(self):
