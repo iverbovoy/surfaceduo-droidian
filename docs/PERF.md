@@ -41,6 +41,33 @@ So one frame of an animated GTK3 window costs, on this device:
    the screen edge is not drawn and gets none - an animation driven by that
    window's tick callback stalls.
 
+### The texture upload, measured twice
+
+A small GLES program on the device (`glTexSubImage2D` into a 3339x2160
+BGRA texture - a phosh buffer at scale 3 - best of four, `glFinish`
+included) first said that partial uploads were pathological on this
+driver: a band of 1080 rows took 101 ms against 9.5 ms for the whole
+texture, and a wlroots patch to upload whole textures was on the way. Then
+the governor turned out to be `powersave` while it was measured. The same
+binary with `schedutil`:
+
+| upload | `powersave` | `schedutil` |
+|---|---|---|
+| whole texture, 27 MB | 9.5 ms | 5.6 ms |
+| band of 1080 rows | 101 ms | 6.0 ms |
+| the same with `ROW_LENGTH` + `SKIP_ROWS`, as wlroots does it | - | 2.9 ms |
+| band of 100 rows | 3.8 ms | 0.2 ms |
+| rectangle 540x688 | 13.4 ms | 0.3 ms |
+| rectangle 84x1113 (a dock column) | - | 0.1 ms |
+| whole texture right after the GPU drew from it | 24.4 ms | 4.6 ms |
+| whole texture at output scale 2 (2226x1440) | - | 3.0 ms |
+
+The partial path is CPU work in the driver, and at 576 MHz it is seventeen
+times slower; at full clocks damage-sized uploads cost well under a
+millisecond and wlroots' per-rectangle update is the right one. Nothing to
+patch. The "30-40 ms per surface committed" in point 2 above comes from the
+same afternoon and is due a re-measure with the governor checked first.
+
 Two more things that looked like slowness and were not the shell's:
 
 - the CPU governor. `mobile-power-saver` starts in its screen-off state and
