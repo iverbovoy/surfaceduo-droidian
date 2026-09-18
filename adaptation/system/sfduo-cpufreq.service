@@ -1,0 +1,11 @@
+[Unit]
+Description=sfduo: take the CPUs off powersave once the shell is up
+After=phosh.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sfduo-cpufreq
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target

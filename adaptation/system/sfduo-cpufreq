@@ -1,0 +1,25 @@
+#!/bin/sh
+# sfduo-cpufreq: take the CPUs off the powersave governor once the shell is up.
+#
+# Droidian's mobile-power-saver puts every core on `powersave` - its lowest
+# clock, 576 MHz on the little cores and 826 MHz on the big one - while the
+# screen is off, and back on `schedutil` when it comes on. At boot the screen
+# is off until phosh has drawn, so the saver starts in the off state; the
+# first "on" never reaches it, and the device runs at its lowest clocks until
+# the screen has been turned off and on once by hand. Measured 2026-09-18:
+# `systemctl daemon-reload` 30 s that way and 2 s after a screen cycle, a
+# root login 26 s against 2 s. With the port's idle blanking off an open
+# device would stay like that for the whole session.
+#
+# So this waits for the shell, gives the saver its moment, and sets schedutil
+# once. From then on the saver toggles the governor on screen events as it
+# should; nothing here fights it.
+for i in $(seq 1 120); do
+    pgrep -x phosh >/dev/null && break
+    sleep 1
+done
+sleep 15
+for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    [ -w "$p/scaling_governor" ] && echo schedutil > "$p/scaling_governor"
+done
+echo "sfduo-cpufreq: governor $(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor) on all policies"

@@ -109,6 +109,15 @@ system: a root login that starts a user manager took 20 s that way and
 idle blanking off an open device runs at full speed; Droidian already has
 idle suspend on battery off (`sleep-inactive-battery-type` is `nothing`).
 
+And a third: at boot the screen is off until phosh has drawn, so the saver
+starts in its off state, and the first "on" never reaches it - the device
+runs at its lowest clocks until the screen has been turned off and on once
+by hand. Measured 2026-09-18 on the debug kernel: `daemon-reload` 30 s that
+way, 2.2 s after a screen cycle; a root login 26 s against 2 s. The
+"debug kernel" numbers that had been going around were mostly this. Since
+0.15.1 `sfduo-cpufreq.service` waits for the shell and sets `schedutil`
+once; the saver keeps toggling on screen events after that.
+
 ## Panel power
 
 `sfduo-screens off|on|toggle` drives `bl_power` on the two panel backlights,

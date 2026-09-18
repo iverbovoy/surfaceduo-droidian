@@ -693,6 +693,10 @@ UNIT
 install -m644 "$SYSTEM/sfduo-slot-guard.service" "$PKG/usr/lib/systemd/system/"
 install -m644 "$SYSTEM/sfduo-modem.service"      "$PKG/usr/lib/systemd/system/"
 install -m755 "$SYSTEM/sfduo-modem"              "$PKG/usr/local/sbin/"
+# the CPUs off powersave after boot (../system/sfduo-cpufreq: mobile-power-saver
+# starts in its screen-off state and misses the first screen-on)
+install -m644 "$SYSTEM/sfduo-cpufreq.service"    "$PKG/usr/lib/systemd/system/"
+install -m755 "$SYSTEM/sfduo-cpufreq"            "$PKG/usr/local/sbin/"
 install -m755 "$SYSTEM/sfduo-screens"            "$PKG/usr/local/sbin/"
 install -Dm644 "$SYSTEM/dconf/50-sfduo-phoc"       "$PKG/etc/dconf/db/local.d/50-sfduo-phoc"
 install -Dm644 "$SYSTEM/dconf/locks/50-sfduo-phoc" "$PKG/etc/dconf/db/local.d/locks/50-sfduo-phoc"
@@ -926,6 +930,7 @@ if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     en sfduo-slot-guard.service || true
     en_now sfduo-modem.service || true
+    en_now sfduo-cpufreq.service || true
     en_now sfduo-usb.service || true
     en bluebinder.service bluetooth.service 2>/dev/null || true
     en sfduo-composer-watchdog.service || true
@@ -963,6 +968,9 @@ else
        /etc/systemd/system/multi-user.target.wants/sfduo-slot-guard.service
     ln -sf /usr/lib/systemd/system/sfduo-modem.service \
        /etc/systemd/system/multi-user.target.wants/sfduo-modem.service
+    mkdir -p /etc/systemd/system/graphical.target.wants
+    ln -sf /usr/lib/systemd/system/sfduo-cpufreq.service \
+       /etc/systemd/system/graphical.target.wants/sfduo-cpufreq.service
     # same pairing rule as above, offline: the ADSP starter and the
     # adsprpcd killer go in together or not at all
     if [ -x /usr/local/sbin/sfduo-audio-up.sh ]; then

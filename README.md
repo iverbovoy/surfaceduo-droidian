@@ -17,8 +17,7 @@ A boot to a fully working system (both panels, touch, WiFi auto-connect,
 sshd over USB) takes about two minutes, hands-off - measured in September
 2026 at 95-135 s from reboot to an ssh login. With the kernel built without
 Microsoft's debugging (`kernel-packaging/droidian/surfaceduo-perf.config`,
-2026-09-18) it is 40-50 s to the ssh login after `fastboot boot`, and
-`systemctl daemon-reload` takes 2 s rather than 30.
+2026-09-18) it is about half that, 40-50 s after `fastboot boot`.
 
 ## What it looks like
 
@@ -185,25 +184,29 @@ Full walkthrough: [docs/PORT-GUIDE.md](docs/PORT-GUIDE.md).
   nearly all of them are debugging: `SLUB_DEBUG_ON` (on the device every
   slab cache reads `sanity_checks`, `red_zone`, `poison` and `store_user`
   = 1), `DEBUG_OBJECTS`, `DEBUG_KMEMLEAK`, `DEBUG_SPINLOCK`,
-  `DEBUG_MUTEXES`, `DEBUG_LIST`, fault injection. What it costs, measured:
-  `systemctl daemon-reload` takes 26-30 s, every time, with pid 1 spending
-  it in `kmem_cache_alloc`/`kmem_cache_free` and spinlock release; an ssh
-  login that has to start a user manager takes about 27 s; a package
-  postinst that enables a dozen units took nine minutes. Microsoft's perf
-  defconfig is not the fix: it also drops what the port stands on (the
-  backlight class, the GENI console, serdev). The fix is
+  `DEBUG_MUTEXES`, `DEBUG_LIST`, fault injection. What it seemed to cost:
+  `systemctl daemon-reload` at 26-30 s every time, an ssh login that has to
+  start a user manager at 27 s, a package
+  postinst that enables a dozen units took nine minutes. **Most of that was
+  not the kernel**: it was measured with the screen off, and Droidian's
+  mobile-power-saver puts every core on the `powersave` governor while the
+  screen is off - and, it turned out, from boot until the screen has been
+  turned off and on once (the package fixes that since 0.15.1, see
+  `adaptation/system`). With the screen on and the governor where it
+  belongs, the debug kernel does `daemon-reload` in 2.2 s. What the
+  debugging really costs, measured the same way on both kernels
+  (2026-09-18): 3000 `fork`+`exec` take 26 s against 11 s, a boot reaches
+  ssh in about twice the time, and Slab holds 605 MB against 182 MB.
+  Microsoft's perf defconfig is not the fix: it also drops what the port
+  stands on (the backlight class, the GENI console, serdev). The fix is
   `kernel-packaging/droidian/surfaceduo-perf.config`, a fragment on top of
   the debug defconfig that turns off exactly the debugging - 92 config
-  lines differ from the debug build, all of them debug options. Measured
-  on the device (RAM-boot, 2026-09-18): `daemon-reload` 2.3 s, ssh login
-  39-51 s after `fastboot boot`, Slab 182 MB instead of 745 MB. The
-  release string is `4.14-190-perf-microsoft-surfaceduo`: the module ABI
-  differs from the debug builds (`DEBUG_SPINLOCK` and friends change struct
-  layouts), so the adaptation package carries wlan and audio modules per
-  kernel release (`/usr/lib/sfduo/modules/<uname -r>/`) and the units pick
-  the set for the running kernel. An ssh login that has to start root's
-  user manager still takes ~20 s on the perf kernel: that one is not the
-  kernel's, and is open.
+  lines differ, all of them debug options. The release string is
+  `4.14-190-perf-microsoft-surfaceduo`: the module ABI differs from the
+  debug builds (`DEBUG_SPINLOCK` and friends change struct layouts), so the
+  adaptation package carries wlan and audio modules per kernel release
+  (`/usr/lib/sfduo/modules/<uname -r>/`) and the units pick the set for the
+  running kernel.
 - **GL for applications lands on llvmpipe**: `/usr/share/glvnd/egl_vendor.d/`
   registers only mesa, and mesa has no driver for this kernel, so any
   client that asks glvnd for EGL (WebKitGTK's WebGL, for one) gets the
