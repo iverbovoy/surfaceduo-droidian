@@ -1156,6 +1156,7 @@ class Dock(Gtk.Window):
     def _begin_drag(self, panel):
         debug("drag begin on the %s panel, mode=%s" % (panel, self.mode))
         self._stop_animation()
+        self.drag_on_grid = False
         self.drag_start = self.progress
         self.drag_claimed = False
         self.drag_last = (GLib.get_monotonic_time(), 0.0)
@@ -1178,6 +1179,7 @@ class Dock(Gtk.Window):
         """A drag that starts on the open grid: down closes it."""
         debug("grid drag begin x=%.0f y=%.0f" % (x, y))
         self._stop_animation()
+        self.drag_on_grid = True
         self.drag_start = self.progress
         self.drag_claimed = False
         self.drag_last = (GLib.get_monotonic_time(), 0.0)
@@ -1185,6 +1187,15 @@ class Dock(Gtk.Window):
         self.drag_app = None
 
     def _on_drag_update(self, gesture, _dx, dy):
+        # The offset GTK reports is relative to the window the drag is on.
+        # The grid's window moves under the finger as the finger drives it,
+        # so on it the offset shrinks as the grid follows - a slow swipe
+        # down came out as a wobble around zero, the grid never moved and
+        # the release was a click on the icon under it (#47). Add back what
+        # the window has travelled since the drag began: that is the
+        # finger's path on the screen.
+        if getattr(self, "drag_on_grid", False):
+            dy += STAGE_HEIGHT * (self.drag_start - self.progress)
         # Once it is a swipe, it is ours: the button it started over does
         # not also fire.
         if not self.drag_claimed:
@@ -1215,6 +1226,13 @@ class Dock(Gtk.Window):
               % (dy, self.drag_claimed, self.drag_velocity, self.progress))
         if not self.drag_claimed:
             return
+        # The button under the finger still hears the release as a click:
+        # GTK's buttons take the pointer GDK emulates from the touch, a
+        # sequence of its own that our claim does not deny. So the click
+        # handlers ask whether a swipe was just claimed (#47); the flag is
+        # lifted once this release has been dispatched.
+        self.swiped = True
+        GLib.idle_add(self._unswipe)
         if self.drag_app is not None:
             if dy < -CLOSE_PX:
                 action = "close"
@@ -1447,9 +1465,16 @@ class Dock(Gtk.Window):
         outer.size = size
         return outer
 
+    def _unswipe(self):
+        self.swiped = False
+        return False
+
     def _on_pane_clicked(self, button, info, pane_side):
         """A tap on a half opens onto the panel that half is on now: its
         own when the dock is across both, the free one otherwise."""
+        if getattr(self, "swiped", False):
+            debug("click after a swipe, ignored: %s" % info.get_id())
+            return
         side = self.mode if self.mode in ("left", "right") else pane_side
         self._on_clicked(button, info, side)
 
@@ -1541,11 +1566,23 @@ class Dock(Gtk.Window):
 
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        # A scrolled window captures every touch press to decide whether it
+        # is a scroll: a finger that moves slowly is handed to the button
+        # under it after a hold, the dock's own drag never hears of it, and
+        # the release is a click - a slow swipe down to close the grid
+        # launched whatever it started on (#47). The dock's gesture is the
+        # only one that reads the finger here; the wheel still scrolls.
+        scroller.set_capture_button_press(False)
+        scroller.set_kinetic_scrolling(False)
         scroller.get_style_context().add_class("grid-pane")   # black to the bottom, not just behind the icons
         scroller.add(flow)
         return scroller
 
     def _on_grid_app(self, button, info, side):
+        if getattr(self, "swiped", False):
+            debug("click after a swipe, ignored: %s" % info.get_id())
+            return
+        debug("grid app clicked: %s" % info.get_id())
         self._animate_to(0.0)
         self._on_clicked(button, info, side)
 
