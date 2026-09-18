@@ -93,8 +93,8 @@ SCREEN_WIDTH, SCREEN_HEIGHT = output_size()
 STAGE_HEIGHT = SCREEN_HEIGHT - PANEL_HEIGHT   # everything below the top bar
 EDGE = 22                 # the gesture band along the bottom of a busy panel
 CLOSE_PX = 220            # a swipe this long over an app closes it, not just hides it
-GRID_ICON = 64            # the app grid's icons, phosh's own size
-GRID_COLUMNS = 3          # per panel: 450px gives three of ~140
+GRID_ICON = ICON_SIZE     # the app grid's icons: the dock's size, not phosh's 64
+GRID_COLUMNS = 4          # on one panel: 540px at scale 2.5 gives four of ~130
 SLIDE_MS = 220            # the grid settling after the finger lets go
 SWIPE_PX = 12             # how far a finger travels before it is a swipe
 FLICK = 0.6               # px/ms: faster than this and the direction decides
@@ -117,7 +117,7 @@ CSS = b"""
 window.sfduo-dock { background-color: transparent; }
 viewport { background-color: transparent; }
 .dock-row { background-color: transparent; }
-.grid-stage { background-color: #000000; }
+.grid-stage { background-color: transparent; }
 .dock-pane {
   background-color: rgba(18,18,20,0.92);
   padding: 6px 10px;
@@ -146,8 +146,10 @@ viewport { background-color: transparent; }
    on its panel, the app's icon where it is going to be. */
 .curtain { background-color: #000000; opacity: 0; transition: opacity 140ms ease-out; }
 .curtain.up { opacity: 1; transition: none; }
-/* The grid: one flow box per panel, icons over their names. */
-.grid-pane { padding: 12px 14px; }
+/* The grid: one flow box per panel, icons over their names. It paints its
+   own black - the stage behind it is transparent, so the panel the grid is
+   not on shows whatever it was showing. */
+.grid-pane { padding: 12px 14px; background-color: #000000; }
 .grid-app {
   background: none; border: none; box-shadow: none;
   padding: 10px 4px; border-radius: 16px;
@@ -493,15 +495,8 @@ class Dock(Gtk.Window):
                     # we did not is assumed to span both.
                     busy.add(self.placed.get(app_id, "both"))
                 GLib.idle_add(self._set_running, running)
-                if not busy:
-                    mode = "both"
-                elif busy == {"left"}:
-                    mode = "right"
-                elif busy == {"right"}:
-                    mode = "left"
-                else:
-                    mode = "hidden"
-                GLib.idle_add(self._set_mode, mode)
+                self.window_busy = busy
+                GLib.idle_add(self._apply_mode)
             except Exception as err:      # noqa: BLE001 - keep the beat going
                 print(f"sfduo-dock: windows: {err}", file=sys.stderr)
             time.sleep(WATCH_MS / 1000)
@@ -634,8 +629,9 @@ class Dock(Gtk.Window):
                         button.dot.set_visible(True)
                         slab.running.pack_start(button, False, False, 0)
                         button.show_all()
-        for app_id, button in self.grid_apps.items():
-            button.dot.set_visible(app_id in running)
+        for app_id, buttons in self.grid_apps.items():
+            for button in buttons:
+                button.dot.set_visible(app_id in running)
         self._relayout()
         return False
 
@@ -672,6 +668,25 @@ class Dock(Gtk.Window):
         subprocess.Popen(["wlrctl", "toplevel", "close", f"app_id:{app_id}"])
         self.placed.pop(app_id, None)
         self._save_placed()
+
+    def _apply_mode(self):
+        """Where the dock goes: the panel with nothing on it. A window the
+        dock placed takes its panel, one it did not takes both - and the
+        open grid takes the panel it is on, so the dock crosses to the other
+        one just as it does for a window."""
+        busy = set(getattr(self, "window_busy", set()))
+        if self.progress > 0.0:
+            busy.add(self.grid_side)
+        if not busy:
+            mode = "both"
+        elif busy == {"left"}:
+            mode = "right"
+        elif busy == {"right"}:
+            mode = "left"
+        else:
+            mode = "hidden"
+        self._set_mode(mode)
+        return False
 
     def _set_mode(self, mode):
         """Cross-fade the dock to where it should be now."""
@@ -720,14 +735,20 @@ class Dock(Gtk.Window):
 
     def _set_progress(self, progress):
         """Put the grid where a progress of 0..1 says, and the strip with it."""
+        was_open = self.progress > 0.0
         self.progress = max(0.0, min(1.0, progress))
         y = round(STAGE_HEIGHT * (1.0 - self.progress))
         self.scroll.set_value(STAGE_HEIGHT - y)
-        # The strip fades as the grid rises over it; the grid is the
-        # launcher then, and the room is better spent on a fifth row.
+        if (self.progress > 0.0) != was_open and hasattr(self, "mode"):
+            self._apply_mode()              # the grid takes or frees its panel
+        # The strip under the grid fades as the grid rises over it; the grid
+        # is the launcher on that panel then, and the room is better spent on
+        # another row. The other panel's half of the strip stays.
         if self.mode != "hidden" and self.move is None:
-            self.row.set_opacity(1.0 - self.progress)
-            self.row.set_visible(self.progress < 1.0)
+            pane = self.row.pane_left if self.grid_side == "left" else self.row.pane_right
+            other = self.row.pane_right if self.grid_side == "left" else self.row.pane_left
+            pane.set_opacity(1.0 - self.progress)
+            other.set_opacity(1.0)
         self._shape()
 
     def _shape(self):
@@ -742,12 +763,15 @@ class Dock(Gtk.Window):
         top = STAGE_HEIGHT - DOCK_HEIGHT
         if self.locked:
             region = cairo.Region()         # nothing: the lock screen's touches are its own
-        elif self.progress > 0.0 or getattr(self, "curtain_up", False):
+        elif getattr(self, "curtain_up", False):
             region = cairo.Region(cairo.RectangleInt(0, 0, width, STAGE_HEIGHT))
         else:
             region = cairo.Region()
             for side, x in (("left", 0), ("right", half + gap)):
-                if self.mode in ("both", side):     # the dock is here
+                if self.progress > 0.0 and side == self.grid_side:
+                    # the grid is on this panel: all of it is ours
+                    region.union(cairo.RectangleInt(x, 0, half, STAGE_HEIGHT))
+                elif self.mode in ("both", side):   # the dock is here
                     region.union(cairo.RectangleInt(x, top, half, DOCK_HEIGHT))
                 else:                               # a window is here
                     region.union(cairo.RectangleInt(x, STAGE_HEIGHT - EDGE, half, EDGE))
@@ -811,6 +835,9 @@ class Dock(Gtk.Window):
                 # A window the dock did not place spans both panels; the
                 # one under the finger is the active one.
                 self.drag_app = "state:active"
+        elif self.progress <= 0.0:
+            # A swipe up on a free panel raises the grid on that panel.
+            self._show_grid_on(panel)
 
     def _on_drag_update(self, gesture, _dx, dy):
         # Once it is a swipe, it is ours: the button it started over does
@@ -1105,23 +1132,26 @@ class Dock(Gtk.Window):
         return button
 
     def _build_grid(self):
-        """Every application, dealt across the two panels.
+        """Every application, on the panel that was swiped.
 
-        Alphabetical, the first half on the left and the second on the right,
-        so a name is found by which panel it would be on. Each half scrolls
-        on its own. Tapping launches onto the panel tapped, as on the dock.
+        Alphabetical, all of it on one panel, four to a row at the dock's
+        icon size; the other panel keeps what it was showing and stays
+        touchable. Both panels have a pane, because the geometry is easier
+        kept that way; only the swiped one is shown. Tapping launches onto
+        the panel the grid is on, as on the dock.
         """
         apps = sorted((a for a in Gio.AppInfo.get_all() if a.should_show()),
                       key=lambda a: a.get_display_name().casefold())
-        cut = (len(apps) + 1) // 2
 
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        self.grid_left = self._grid_pane("left", apps[:cut])
+        self.grid_left = self._grid_pane("left", apps)
         self.grid_seam = Gtk.Box()
-        self.grid_right = self._grid_pane("right", apps[cut:])
+        self.grid_right = self._grid_pane("right", apps)
         row.pack_start(self.grid_left, True, True, 0)
         row.pack_start(self.grid_seam, False, False, 0)
         row.pack_start(self.grid_right, True, True, 0)
+        self.grid_side = "right"
+        self._show_grid_on(self.grid_side)
 
         # A tap on nothing closes it. Buttons take their own presses, so the
         # event box only ever hears about the space between them.
@@ -1131,6 +1161,14 @@ class Dock(Gtk.Window):
         backdrop.connect("button-release-event",
                          lambda *_a: self._toggle_grid(False) or False)
         return backdrop
+
+    def _show_grid_on(self, side):
+        """The pane on `side` is the grid; the other is not there - kept in
+        the layout at full width, drawn at nothing, deaf to touches."""
+        self.grid_side = side
+        for pane, here in ((self.grid_left, "left"), (self.grid_right, "right")):
+            pane.set_opacity(1.0 if here == side else 0.0)
+            pane.set_sensitive(here == side)
 
     def _grid_pane(self, side, apps):
         flow = Gtk.FlowBox()
@@ -1166,11 +1204,12 @@ class Dock(Gtk.Window):
             button.dot = dot
             button.connect("clicked", self._on_grid_app, info, side)
             self.grid_apps = getattr(self, "grid_apps", {})
-            self.grid_apps[wayland_app_id(info)] = button
+            self.grid_apps.setdefault(wayland_app_id(info), []).append(button)
             flow.add(button)
 
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.get_style_context().add_class("grid-pane")   # black to the bottom, not just behind the icons
         scroller.add(flow)
         return scroller
 

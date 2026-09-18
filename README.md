@@ -31,7 +31,7 @@ in development**.
 | ![the first-run wizard on one panel](docs/img/shell-welcome.png) | ![the dock across both panels](docs/img/shell-desktop.png) |
 | A window on the panel it opened on: the dock tiles it there, and the patched phoc stops it at the hinge rather than half way into it. | The dock, cut by the hinge rather than doubled. |
 | ![the app grid](docs/img/shell-grid.png) | ![the lock screen](docs/img/shell-lockscreen.png) |
-| Swipe up from the dock: every app, dealt across the two panels. | The lock screen, kept off the hinge by CSS alone. |
+| Swipe up on a panel: every app, on that panel, and the dock crosses to the other. | The lock screen, kept off the hinge by CSS alone. |
 
 ## Status (2026-09-17)
 

@@ -230,13 +230,16 @@ for its home bar - the grid shows through it otherwise. The top panel is spared
 by hand, with a 32px top margin, because a status bar is worth keeping.
 
 Everything that is not on the dock is behind a swipe up across the strip
-(or the first button): a grid of every application, dealt across the two
-panels alphabetically - the first half on the left, the second on the right,
-three columns each, each half scrolling on its own - and launching onto the
-panel that was tapped, exactly like the dock. The strip fades as the grid
-rises over it. Moving down across the grid, a tap on empty space, or
+(or the first button): a grid of every application on the panel that was
+swiped - alphabetical, four to a row at the dock's icon size, scrolling -
+while the other panel keeps what it was showing and stays touchable. The
+open grid counts as a window on its panel, so the dock crosses to the other
+one exactly as it does for an application. Launching goes onto the panel
+the grid is on. Moving down across the grid, a tap on empty space, or
 launching something closes it. `pkill -USR1 -f sfduo-dock` toggles it from
-outside, for a keybinding.
+outside, for a keybinding (on the panel it was last opened on; the right one
+at first). Until 0.15.2 the grid was dealt across both panels, half the
+alphabet each, at phosh's 64 px icons.
 
 The grid follows the finger, and the window does no work at the moment of
 opening. Three things make that so, each found by doing it the other way
