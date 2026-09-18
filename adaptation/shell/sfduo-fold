@@ -954,15 +954,12 @@ class Fold:
         self.p = progress_for(self.target, self.top)
         self.releasing = None
         self.window.present()
-        # the lock screen's own surfaces were created after ours, and within a
-        # layer that is what decides who is on top: moving out of the layer and
-        # back puts us at the end of its list, over the status bar we are
-        # drawing a copy of
-        display = Gdk.Display.get_default()
-        Gtk4LayerShell.set_layer(self.window, Gtk4LayerShell.Layer.TOP)
-        display.flush()
-        Gtk4LayerShell.set_layer(self.window, Gtk4LayerShell.Layer.OVERLAY)
-        display.flush()
+        # NO moving between layers to be re-stacked over phosh's top bar: it
+        # does not work (phosh's own surfaces are created after ours and stay
+        # above), and it left phoc complaining that phosh's panel and its
+        # background were no longer in the same layer - after which phosh
+        # stopped acting on the power button until the shell was restarted.
+        # The bar is left alone instead; see PANEL and the scissor.
         self._passthrough()
         if OPAQUE:
             self._opaque_region()
