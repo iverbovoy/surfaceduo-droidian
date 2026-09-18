@@ -71,6 +71,34 @@ millisecond and wlroots' per-rectangle update is the right one. Nothing to
 patch. The "30-40 ms per surface committed" in point 2 above comes from the
 same afternoon and is due a re-measure with the governor checked first.
 
+### The lock screen, measured
+
+The unlock swipe is the first animation a user sees. Measured 2026-09-18 on
+the perf kernel, screen on, `schedutil` verified: the lock screen locked with
+`loginctl lock-session`, a 2 s swipe up from the synthetic finger
+(`tools/sfduo-touch`), phosh's frames counted from its `sendmsg` calls
+(`strace -tt -e trace=sendmsg`, one per frame flushed to the compositor),
+`perf record` on phosh and phoc during the same swipe.
+
+| output scale | phosh buffer | frames per 200 ms | frame gap median | p90 |
+| --- | --- | --- | --- | --- |
+| 2.5 (GTK3 renders at 3) | 3339x2160, 27 MB | 8 | 24.5 ms | 32 ms |
+| 2 | 2226x1440, 12 MB | 11-12 | 17 ms | 22 ms |
+
+Where the time goes at 2.5: **78 % of phosh's CPU in pixman** - `cairo_paint`
+blitting the carousel's pages (libhandy snapshots each page to a surface and
+paints it per frame; at 27 MB a page that is the frame), 11 % kernel (the
+copy into the shm buffer); phoc meanwhile 17 % in the GL driver's upload
+and 46 % in the vendor libraries behind it. Nothing of this is the dock's.
+So the lock screen at 2.5 runs at 40 fps and at 2 at 55-60: a GTK3 surface
+across both panels costs what its pixels cost, and 2.5 rounds up to 3.
+
+Ways out, for the decision (#40, #48): ship scale 2 (everything GTK3 2.25x
+cheaper, elements 20 % smaller than at 2.5); or keep 2.5 and make the lock
+screen's surface one panel wide by a phosh patch (its content already sits
+on one panel by CSS; the other panel would be a cheap black layer); or
+accept 40 fps there.
+
 Two more things that looked like slowness and were not the shell's:
 
 - the CPU governor. `mobile-power-saver` starts in its screen-off state and
