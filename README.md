@@ -191,8 +191,10 @@ Full walkthrough: [docs/PORT-GUIDE.md](docs/PORT-GUIDE.md).
   not the kernel**: it was measured with the screen off, and Droidian's
   mobile-power-saver puts every core on the `powersave` governor while the
   screen is off - and, it turned out, from boot until the screen has been
-  turned off and on once (the package fixes that since 0.15.1, see
-  `adaptation/system`). With the screen on and the governor where it
+  turned off and on once, and again for 300 s out of every 330 s after any
+  `StopDozing` call, which headphone-manager makes on every USB-C plug (the
+  package keeps the governor right while the screen is on since 0.15.1, see
+  `adaptation/system/sfduo-cpufreq`). With the screen on and the governor where it
   belongs, the debug kernel does `daemon-reload` in 2.2 s. What the
   debugging really costs, measured the same way on both kernels
   (2026-09-18): 3000 `fork`+`exec` take 26 s against 11 s, a boot reaches

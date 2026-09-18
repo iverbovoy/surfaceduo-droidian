@@ -1,11 +1,12 @@
 [Unit]
-Description=sfduo: take the CPUs off powersave once the shell is up
+Description=sfduo: keep the CPUs off powersave while the screen is on
 After=phosh.service
 
 [Service]
-Type=oneshot
+Type=simple
 ExecStart=/usr/local/sbin/sfduo-cpufreq
-RemainAfterExit=yes
+Restart=on-failure
+Nice=10
 
 [Install]
 WantedBy=graphical.target

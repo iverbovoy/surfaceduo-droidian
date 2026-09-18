@@ -693,8 +693,9 @@ UNIT
 install -m644 "$SYSTEM/sfduo-slot-guard.service" "$PKG/usr/lib/systemd/system/"
 install -m644 "$SYSTEM/sfduo-modem.service"      "$PKG/usr/lib/systemd/system/"
 install -m755 "$SYSTEM/sfduo-modem"              "$PKG/usr/local/sbin/"
-# the CPUs off powersave after boot (../system/sfduo-cpufreq: mobile-power-saver
-# starts in its screen-off state and misses the first screen-on)
+# the CPUs off powersave while the screen is on (../system/sfduo-cpufreq:
+# mobile-power-saver misses the first screen-on at boot, and its dozing cycle
+# restarts on StopDozing with the screen on)
 install -m644 "$SYSTEM/sfduo-cpufreq.service"    "$PKG/usr/lib/systemd/system/"
 install -m755 "$SYSTEM/sfduo-cpufreq"            "$PKG/usr/local/sbin/"
 install -m755 "$SYSTEM/sfduo-screens"            "$PKG/usr/local/sbin/"

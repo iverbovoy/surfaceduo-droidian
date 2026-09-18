@@ -46,8 +46,14 @@ Two more things that looked like slowness and were not the shell's:
 - the CPU governor. `mobile-power-saver` starts in its screen-off state and
   puts every core on `powersave` (576-826 MHz) until the screen has been
   cycled; with idle blanking off that was the whole session. Launching
-  Calculator took 8-14 s that way and 2 s otherwise. `sfduo-cpufreq.service`
-  now keeps `schedutil` in place for the first minutes.
+  Calculator took 8-14 s that way and 2 s otherwise. And not only at boot:
+  the saver's `StopDozing` method restarts its dozing cycle without looking
+  at the screen, and headphone-manager calls it on every headset-jack event
+  - which on the Duo is every USB-C plug. From then on every core sits on
+  `powersave` for 300 s out of every 330 s, screen on, until the next
+  screen-off/on. `sfduo-cpufreq.service` watches the whole session and puts
+  `schedutil` back whenever the screen is on and the governor says
+  otherwise. Read `scaling_governor` before believing any measurement.
 - Microsoft's debug kernel config, which had been blamed for most of the
   above and costs about 2.4x on process creation and 2x on boot, not the
   15x that was measured with the screen off.
