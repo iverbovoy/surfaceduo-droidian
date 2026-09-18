@@ -620,6 +620,7 @@ class Dock(Gtk.Window):
             pane.connect("size-allocate", self._on_pane_size_allocate)
             pane.show_all()
         self._follow_lockscreen()
+        self._follow_keyboard()
         threading.Thread(target=self._watch_windows, daemon=True).start()
 
         # The finger drives the grid. In the capture phase, so that the
@@ -893,6 +894,10 @@ class Dock(Gtk.Window):
         busy = set(getattr(self, "window_busy", set()))
         if grid_open:
             busy.add(self.grid_side)
+        # the keyboard is a layer surface, not a window, and takes a panel
+        # of its own (osk-patches/0001): while it is up that panel is taken
+        if getattr(self, "osk_panel", None):
+            busy.add(self.osk_panel)
         # a launch in flight takes its panel from the moment of the tap - the
         # dock is on its way before the window exists, not after it lands -
         # and the window it brings, spanning both panels until it is tiled,
@@ -1307,6 +1312,52 @@ class Dock(Gtk.Window):
         # simply not locked, so ask as well.
         GLib.timeout_add_seconds(2, self._read_locked)
         self._read_locked()
+
+    # ---- the keyboard ------------------------------------------------------
+
+    OSK_PANEL = "right"       # where the patched phosh-osk-stub puts itself in landscape
+
+    def _follow_keyboard(self):
+        """Know when the on-screen keyboard is up: it stood under the dock
+        otherwise (#51). phosh-osk-stub publishes sm.puri.OSK0 with a Visible
+        property that emits changes; the dock reads it and counts the
+        keyboard's panel as taken while it is true."""
+        self.osk_panel = None
+        self.session_bus.signal_subscribe(
+            None, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+            "/sm/puri/OSK0", "sm.puri.OSK0", Gio.DBusSignalFlags.NONE,
+            lambda _c, _s, _p, _i, _sig, params: self._on_osk_changed(params[1]))
+        # and when the keyboard process comes or goes
+        self.session_bus.signal_subscribe(
+            "org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
+            "/org/freedesktop/DBus", "sm.puri.OSK0", Gio.DBusSignalFlags.NONE,
+            lambda *_a: self._read_osk())
+        self._read_osk()
+
+    def _on_osk_changed(self, changed):
+        if "Visible" in changed.keys():
+            self._set_osk(bool(changed["Visible"]))
+
+    def _read_osk(self):
+        try:
+            value = self.session_bus.call_sync(
+                "sm.puri.OSK0", "/sm/puri/OSK0",
+                "org.freedesktop.DBus.Properties", "Get",
+                GLib.Variant("(ss)", ("sm.puri.OSK0", "Visible")),
+                None, Gio.DBusCallFlags.NONE, 500, None)
+            visible = bool(value[0])
+        except GLib.Error:
+            visible = False
+        self._set_osk(visible)
+        return False
+
+    def _set_osk(self, visible):
+        panel = self.OSK_PANEL if visible else None
+        if panel == getattr(self, "osk_panel", None):
+            return
+        debug("keyboard %s" % ("up on the %s panel" % panel if panel else "down"))
+        self.osk_panel = panel
+        self._apply_mode()
 
     def _seat_session(self):
         """The path of the session that owns the screen."""
