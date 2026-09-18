@@ -1,0 +1,24 @@
+name: Question / research
+description: Something to find out before work can be decided.
+labels: ["kind:question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+    validations:
+      required: true
+  - type: textarea
+    id: known
+    attributes:
+      label: What is known
+      description: Measurements, docs, upstream sources already in hand. Link them.
+  - type: textarea
+    id: how
+    attributes:
+      label: How to find out
+      description: The experiment or the reading; what it costs; whether it needs the device.
+  - type: textarea
+    id: unblocks
+    attributes:
+      label: What it unblocks

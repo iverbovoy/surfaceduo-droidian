@@ -80,7 +80,11 @@ in development**.
   (its own README covers build + install).
 - `docs/` - port guide + **the safety protocol** + `APPS.md`, what an
   application has to know about this screen (the seam, rotation, touch as
-  WebKit delivers it, the cost of a frame, profiling with symbols).
+  WebKit delivers it, the cost of a frame, profiling with symbols) +
+  `PERF.md`, where a frame's time goes + `PROCESS.md`, how the work is
+  tracked: one issue per piece of work, on the
+  [board](https://github.com/users/iverbovoy/projects/2), written so it can
+  be done from the issue alone.
 - `tools/` - `flash-safely.sh` (gated flash pipeline: offline image
   validation, per-serial attempt limits, health baselines,
   brick-signature detection), vendored AOSP mkbootimg, stock-DTB

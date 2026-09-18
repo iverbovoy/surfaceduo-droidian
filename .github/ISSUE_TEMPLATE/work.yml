@@ -1,0 +1,46 @@
+name: Work item
+description: Something the port will do differently. Written so the work can be done from it alone (docs/PROCESS.md).
+labels: ["kind:dev"]
+body:
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: Who saw what, when, in their words if there were any. What it should feel like after.
+    validations:
+      required: true
+  - type: textarea
+    id: now-after
+    attributes:
+      label: Now / After
+      description: The behaviour before and after, as a user sees it. A table when more than one surface changes.
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where
+      description: Files, functions, line neighbourhoods; binaries to rebuild; the package steps that carry it.
+  - type: textarea
+    id: traps
+    attributes:
+      label: Traps
+      description: What the change interacts with - the lock screen, an unpatched phosh, the governor, the version lock, a screenshot to retake.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance
+      description: A checklist that can be ticked on the device, one observable thing per line.
+      value: "- [ ] "
+    validations:
+      required: true
+  - type: textarea
+    id: verify
+    attributes:
+      label: Verify
+      description: The command, the signal, the screenshot, the debug line, the journal query. And what is not covered.
+  - type: textarea
+    id: docs
+    attributes:
+      label: Docs
+      description: Which sections change - README, PERF.md, the release notes draft, adaptation/*/README.md.

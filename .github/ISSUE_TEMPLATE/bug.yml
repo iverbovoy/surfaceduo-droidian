@@ -1,0 +1,26 @@
+name: Bug
+description: Something behaves differently from what the docs say or from what shipped.
+labels: ["kind:bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: Who saw it and when; the steps; what was expected instead. Nothing private - no names, no serials.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: A journal excerpt, a screenshot, numbers (measured with the screen on and the governor read first), the version installed.
+  - type: textarea
+    id: cause
+    attributes:
+      label: Root cause
+      description: Once known. Several parts - a table of what is seen, what reads it, why it is wrong, what it should read.
+  - type: textarea
+    id: fix
+    attributes:
+      label: Fix, traps, acceptance
+      description: What changes and where; what it interacts with; how the fix is verified on the device.
