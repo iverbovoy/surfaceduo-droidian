@@ -1,0 +1,871 @@
+#!/usr/bin/python3
+"""sfduo-fold: the fold effect - the picture rises out of the depth as the device opens.
+
+    sfduo-fold                run (with the session; needs sfduo-posture)
+    sfduo-fold --demo A       hold the effect at hinge angle A, for a look
+    sfduo-fold --simulate S   drive it with a scripted hinge: "150:0,0:4,150:4"
+                              (angle:seconds, ...) - hold, then move over the seconds
+    sfduo-fold --bench        one sweep with the overlay up, frame times reported
+
+Below the half-open book the picture is not the screen but a sheet: hinged at
+the hinge, turned away from the glass, seen in perspective, blurred and dimmed
+towards its outer edge. Opening the device brings the sheet forward until, at
+the book angle, it lies flat and sharp and the overlay goes; folding shut
+takes it back into the depth. The idea is Mac Duo's (a MacBook lid) and the
+iPhone Duo's (a cover screen opening into the inner one), done with the Duo's
+own hinge on its own two panels (#36).
+
+How: the screen is captured once (grim) and kept as a GL texture with a mip
+pyramid; a GTK4 layer surface over everything, input passing through, holds a
+GLArea that draws each half as the quad its sheet is, the rasteriser doing
+the perspective and one fragment shader the rest - a mip level with a
+five-tap kernel for the blur, and the dimming. The angle comes smoothed from sfduo-posture (#55) and is led a little
+to cover the sensor's lag. GL through ctypes: a clean image has no PyOpenGL.
+
+Every number is an environment variable (FOLD_*, see `numbers` below): the
+effect is tuned by eye on the device, not by editing this file.
+"""
+import ctypes
+import math
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+
+# gtk4-layer-shell has to be in the process before libwayland-client is, or
+# GTK's windows are plain toplevels; importing it first is not enough from
+# Python, so the process re-executes itself with the library preloaded.
+_LAYER_SHELL = "libgtk4-layer-shell.so.0"
+if _LAYER_SHELL not in os.environ.get("LD_PRELOAD", ""):
+    os.environ["LD_PRELOAD"] = (_LAYER_SHELL + " " + os.environ.get("LD_PRELOAD", "")).strip()
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+# the re-executed process would be called "python3": keep the name, so that
+# `pkill -x sfduo-fold` finds it like the dock
+try:
+    ctypes.CDLL("libc.so.6").prctl(15, b"sfduo-fold", 0, 0, 0)     # PR_SET_NAME
+except OSError:
+    pass
+
+# GTK's default renderer showed the window's background instead of the GL
+# area on this device; the older GL renderer composites it as expected.
+os.environ.setdefault("GSK_RENDERER", "gl")
+
+import gi  # noqa: E402
+
+gi.require_version("Gtk4LayerShell", "1.0")
+from gi.repository import Gtk4LayerShell  # noqa: E402
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+
+import cairo  # noqa: E402
+
+
+def num(name, default):
+    """A tuning number, overridable from the environment (FOLD_<NAME>)."""
+    try:
+        return float(os.environ["FOLD_" + name])
+    except (KeyError, ValueError):
+        return default
+
+
+# ---- what the effect looks like ------------------------------------------------
+BOOK_ANGLE = num("BOOK", 90.0)         # flat and sharp from here up; the effect ends
+LOCK_ANGLE = num("LOCK", 45.0)         # folding shut past this while in use: lock, and start
+REST_ANGLE = num("REST", 25.0)         # a hinge resting above this gets the screen back
+SEPARATION = num("SEPARATION", 66.0)   # how far the sheet is turned away, fully folded
+SEPARATION_CURVE = num("CURVE", 1.35)  # the turn against progress: >1 eases out at the flat end
+VIEWING = num("VIEWING", 1.7)          # the eye's distance from the hinge, in panel widths
+BLUR_LEVELS = num("BLUR", 4.6)         # mip levels at the outer edge, fully folded
+BLUR_CURVE = num("BLUR_CURVE", 1.25)
+BLUR_HINGE = num("BLUR_HINGE", 0.3)    # blur at the hinge edge, as a fraction of the outer
+DIM = num("DIM", 0.8)                  # how dark the outer edge gets, fully folded
+DIM_CURVE = num("DIM_CURVE", 0.7)
+DIM_HINGE = num("DIM_HINGE", 0.15)     # dimming at the hinge edge, as a fraction of the outer
+DIM_REACH = num("DIM_REACH", 0.6)      # where along the sheet the dimming reaches full
+TINT = num("TINT", 0.05)               # the sheet's own faint light, so its shape reads on black
+
+# ---- how it behaves ------------------------------------------------------------
+LEAD_MS = num("LEAD", 70.0)            # extrapolate the hinge by this much: the sensor lags
+LEAD_MAX = num("LEAD_MAX", 12.0)       # never lead by more than this many degrees
+FADE_MS = num("FADE", 120.0)           # the overlay's own fade at the ends
+SETTLE_MS = num("SETTLE", 600.0)       # hinge at rest this long above REST_ANGLE: stand aside
+REARM_ABOVE = num("REARM", 6.0)        # degrees past the book angle before it may start again
+REARM_MOVE = num("REARM_MOVE", 5.0)    # degrees from a settled rest before it may start again
+LOCK_DRAW_MS = num("LOCK_DRAW", 400.0)  # the lock screen needs a moment to be drawn
+FRESH_MS = num("FRESH", 10000.0)       # a held picture younger than this is not captured again
+TAPS = num("TAPS", 0.0)                # 1: blur with five taps a pixel, when the pyramid could not be built
+TIME = num("TIME", 0.0)                # 1: glFinish after the draw and report what it took
+OPAQUE = num("OPAQUE", 0.0)            # measured worse on this device: GTK draws the black itself
+RETRY_MS = 150.0                       # a capture of a screen still waking is black: try again
+HINGE_FRACTION = 84 / 2784
+
+POSTURE_PATH, POSTURE_IFACE = "/org/sfduo/Posture", "org.sfduo.Posture"
+
+# ---- GLES through ctypes -------------------------------------------------------
+GL = ctypes.CDLL("libGLESv2.so.2")
+GL_TEXTURE_2D, GL_RGB, GL_RGB8, GL_UNSIGNED_BYTE = 0x0DE1, 0x1907, 0x8051, 0x1401
+GL_TEXTURE_BASE_LEVEL, GL_TEXTURE_MAX_LEVEL = 0x813C, 0x813D
+GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 = 0x8D40, 0x8CE0
+GL_FRAMEBUFFER_BINDING, GL_FRAMEBUFFER_COMPLETE = 0x8CA6, 0x8CD5
+GL_RGBA8, GL_TEXTURE1 = 0x8058, 0x84C1
+GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER, GL_LINEAR, GL_LINEAR_MIPMAP_LINEAR = 0x2801, 0x2800, 0x2601, 0x2703
+GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE = 0x2802, 0x2803, 0x812F
+GL_VERTEX_SHADER, GL_FRAGMENT_SHADER, GL_COMPILE_STATUS, GL_LINK_STATUS = 0x8B31, 0x8B30, 0x8B81, 0x8B82
+GL_TRIANGLES, GL_TRIANGLE_STRIP, GL_COLOR_BUFFER_BIT = 0x0004, 0x0005, 0x4000
+GL_TEXTURE0, GL_UNPACK_ALIGNMENT = 0x84C0, 0x0CF5
+GL_FLOAT, GL_FALSE, GL_VERSION = 0x1406, 0, 0x1F02
+for _name, _restype, _argtypes in (
+        ("glCreateShader", ctypes.c_uint, [ctypes.c_uint]),
+        ("glShaderSource", None, [ctypes.c_uint, ctypes.c_int, ctypes.POINTER(ctypes.c_char_p), ctypes.c_void_p]),
+        ("glCompileShader", None, [ctypes.c_uint]),
+        ("glGetShaderiv", None, [ctypes.c_uint, ctypes.c_uint, ctypes.POINTER(ctypes.c_int)]),
+        ("glGetShaderInfoLog", None, [ctypes.c_uint, ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.c_char_p]),
+        ("glCreateProgram", ctypes.c_uint, []),
+        ("glAttachShader", None, [ctypes.c_uint, ctypes.c_uint]),
+        ("glLinkProgram", None, [ctypes.c_uint]),
+        ("glGetProgramiv", None, [ctypes.c_uint, ctypes.c_uint, ctypes.POINTER(ctypes.c_int)]),
+        ("glGetProgramInfoLog", None, [ctypes.c_uint, ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.c_char_p]),
+        ("glUseProgram", None, [ctypes.c_uint]),
+        ("glGetUniformLocation", ctypes.c_int, [ctypes.c_uint, ctypes.c_char_p]),
+        ("glGetAttribLocation", ctypes.c_int, [ctypes.c_uint, ctypes.c_char_p]),
+        ("glUniform1f", None, [ctypes.c_int, ctypes.c_float]),
+        ("glUniform2f", None, [ctypes.c_int, ctypes.c_float, ctypes.c_float]),
+        ("glUniform4f", None, [ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float]),
+        ("glUniform1i", None, [ctypes.c_int, ctypes.c_int]),
+        ("glUniformMatrix3fv", None, [ctypes.c_int, ctypes.c_int, ctypes.c_ubyte, ctypes.POINTER(ctypes.c_float)]),
+        ("glGenTextures", None, [ctypes.c_int, ctypes.POINTER(ctypes.c_uint)]),
+        ("glBindTexture", None, [ctypes.c_uint, ctypes.c_uint]),
+        ("glActiveTexture", None, [ctypes.c_uint]),
+        ("glTexImage2D", None, [ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                ctypes.c_int, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]),
+        ("glTexParameteri", None, [ctypes.c_uint, ctypes.c_uint, ctypes.c_int]),
+        ("glGenerateMipmap", None, [ctypes.c_uint]),
+        ("glPixelStorei", None, [ctypes.c_uint, ctypes.c_int]),
+        ("glVertexAttribPointer", None, [ctypes.c_uint, ctypes.c_int, ctypes.c_uint, ctypes.c_ubyte,
+                                         ctypes.c_int, ctypes.c_void_p]),
+        ("glEnableVertexAttribArray", None, [ctypes.c_uint]),
+        ("glDrawArrays", None, [ctypes.c_uint, ctypes.c_int, ctypes.c_int]),
+        ("glViewport", None, [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]),
+        ("glClearColor", None, [ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float]),
+        ("glClear", None, [ctypes.c_uint]),
+        ("glGetString", ctypes.c_char_p, [ctypes.c_uint]),
+        ("glGenFramebuffers", None, [ctypes.c_int, ctypes.POINTER(ctypes.c_uint)]),
+        ("glDeleteFramebuffers", None, [ctypes.c_int, ctypes.POINTER(ctypes.c_uint)]),
+        ("glBindFramebuffer", None, [ctypes.c_uint, ctypes.c_uint]),
+        ("glFramebufferTexture2D", None, [ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,
+                                          ctypes.c_uint, ctypes.c_int]),
+        ("glCheckFramebufferStatus", ctypes.c_uint, [ctypes.c_uint]),
+        ("glGetIntegerv", None, [ctypes.c_uint, ctypes.POINTER(ctypes.c_int)]),
+        ("glFinish", None, []),
+        ("glTexStorage2D", None, [ctypes.c_uint, ctypes.c_int, ctypes.c_uint, ctypes.c_int, ctypes.c_int]),
+        ("glGetError", ctypes.c_uint, [])):
+    _fn = getattr(GL, _name)
+    _fn.restype, _fn.argtypes = _restype, _argtypes
+
+VERTEX = b"""#version 300 es
+in vec2 pos;                  // clip space
+in vec3 uvq;                  // the picture point over the depth, and one over the depth
+out vec3 vUvq;
+void main() { vUvq = uvq; gl_Position = vec4(pos, 0.0, 1.0); }
+"""
+
+# One sheet, drawn as the quad it is: the rasteriser interpolates the picture
+# point over the depth and the fragment divides, which is the whole of the
+# perspective - no matrix per pixel, and nothing outside the sheet is touched.
+# The blur is five taps around the mip level the sheet wants there: the mip
+# chain alone is a box filter and shows its blocks at the levels this reaches.
+FRAGMENT = b"""#version 300 es
+precision highp float;
+uniform sampler2D picture;
+uniform vec2 screen;          // logical size
+uniform vec2 sheet;           // the picture x of this sheet's hinge edge, a panel's width
+uniform vec4 blur;            // strength, hinge floor, levels, unused
+uniform vec4 dim;             // strength, hinge floor, reach, max
+uniform float opacity;
+uniform float tint;           // the sheet's own faint light
+uniform float taps;           // 0: the mip level alone, for measuring
+in vec3 vUvq;
+out vec4 colour;
+
+vec3 sample_blurred(vec2 uv, float level) {
+    if (level < 0.5 || taps < 0.5) return textureLod(picture, uv, level).rgb;
+    vec2 step = exp2(level) * 0.9 / vec2(textureSize(picture, 0));
+    vec3 c = textureLod(picture, uv, level).rgb * 0.4;
+    c += textureLod(picture, uv + vec2( step.x,  step.y), level).rgb * 0.15;
+    c += textureLod(picture, uv + vec2(-step.x,  step.y), level).rgb * 0.15;
+    c += textureLod(picture, uv + vec2( step.x, -step.y), level).rgb * 0.15;
+    c += textureLod(picture, uv + vec2(-step.x, -step.y), level).rgb * 0.15;
+    return c;
+}
+
+void main() {
+    vec2 q = vUvq.xy / vUvq.z;                                   // the picture point, logical
+    float t = clamp(abs(q.x - sheet.x) / sheet.y, 0.0, 1.0);     // 0 hinge, 1 outer edge
+    float level = blur.x * blur.z * (blur.y + (1.0 - blur.y) * t);
+    vec3 c = sample_blurred(q / screen, level);
+    float spread = smoothstep(0.0, max(dim.z, 0.02), t);
+    float fade = dim.x * (dim.y + (1.0 - dim.y) * spread);
+    c = (c + vec3(tint) * dim.x) * pow(1.0 - dim.w * fade, 2.2);
+    colour = vec4(c, opacity);
+}
+"""
+
+
+# Building the mip chain: glGenerateMipmap's box filter shows its blocks at
+# the levels the effect reaches, and smoothing it with five taps a pixel cost
+# a frame in five (measured). So each level is made once, from the one above,
+# with a tent that a cascade turns into a Gaussian - and a frame then needs
+# one sample, whatever the blur.
+DOWN_VERTEX = b"""#version 300 es
+in vec2 pos;
+out vec2 vUv;
+void main() { vUv = pos * 0.5 + 0.5; gl_Position = vec4(pos, 0.0, 1.0); }
+"""
+
+DOWN_FRAGMENT = b"""#version 300 es
+precision highp float;
+uniform sampler2D src;
+uniform vec2 texel;           // one texel of the level being read
+in vec2 vUv;
+out vec4 colour;
+void main() {
+    vec3 c = texture(src, vUv).rgb * 0.5;
+    c += texture(src, vUv + vec2( texel.x,  texel.y)).rgb * 0.125;
+    c += texture(src, vUv + vec2(-texel.x,  texel.y)).rgb * 0.125;
+    c += texture(src, vUv + vec2( texel.x, -texel.y)).rgb * 0.125;
+    c += texture(src, vUv + vec2(-texel.x, -texel.y)).rgb * 0.125;
+    colour = vec4(c, 1.0);
+}
+"""
+
+
+def log(message):
+    print(f"sfduo-fold: {message}", file=sys.stderr, flush=True)
+
+
+def progress_for(angle, top):
+    """1 closed, 0 at `top` and above."""
+    return max(0.0, min(1.0, (top - angle) / max(top, 1.0)))
+
+
+def capture():
+    """The screen as it is: grim's PPM, no file, no PNG round trip. None when
+    it is black - a screen still waking, or asleep - so the caller keeps what
+    it had and tries again."""
+    t0 = time.monotonic()
+    out = subprocess.run(["grim", "-t", "ppm", "-"], capture_output=True, check=False).stdout
+    m = re.match(rb"P6\s+(\d+)\s+(\d+)\s+255\s", out)
+    if not m:
+        return None
+    width, height = int(m.group(1)), int(m.group(2))
+    pixels = memoryview(out)[m.end():]
+    sample = bytes(pixels[::4099])
+    if not sample or max(sample) < 24:            # nothing drawn yet: a waking screen
+        log("captured %dx%d in %.0f ms, black - kept what we had"
+            % (width, height, (time.monotonic() - t0) * 1000))
+        return None
+    log("captured %dx%d in %.0f ms" % (width, height, (time.monotonic() - t0) * 1000))
+    return width, height, pixels
+
+
+def capture_async(callback):
+    """A capture off the main loop: 300 ms of grim would be twenty dropped
+    frames. The callback runs on the main loop with the picture, or None."""
+    def work():
+        pixels = capture()
+        GLib.idle_add(lambda: callback(pixels) and False)
+    threading.Thread(target=work, daemon=True).start()
+
+
+# ---- the geometry, Mac Duo's turned on its side --------------------------------
+
+def sheet_quad(side, half, gap, height, separation_deg, viewing):
+    """One half's sheet: four (picture point, screen point, 1/depth) corners.
+
+    The sheet is hinged at the hinge edge - a vertical line, which is why Mac
+    Duo's projection is turned on its side here - and rotated `separation`
+    degrees away from the glass. A point `s` from the hinge along the sheet
+    lies at s·cos a across it and s·sin a away from it; an eye `viewing`
+    half-widths in front of the hinge projects that with the scale
+    D / (D + s·sin a), so the hinge edge stays put and the outer edge shrinks
+    towards it. A negative separation brings the outer edge forward instead.
+
+    The scale is one over the depth, and the picture point over the depth and
+    one over the depth are both linear in screen space - so the four corners
+    are all the rasteriser needs to get the perspective right inside.
+    """
+    a = math.radians(max(-30.0, min(85.0, separation_deg)))
+    D = viewing * half
+    hinge_screen = half if side == "left" else half + gap
+    hinge_picture = half if side == "left" else half + gap
+    sign = -1 if side == "left" else 1
+
+    def corner(s, y):
+        scale = D / max(D + s * math.sin(a), D * 0.2)
+        screen = (hinge_screen + sign * s * math.cos(a) * scale,
+                  height / 2 + (y - height / 2) * scale)
+        return (hinge_picture + sign * s, y), screen, scale
+    return [corner(0, 0), corner(half, 0), corner(half, height), corner(0, height)]
+
+
+class Fold:
+    def __init__(self, demo_angle=None):
+        self.window = Gtk.Window()
+        # nothing of the window itself may show: the GL area fades out at the
+        # ends, and GTK's default background came through as a white flash
+        css = Gtk.CssProvider()
+        # Opaque: the compositor then knows nothing below shows through and
+        # skips compositing the lock screen under a full-screen overlay. It
+        # costs the fade at the ends, which the effect does not need - flat
+        # and sharp is what is underneath anyway (see _fade_out).
+        css.load_from_string("window, window * { background: %s; }"
+                             % ("black" if OPAQUE else "transparent"))
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        Gtk4LayerShell.init_for_window(self.window)
+        Gtk4LayerShell.set_namespace(self.window, "sfduo-fold")
+        Gtk4LayerShell.set_layer(self.window, Gtk4LayerShell.Layer.OVERLAY)
+        for edge in (Gtk4LayerShell.Edge.LEFT, Gtk4LayerShell.Edge.RIGHT,
+                     Gtk4LayerShell.Edge.TOP, Gtk4LayerShell.Edge.BOTTOM):
+            Gtk4LayerShell.set_anchor(self.window, edge, True)
+        Gtk4LayerShell.set_exclusive_zone(self.window, -1)
+        Gtk4LayerShell.set_keyboard_mode(self.window, Gtk4LayerShell.KeyboardMode.NONE)
+        self.area = Gtk.GLArea()
+        self.area.set_allowed_apis(Gdk.GLAPI.GLES)
+        self.area.set_required_version(3, 0)
+        self.area.set_has_depth_buffer(False)
+        self.area.connect("realize", self._gl_init)
+        self.area.connect("render", self._gl_render)
+        self.window.set_child(self.area)
+        self.window.connect("map", lambda *_a: self._passthrough())
+
+        self.program = None
+        self.texture = None
+        self.max_level = 0
+        self.pending = None           # a picture waiting to become the texture
+        self.held = None              # the picture the next fold can start with, at once
+        self.held_at = 0.0
+        self.holding = False          # a capture is on its way
+        self.angle = None             # what the effect draws: the smoothed angle, led
+        self.smooth = None            # what sfduo-posture last published
+        self.rate = 0.0               # degrees a second, from the smoothed angle
+        self.have_texture = False
+        self.gaussian = False
+        self.uploaded = None          # the picture the texture holds
+        self.texture_size = None
+        self.draw_ms = []
+        self.last_at = 0.0
+        self.opacity = 1.0
+        self.active = False
+        self.fading = None
+        self.retry = None
+        self.frames = []
+        self.top = BOOK_ANGLE
+        self.locked = False
+        self.locked_here = False
+        self.session_path = None
+        self.rearm_above = None
+        self.rearm_from = None
+        self.moved_at = 0.0
+        self.moved_angle = None
+        self.demo = demo_angle
+
+        if demo_angle is not None:
+            self.pending = capture()
+            self.angle = demo_angle
+            self.active = True
+            self.window.present()
+            self.area.add_tick_callback(self._tick)
+            return
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self.bus.signal_subscribe(None, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                                  POSTURE_PATH, POSTURE_IFACE, Gio.DBusSignalFlags.NONE,
+                                  self._on_posture)
+        # the lock state, as the dock reads it: logind's LockedHint on the seat session
+        self.system = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        self.system.signal_subscribe(None, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                                     None, "org.freedesktop.login1.Session", Gio.DBusSignalFlags.NONE,
+                                     lambda *_a: self._read_locked())
+        self._read_locked()
+        if self.locked:
+            self._hold_soon()
+        log("waiting for the hinge (sfduo-posture); locked=%s" % self.locked)
+
+    # ---- what is on the screen, kept ready ---------------------------------
+
+    def _hold_soon(self, delay=LOCK_DRAW_MS):
+        """Capture what is on the screen and keep it, so that the next fold
+        starts on the first frame instead of 300 ms into the motion."""
+        if self.holding:
+            return
+        self.holding = True
+        GLib.timeout_add(int(delay), lambda: capture_async(self._held) and False)
+
+    def _held(self, pixels):
+        self.holding = False
+        if pixels is not None:
+            self.held = pixels
+            self.held_at = time.monotonic()
+            if self.active and self.pending is None:
+                self.pending = pixels        # a fresher picture, mid-effect: swap it in
+        return True
+
+    def _refresh_if_stale(self):
+        """Between folds, and only then: a capture costs half the frame rate
+        while it runs (grim reads the whole output back through the GL driver
+        and the compositor stalls), so the picture is taken when nothing is
+        moving - on locking, and after an effect has ended."""
+        if self.active or not self.locked or self.held is None:
+            return
+        if time.monotonic() - self.held_at > FRESH_MS / 1000.0:
+            self._hold_soon(delay=1)
+
+    def _passthrough(self):
+        surface = self.window.get_surface()
+        if surface is not None:
+            surface.set_input_region(cairo.Region())
+
+    # ---- GL ----------------------------------------------------------------
+
+    def _shader(self, kind, source):
+        shader = GL.glCreateShader(kind)
+        src = ctypes.c_char_p(source)
+        GL.glShaderSource(shader, 1, ctypes.byref(src), None)
+        GL.glCompileShader(shader)
+        ok = ctypes.c_int(0)
+        GL.glGetShaderiv(shader, GL_COMPILE_STATUS, ctypes.byref(ok))
+        if not ok.value:
+            buf = ctypes.create_string_buffer(4096)
+            GL.glGetShaderInfoLog(shader, 4096, None, buf)
+            log("shader: " + buf.value.decode(errors="replace"))
+        return shader
+
+    def _link(self, vertex, fragment):
+        program = GL.glCreateProgram()
+        GL.glAttachShader(program, self._shader(GL_VERTEX_SHADER, vertex))
+        GL.glAttachShader(program, self._shader(GL_FRAGMENT_SHADER, fragment))
+        GL.glLinkProgram(program)
+        ok = ctypes.c_int(0)
+        GL.glGetProgramiv(program, GL_LINK_STATUS, ctypes.byref(ok))
+        if not ok.value:
+            buf = ctypes.create_string_buffer(4096)
+            GL.glGetProgramInfoLog(program, 4096, None, buf)
+            log("program: " + buf.value.decode(errors="replace"))
+        return program
+
+    def _gl_init(self, area):
+        area.make_current()
+        if area.get_error() is not None:
+            log("GL: %s" % area.get_error().message)
+            return
+        self.program = self._link(VERTEX, FRAGMENT)
+        self.down = self._link(DOWN_VERTEX, DOWN_FRAGMENT)
+        self.down_uniforms = {name: GL.glGetUniformLocation(self.down, name.encode())
+                              for name in ("src", "texel")}
+        self.down_pos = GL.glGetAttribLocation(self.down, b"pos")
+        self.tri = (ctypes.c_float * 6)(-1, -1, 3, -1, -1, 3)     # covers a level in one triangle
+        self.uniforms = {name: GL.glGetUniformLocation(self.program, name.encode())
+                         for name in ("picture", "screen", "sheet", "blur", "dim",
+                                      "opacity", "tint", "taps")}
+        self.pos = GL.glGetAttribLocation(self.program, b"pos")
+        self.uvq = GL.glGetAttribLocation(self.program, b"uvq")
+        self.verts = (ctypes.c_float * 20)()      # four corners, five floats each
+        tex = (ctypes.c_uint * 2)()
+        GL.glGenTextures(2, ctypes.cast(tex, ctypes.POINTER(ctypes.c_uint)))
+        self.texture, self.staging = tex[0], tex[1]
+        log("GL ready: %s" % (GL.glGetString(GL_VERSION) or b"?").decode())
+
+    def _upload(self, pixels):
+        """grim hands over three bytes a pixel; the sheet is sampled from four.
+        A 24-bit texture is the slow path on this GPU (measured), so the raw
+        capture goes into a staging texture and the GPU copies it into the
+        four-byte one whose levels the pyramid is then built in."""
+        width, height, data = pixels
+        self.uploaded = pixels
+        t0 = time.monotonic()
+        GL.glActiveTexture(GL_TEXTURE0)
+        GL.glBindTexture(GL_TEXTURE_2D, self.staging)
+        GL.glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+        buf = (ctypes.c_ubyte * (width * height * 3)).from_buffer_copy(data)
+        GL.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, buf)
+        GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        uploaded = (time.monotonic() - t0) * 1000
+        self.max_level = math.floor(math.log2(max(width, height)))
+        if (width, height) != self.texture_size:
+            GL.glBindTexture(GL_TEXTURE_2D, self.texture)
+            GL.glTexStorage2D(GL_TEXTURE_2D, self.max_level + 1, GL_RGBA8, width, height)
+            GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
+            GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+            GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+            self.texture_size = (width, height)
+        self.have_texture = True
+        made = self._build_pyramid(width, height)
+        log("texture %dx%d: %.0f ms up, %.0f ms %s" % (width, height, uploaded,
+                                                       (time.monotonic() - t0) * 1000 - uploaded,
+                                                       "gaussian pyramid" if made else "box mips"))
+
+    def _build_pyramid(self, width, height):
+        """Redo the levels the effect samples with a tent filter, each from
+        the one above: a cascade of tents is a Gaussian, and one sample of it
+        is smooth where a box-filtered mip shows its blocks. Reading the level
+        above while writing this one is what BASE_LEVEL/MAX_LEVEL are for."""
+        levels = int(min(BLUR_LEVELS, self.max_level)) + 1
+        previous = ctypes.c_int(0)
+        GL.glGetIntegerv(GL_FRAMEBUFFER_BINDING, ctypes.byref(previous))
+        fbo = ctypes.c_uint(0)
+        GL.glGenFramebuffers(1, ctypes.byref(fbo))
+        GL.glBindFramebuffer(GL_FRAMEBUFFER, fbo.value)
+        GL.glUseProgram(self.down)
+        GL.glUniform1i(self.down_uniforms["src"], 0)
+        GL.glEnableVertexAttribArray(self.down_pos)
+        GL.glVertexAttribPointer(self.down_pos, 2, GL_FLOAT, GL_FALSE, 0, self.tri)
+        ok = True
+        for level in range(0, levels + 1):
+            GL.glActiveTexture(GL_TEXTURE0)
+            if level == 0:
+                # the capture itself, three bytes a pixel, into four-byte level 0
+                GL.glBindTexture(GL_TEXTURE_2D, self.staging)
+                src_w, src_h = width, height
+            else:
+                GL.glBindTexture(GL_TEXTURE_2D, self.texture)
+                GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, level - 1)
+                GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, level - 1)
+                src_w, src_h = max(1, width >> (level - 1)), max(1, height >> (level - 1))
+            GL.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                                      self.texture, level)
+            if GL.glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
+                log("pyramid: level %d is not renderable" % level)
+                ok = False
+                break
+            GL.glViewport(0, 0, max(1, width >> level), max(1, height >> level))
+            # level 0 is a copy: no offset, so the five taps land on one point
+            GL.glUniform2f(self.down_uniforms["texel"],
+                           0.0 if level == 0 else 1.0 / src_w, 0.0 if level == 0 else 1.0 / src_h)
+            GL.glDrawArrays(GL_TRIANGLES, 0, 3)
+        GL.glBindTexture(GL_TEXTURE_2D, self.texture)
+        GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0)
+        GL.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, self.max_level)
+        GL.glBindFramebuffer(GL_FRAMEBUFFER, previous.value)
+        GL.glDeleteFramebuffers(1, ctypes.byref(fbo))
+        self.gaussian = ok
+        return ok
+
+    def _gl_render(self, area, context):
+        if self.program is None:
+            return True
+        if self.pending is not None:
+            self._upload(self.pending)
+            self.pending = None
+        width, height = area.get_width(), area.get_height()
+        scale = area.get_scale_factor()
+        GL.glViewport(0, 0, int(width * scale), int(height * scale))
+        GL.glClearColor(0, 0, 0, self.opacity)
+        GL.glClear(GL_COLOR_BUFFER_BIT)
+        if not self.have_texture or self.angle is None or os.environ.get("FOLD_FLOOR"):
+            return True
+        p = progress_for(self.angle, self.top)
+        if p <= 0.0:
+            return True
+        gap = max(1, round(width * HINGE_FRACTION))
+        half = (width - gap) // 2
+        # the turn follows the effect's own progress, not the hinge's travel:
+        # it has to reach flat exactly where the effect ends, or the last
+        # frames snap - and the curve eases it out towards the flat end
+        separation = SEPARATION * (p ** SEPARATION_CURVE)
+        t_draw = time.monotonic()
+        GL.glUseProgram(self.program)
+        GL.glActiveTexture(GL_TEXTURE0)
+        GL.glBindTexture(GL_TEXTURE_2D, self.texture)
+        GL.glUniform1i(self.uniforms["picture"], 0)
+        GL.glUniform2f(self.uniforms["screen"], width, height)
+        GL.glUniform4f(self.uniforms["blur"], p ** BLUR_CURVE, BLUR_HINGE,
+                       min(BLUR_LEVELS, self.max_level), 0)
+        GL.glUniform4f(self.uniforms["dim"], p ** DIM_CURVE, DIM_HINGE, DIM_REACH, DIM)
+        GL.glUniform1f(self.uniforms["opacity"], self.opacity)
+        GL.glUniform1f(self.uniforms["tint"], TINT)
+        GL.glUniform1f(self.uniforms["taps"], 0.0 if self.gaussian else 1.0)
+        GL.glEnableVertexAttribArray(self.pos)
+        GL.glEnableVertexAttribArray(self.uvq)
+        base = ctypes.addressof(self.verts)
+        GL.glVertexAttribPointer(self.pos, 2, GL_FLOAT, GL_FALSE, 20, ctypes.c_void_p(base))
+        GL.glVertexAttribPointer(self.uvq, 3, GL_FLOAT, GL_FALSE, 20, ctypes.c_void_p(base + 8))
+        for side in ("left", "right"):
+            quad = sheet_quad(side, half, gap, height, separation, VIEWING)
+            # a triangle strip wants the corners crossed: 0, 1, 3, 2
+            for slot, corner in enumerate((quad[0], quad[1], quad[3], quad[2])):
+                (px, py), (sx, sy), scale = corner
+                self.verts[slot * 5 + 0] = 2.0 * sx / width - 1.0
+                self.verts[slot * 5 + 1] = 1.0 - 2.0 * sy / height
+                self.verts[slot * 5 + 2] = px * scale
+                self.verts[slot * 5 + 3] = py * scale
+                self.verts[slot * 5 + 4] = scale
+            GL.glUniform2f(self.uniforms["sheet"], half if side == "left" else half + gap, half)
+            GL.glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+        if TIME:
+            GL.glFinish()
+            self.draw_ms.append((time.monotonic() - t_draw) * 1000)
+        return True
+
+    # ---- the lock state ----------------------------------------------------
+
+    def _read_locked(self):
+        was = self.locked
+        try:
+            sessions = self.system.call_sync("org.freedesktop.login1", "/org/freedesktop/login1",
+                                             "org.freedesktop.login1.Manager", "ListSessions", None, None,
+                                             Gio.DBusCallFlags.NONE, 2000, None)
+            for _sid, _uid, _user, seat, path in sessions[0]:
+                if not seat:
+                    continue
+                self.session_path = path
+                value = self.system.call_sync("org.freedesktop.login1", path,
+                                              "org.freedesktop.DBus.Properties", "Get",
+                                              GLib.Variant("(ss)", ("org.freedesktop.login1.Session",
+                                                                    "LockedHint")),
+                                              None, Gio.DBusCallFlags.NONE, 2000, None)
+                self.locked = bool(value[0])
+                break
+        except GLib.Error as err:
+            log("lock state: %s" % err.message)
+        if self.locked and not was:
+            self._hold_soon()          # the lock screen, ready for the next fold
+
+    def _lock_session(self):
+        """logind's lock shows the lock screen and leaves the panels on, which
+        the capture needs; phosh's org.gnome.ScreenSaver.Lock blanks them. The
+        session user may do this through the port's polkit rule."""
+        try:
+            if self.session_path:
+                self.system.call_sync("org.freedesktop.login1", self.session_path,
+                                      "org.freedesktop.login1.Session", "Lock", None, None,
+                                      Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error as err:
+            log("lock: %s" % err.message)
+
+    # ---- the hinge ---------------------------------------------------------
+
+    def _on_posture(self, _c, _s, _p, _i, _sig, params):
+        changed = params[1]
+        if "Angle" not in changed.keys():
+            return
+        now = time.monotonic()
+        smooth = changed["Angle"]
+        if self.smooth is not None and now > self.last_at:
+            rate = (smooth - self.smooth) / (now - self.last_at)
+            self.rate += 0.5 * (rate - self.rate)      # a light average: the steps are coarse
+        self.last_at = now
+        self.smooth = smooth
+        # the sensor is ten readings a second and the spring adds its own lag:
+        # lead the picture by a fraction of a second of the current rate
+        led = smooth + max(-LEAD_MAX, min(LEAD_MAX, self.rate * LEAD_MS / 1000.0))
+        previous = self.angle if self.angle is not None else led
+        self.angle = led
+
+        if self.moved_angle is None or abs(led - self.moved_angle) > 0.4:
+            self.moved_angle, self.moved_at = led, now
+
+        if self.active:
+            if self.locked and led > previous + 0.01 and self.top < BOOK_ANGLE:
+                self.top = BOOK_ANGLE     # opening again after a fold shut: rise to the book
+            if led >= self.top and self.fading is None:
+                self._fade_out("flat")
+            elif (self.fading is None and led > REST_ANGLE
+                    and now - self.moved_at > SETTLE_MS / 1000.0):
+                # a hinge held still in the middle: the screen is the user's
+                # again, not a picture of it
+                self._fade_out("settled")
+            return
+
+        if self.retry is not None or not self._armed(led):
+            return
+        if self.locked and led < BOOK_ANGLE - 2:
+            self.top = BOOK_ANGLE
+            self._start()
+        elif not self.locked and led < LOCK_ANGLE and led < previous - 0.01:
+            self.top = LOCK_ANGLE
+            self._start(lock_after=True)
+
+    def _armed(self, angle):
+        if self.rearm_above is not None:
+            if angle < self.rearm_above:
+                return False
+            self.rearm_above = None
+        if self.rearm_from is not None:
+            if abs(angle - self.rearm_from) < REARM_MOVE:
+                return False
+            self.rearm_from = None
+        return True
+
+    def _start(self, lock_after=False):
+        """Show the sheet. With a picture in hand this is the same frame;
+        without one (the first fold of a session) it waits for a capture.
+
+        `lock_after`: folding shut while in use. What the user was looking at
+        is what falls away, so it is captured first and the session locked
+        after - and the lock screen, drawn a moment later, becomes the picture
+        the next opening rises with.
+        """
+        if lock_after:
+            self.retry = 1
+            capture_async(lambda pixels: self._started(pixels, lock_after=True))
+            return
+        if self.held is not None:
+            self._show(self.held)         # the same frame: no capture, no dropped frames
+            return
+        self.retry = 1
+        capture_async(lambda pixels: self._started(pixels))
+
+    def _started(self, pixels, lock_after=False):
+        self.retry = None
+        if pixels is None:
+            if self.angle is not None and self.angle < self.top - 2 and not self.active:
+                self.retry = 1
+                GLib.timeout_add(int(RETRY_MS), lambda: capture_async(
+                    lambda p: self._started(p, lock_after)) and False)
+            return True
+        self.held, self.held_at = pixels, time.monotonic()
+        if self.angle is None or self.angle >= self.top:
+            return True                    # the moment passed while grim ran
+        self._show(pixels)
+        if lock_after and not self.locked_here:
+            self.locked_here = True
+            log("folded shut past %.0f°: locking" % LOCK_ANGLE)
+            self._lock_session()
+            self._hold_soon()              # the lock screen, for the opening
+        return True
+
+    def _show(self, pixels):
+        if pixels is not self.uploaded:      # the same picture twice is the same texture
+            self.pending = pixels
+        self.opacity = 1.0
+        self.active = True
+        self.frames = []
+        self.window.present()
+        self._passthrough()
+        if OPAQUE:
+            self._opaque_region()
+        self.area.add_tick_callback(self._tick)
+        log("effect on at %.0f°, top %.0f°" % (self.angle, self.top))
+
+    def _tick(self, widget, clock):
+        self.frames.append(clock.get_frame_time())
+        widget.queue_render()
+        return self.active
+
+    def _fade_out(self, why):
+        if OPAQUE:
+            # nothing to fade: at the flat end the sheet is the screen, and a
+            # window that must stay opaque cannot fade anyway
+            self._stop(why)
+            return
+        t0 = time.monotonic()
+        self.fade_reason = why
+
+        def step():
+            k = min(1.0, (time.monotonic() - t0) * 1000 / FADE_MS)
+            self.opacity = 1.0 - k
+            if k >= 1.0:
+                self._stop(why)
+                return False
+            return True
+        self.fading = GLib.timeout_add(16, step)
+
+    def _opaque_region(self):
+        """Say it outright as well, in case GTK has not: the whole surface is
+        painted, so the compositor may skip what is under it."""
+        surface = self.window.get_surface()
+        if surface is None or not hasattr(surface, "set_opaque_region"):
+            return
+        try:
+            surface.set_opaque_region(cairo.Region(cairo.RectangleInt(
+                0, 0, surface.get_width(), surface.get_height())))
+        except Exception as err:            # noqa: BLE001 - a hint, not a requirement
+            log("opaque region: %s" % err)
+
+    def _stop(self, why):
+        self.active = False
+        self.fading = None
+        self.locked_here = False
+        if why == "settled":
+            self.rearm_from = self.angle
+        else:
+            self.rearm_above = self.top + REARM_ABOVE
+        self.top = BOOK_ANGLE
+        self.window.set_visible(False)
+        self.opacity = 1.0
+        GLib.timeout_add(500, lambda: self._refresh_if_stale() and False)
+        if len(self.frames) > 2:
+            gaps = sorted((b - a) / 1000 for a, b in zip(self.frames, self.frames[1:]))
+            log("effect off (%s): %d frames, %.1f ms/frame median, %.1f p90, %.1f max"
+                % (why, len(self.frames), gaps[len(gaps) // 2], gaps[int(len(gaps) * 0.9)], gaps[-1]))
+            if self.draw_ms:
+                d = sorted(self.draw_ms)
+                log("            the draw itself: %.1f ms median, %.1f p90, %.1f max"
+                    % (d[len(d) // 2], d[int(len(d) * 0.9)], d[-1]))
+                self.draw_ms = []
+        else:
+            log("effect off (%s)" % why)
+
+
+def simulate(fold, script):
+    """Feed the state machine a scripted hinge instead of sfduo-posture:
+    "angle:seconds,angle:seconds,..." - hold at the first, then move linearly
+    to each next over its seconds. What the real daemon would publish, at the
+    rate it publishes it."""
+    steps = [(float(a), float(t)) for a, t in (part.split(":") for part in script.split(","))]
+    state = {"i": 0, "t0": time.monotonic(), "from": steps[0][0]}
+    fold._read_locked()
+
+    def tick():
+        i = state["i"]
+        if i >= len(steps):
+            log("simulation over")
+            return False
+        target, seconds = steps[i]
+        k = min(1.0, (time.monotonic() - state["t0"]) / max(seconds, 0.001))
+        angle = state["from"] + (target - state["from"]) * k
+        fold._on_posture(None, None, None, None, None,
+                         GLib.Variant("(sa{sv}as)", (POSTURE_IFACE,
+                                                     {"Angle": GLib.Variant("d", angle),
+                                                      "Raw": GLib.Variant("u", int(angle))}, [])))
+        if k >= 1.0:
+            state.update(i=i + 1, t0=time.monotonic())
+            state["from"] = target
+            log("simulation at %.0f°, locked=%s, active=%s" % (target, fold.locked, fold.active))
+        return True
+    GLib.timeout_add(16, tick)
+
+
+def main(argv):
+    app = Gtk.Application(application_id="org.sfduo.Fold", flags=Gio.ApplicationFlags.NON_UNIQUE)
+    demo = float(argv[1]) if len(argv) >= 2 and argv[0] == "--demo" else None
+    script = argv[1] if len(argv) >= 2 and argv[0] == "--simulate" else None
+    if argv and argv[0] == "--bench":
+        top = BOOK_ANGLE + 20
+        # twice: the first sweep captures, the second runs on the held picture
+        script = ",".join(["%g:0" % top, "%g:1.2" % top,
+                           "0:1.6", "0:1.2", "%g:1.6" % top, "%g:1.5" % top,
+                           "0:1.6", "0:0.6", "%g:1.6" % top, "%g:0.5" % top])
+
+    def activate(app):
+        app.fold = Fold(demo)
+        app.hold()
+        app.add_window(app.fold.window)
+        if demo is None:
+            app.fold.window.set_visible(False)
+        if script:
+            simulate(app.fold, script)
+    app.connect("activate", activate)
+    app.run([sys.argv[0]])
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
