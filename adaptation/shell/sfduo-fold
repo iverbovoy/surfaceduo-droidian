@@ -95,6 +95,8 @@ STAGGER = num("STAGGER", 0.35)         # how far the pieces travel out of step w
 
 # ---- how it behaves ------------------------------------------------------------
 LEAD_MS = num("LEAD", 70.0)            # extrapolate the hinge by this much: the sensor lags
+ANGLE_HZ = num("ANGLE_HZ", 26.0)       # rad/s: the drawn angle's own spring, over the lead's noise
+RATE_EMA = num("RATE_EMA", 0.15)       # how much of a new rate to believe
 LEAD_MAX = num("LEAD_MAX", 12.0)       # never lead by more than this many degrees
 FADE_MS = num("FADE", 120.0)           # the overlay's own fade at the ends
 SETTLE_MS = num("SETTLE", 600.0)       # hinge at rest this long above REST_ANGLE: stand aside
@@ -107,6 +109,8 @@ TIME = num("TIME", 0.0)                # 1: glFinish after the draw and report w
 OPAQUE = num("OPAQUE", 0.0)            # measured worse on this device: GTK draws the black itself
 RETRY_MS = 150.0                       # a capture of a screen still waking is black: try again
 HINGE_FRACTION = 84 / 2784
+PANEL = num("PANEL", 32.0)             # phosh's top bar: its own surface, and above ours whatever
+                                       # layer we ask for, so the effect leaves that strip alone
 
 POSTURE_PATH, POSTURE_IFACE = "/org/sfduo/Posture", "org.sfduo.Posture"
 
@@ -116,7 +120,7 @@ GL_TEXTURE_2D, GL_RGB, GL_RGB8, GL_UNSIGNED_BYTE = 0x0DE1, 0x1907, 0x8051, 0x140
 GL_TEXTURE_BASE_LEVEL, GL_TEXTURE_MAX_LEVEL = 0x813C, 0x813D
 GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 = 0x8D40, 0x8CE0
 GL_FRAMEBUFFER_BINDING, GL_FRAMEBUFFER_COMPLETE = 0x8CA6, 0x8CD5
-GL_RGBA8, GL_RGBA = 0x8058, 0x1908
+GL_RGBA8, GL_RGBA, GL_SCISSOR_TEST = 0x8058, 0x1908, 0x0C11
 GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER, GL_LINEAR, GL_LINEAR_MIPMAP_LINEAR = 0x2801, 0x2800, 0x2601, 0x2703
 GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE = 0x2802, 0x2803, 0x812F
 GL_VERTEX_SHADER, GL_FRAGMENT_SHADER, GL_COMPILE_STATUS, GL_LINK_STATUS = 0x8B31, 0x8B30, 0x8B81, 0x8B82
@@ -139,6 +143,7 @@ for _name, _restype, _argtypes in (
         ("glGetAttribLocation", ctypes.c_int, [ctypes.c_uint, ctypes.c_char_p]),
         ("glUniform1f", None, [ctypes.c_int, ctypes.c_float]),
         ("glUniform2f", None, [ctypes.c_int, ctypes.c_float, ctypes.c_float]),
+        ("glUniform3f", None, [ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_float]),
         ("glUniform4f", None, [ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_float, ctypes.c_float]),
         ("glUniform1i", None, [ctypes.c_int, ctypes.c_int]),
         ("glUniformMatrix3fv", None, [ctypes.c_int, ctypes.c_int, ctypes.c_ubyte, ctypes.POINTER(ctypes.c_float)]),
@@ -166,6 +171,9 @@ for _name, _restype, _argtypes in (
         ("glCheckFramebufferStatus", ctypes.c_uint, [ctypes.c_uint]),
         ("glGetIntegerv", None, [ctypes.c_uint, ctypes.POINTER(ctypes.c_int)]),
         ("glFinish", None, []),
+        ("glEnable", None, [ctypes.c_uint]),
+        ("glDisable", None, [ctypes.c_uint]),
+        ("glScissor", None, [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]),
         ("glTexStorage2D", None, [ctypes.c_uint, ctypes.c_int, ctypes.c_uint, ctypes.c_int, ctypes.c_int]),
         ("glReadPixels", None, [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                 ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]),
@@ -176,8 +184,9 @@ for _name, _restype, _argtypes in (
 FILL_FRAGMENT = b"""#version 300 es
 precision mediump float;
 uniform float opacity;
+uniform vec3 tone;
 out vec4 colour;
-void main() { colour = vec4(0.0, 0.0, 0.0, opacity); }
+void main() { colour = vec4(tone, opacity); }
 """
 
 VERTEX = b"""#version 300 es
@@ -427,7 +436,10 @@ class Fold:
         self.held = None              # the picture the next fold can start with, at once
         self.held_at = 0.0
         self.holding = False          # a capture is on its way
-        self.angle = None             # what the effect draws: the smoothed angle, led
+        self.angle = None             # what the effect draws: the target, sprung
+        self.angle_rate = 0.0
+        self.ticked = 0
+        self.target = None            # where the hinge says the picture should be
         self.smooth = None            # what sfduo-posture last published
         self.rate = 0.0               # degrees a second, from the smoothed angle
         self.have_texture = False
@@ -544,6 +556,7 @@ class Fold:
         self.down = self._link(DOWN_VERTEX, DOWN_FRAGMENT)
         self.fill = self._link(DOWN_VERTEX, FILL_FRAGMENT)
         self.fill_opacity = GL.glGetUniformLocation(self.fill, b"opacity")
+        self.fill_tone = GL.glGetUniformLocation(self.fill, b"tone")
         self.fill_pos = GL.glGetAttribLocation(self.fill, b"pos")
         self.down_uniforms = {name: GL.glGetUniformLocation(self.down, name.encode())
                               for name in ("src", "texel")}
@@ -658,6 +671,9 @@ class Fold:
         for i in range(columns * rows):
             j = i * 4
             cells[i] = max(buf[j], buf[j + 1], buf[j + 2])
+        panel_rows = int(math.ceil(PANEL * 2 * rows / height))     # the picture is physical pixels
+        for i in range(min(panel_rows, rows) * columns):
+            cells[i] = 0                                           # phosh's bar stays where it is
         self.pieces = pieces_from_map(cells, columns, rows)
         log("pieces: %s, from %dx%d cells in %.0f ms"
             % ("%d lit" % len(self.pieces) if self.pieces else "the whole sheet",
@@ -675,17 +691,25 @@ class Fold:
         width, height = area.get_width(), area.get_height()
         scale = area.get_scale_factor()
         GL.glViewport(0, 0, int(width * scale), int(height * scale))
+        # the strip phosh's bar owns is left as it is: it is above us whatever
+        # layer we ask for, so a copy of it there would only double it
+        GL.glEnable(GL_SCISSOR_TEST)
+        GL.glScissor(0, 0, int(width * scale), int((height - PANEL) * scale))
         GL.glClearColor(0, 0, 0, self.opacity)
         GL.glClear(GL_COLOR_BUFFER_BIT)
         if not self.have_texture or self.angle is None or os.environ.get("FOLD_FLOOR"):
+            GL.glDisable(GL_SCISSOR_TEST)
             return True
         p = progress_for(self.angle, self.top)
         if p <= 0.0:
+            GL.glDisable(GL_SCISSOR_TEST)
             return True
         # the screen the effect replaces must not show through where nothing
         # is drawn: the clear leaves those pixels clear, so black goes down
         GL.glUseProgram(self.fill)
         GL.glUniform1f(self.fill_opacity, self.opacity)
+        GL.glUniform3f(self.fill_tone, *((1.0, 0.0, 0.0) if os.environ.get("FOLD_FILL_RED")
+                                         else (0.0, 0.0, 0.0)))
         GL.glEnableVertexAttribArray(self.fill_pos)
         GL.glVertexAttribPointer(self.fill_pos, 2, GL_FLOAT, GL_FALSE, 0, self.tri)
         GL.glDrawArrays(GL_TRIANGLES, 0, 3)
@@ -736,6 +760,7 @@ class Fold:
                     self.verts[slot * 5 + 3] = py * scale
                     self.verts[slot * 5 + 4] = scale
                 GL.glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+        GL.glDisable(GL_SCISSOR_TEST)
         if TIME:
             GL.glFinish()
             self.draw_ms.append((time.monotonic() - t_draw) * 1000)
@@ -787,14 +812,16 @@ class Fold:
         smooth = changed["Angle"]
         if self.smooth is not None and now > self.last_at:
             rate = (smooth - self.smooth) / (now - self.last_at)
-            self.rate += 0.5 * (rate - self.rate)      # a light average: the steps are coarse
+            self.rate += RATE_EMA * (rate - self.rate)   # heavily averaged: it is a noisy derivative
         self.last_at = now
         self.smooth = smooth
         # the sensor is ten readings a second and the spring adds its own lag:
         # lead the picture by a fraction of a second of the current rate
         led = smooth + max(-LEAD_MAX, min(LEAD_MAX, self.rate * LEAD_MS / 1000.0))
-        previous = self.angle if self.angle is not None else led
-        self.angle = led
+        previous = self.target if self.target is not None else led
+        self.target = led
+        if self.angle is None or not self.active:
+            self.angle, self.angle_rate = led, 0.0       # not drawing: follow outright
 
         if self.moved_angle is None or abs(led - self.moved_angle) > 0.4:
             self.moved_angle, self.moved_at = led, now
@@ -853,13 +880,13 @@ class Fold:
     def _started(self, pixels, lock_after=False):
         self.retry = None
         if pixels is None:
-            if self.angle is not None and self.angle < self.top - 2 and not self.active:
+            if self.target is not None and self.target < self.top - 2 and not self.active:
                 self.retry = 1
                 GLib.timeout_add(int(RETRY_MS), lambda: capture_async(
                     lambda p: self._started(p, lock_after)) and False)
             return True
         self.held, self.held_at = pixels, time.monotonic()
-        if self.angle is None or self.angle >= self.top:
+        if self.target is None or self.target >= self.top:
             return True                    # the moment passed while grim ran
         self._show(pixels)
         if lock_after and not self.locked_here:
@@ -875,7 +902,17 @@ class Fold:
         self.opacity = 1.0
         self.active = True
         self.frames = []
+        self.angle, self.angle_rate, self.ticked = self.target, 0.0, 0
         self.window.present()
+        # the lock screen's own surfaces were created after ours, and within a
+        # layer that is what decides who is on top: moving out of the layer and
+        # back puts us at the end of its list, over the status bar we are
+        # drawing a copy of
+        display = Gdk.Display.get_default()
+        Gtk4LayerShell.set_layer(self.window, Gtk4LayerShell.Layer.TOP)
+        display.flush()
+        Gtk4LayerShell.set_layer(self.window, Gtk4LayerShell.Layer.OVERLAY)
+        display.flush()
         self._passthrough()
         if OPAQUE:
             self._opaque_region()
@@ -883,7 +920,19 @@ class Fold:
         log("effect on at %.0f°, top %.0f°" % (self.angle, self.top))
 
     def _tick(self, widget, clock):
-        self.frames.append(clock.get_frame_time())
+        """The drawn angle, a frame at a time: the hinge arrives ten times a
+        second and the lead over it is a noisy derivative, so what is drawn
+        follows the target through a spring of its own. Without it the jumps
+        showed as jumps of brightness, which the eye catches first."""
+        now = clock.get_frame_time()
+        self.frames.append(now)
+        if self.target is not None:
+            dt = min(0.05, (now - self.ticked) / 1e6) if self.ticked else 0.016
+            self.ticked = now
+            acceleration = (ANGLE_HZ * ANGLE_HZ * (self.target - self.angle)
+                            - 2 * ANGLE_HZ * self.angle_rate)
+            self.angle_rate += acceleration * dt
+            self.angle += self.angle_rate * dt
         widget.queue_render()
         return self.active
 
@@ -922,7 +971,7 @@ class Fold:
         self.fading = None
         self.locked_here = False
         if why == "settled":
-            self.rearm_from = self.angle
+            self.rearm_from = self.target
         else:
             self.rearm_above = self.top + REARM_ABOVE
         self.top = BOOK_ANGLE
