@@ -273,12 +273,25 @@ gets one app a 64px bitmap and the next a 32px one; and a button sized to its
 child leaves the row ragged even once the glyphs match. Hence a fixed pixel
 size on every image and a fixed box around every button.
 
-Two rough edges, both known:
+Two things worth knowing:
 
-- phoc's halves are exactly half the output, so a tiled window reaches 14
-  logical pixels into the hinge on its inner edge. Fixing it properly means
-  patching `view_arrange_tiled` in phoc to read the same gmobile cutout the
-  CSS above is built around.
+- phoc's halves are exactly half the output, and the middle of the output is
+  the middle of the hinge, so a tiled window reached half the hinge into the
+  bezel on its inner edge - 14 logical pixels at scale 3, 17 at 2.5 - and
+  lost that much of its content. Since 0.14.2 the package carries a patched
+  phoc (`phoc-patches/0001`, installed by `sfduo-phoc-install` beside exactly
+  the phoc version it was built for, with the same version lock, `--restore`
+  and marker as the phosh one): a `tiling-seam` in the output's section of
+  `phoc.ini`, the hinge as a fraction of the output's width, makes the halves
+  stop short of it. Left half: from the usable area's left edge to the seam;
+  right half: from the seam to the usable area's right edge. Without the key
+  phoc tiles as before, and a phoc without the patch warns about the key and
+  ignores it. Built like phosh, in a Droidian arm64 container under qemu:
+  `build/Dockerfile.phoc` on top of `build/Dockerfile.phosh`, the tree at
+  droidian/phoc 98211ea with the patch applied, `meson setup _build
+  --prefix=/usr --libdir=lib/aarch64-linux-gnu -Dembed-wlroots=disabled`
+  (the system wlroots is Droidian's fork with the hwcomposer backend) and
+  `ninja -C _build src/phoc`; the binary goes to `out/phoc/` for the package.
 - `gsettings set sm.puri.phoc auto-maximize false` is what lets a window stay
   tiled rather than being forced back to full width.
 

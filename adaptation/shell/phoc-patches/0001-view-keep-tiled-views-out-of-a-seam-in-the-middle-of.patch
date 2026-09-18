@@ -1,0 +1,113 @@
+From b82a9c2c664bd531d6b3fab16d206cb35dd28fa1 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Fri, 18 Sep 2026 12:55:11 +0300
+Subject: [PATCH] view: keep tiled views out of a seam in the middle of the
+ output
+
+An output that is really two panels with a hinge between them - the
+Surface Duo drives both as one 2784x1800 output with 84 px hidden in the
+middle - tiles badly: the halves are exactly half the output, so each
+reaches half the hinge into the bezel and loses its inner edge. A
+`tiling-seam` in the output's configuration, the hidden column as a
+fraction of the output's width, makes the halves stop short of it. Without
+the key nothing changes.
+---
+ src/settings.c | 10 ++++++++++
+ src/settings.h |  1 +
+ src/view.c     | 24 +++++++++++++++++++++---
+ 3 files changed, 32 insertions(+), 3 deletions(-)
+
+diff --git a/src/settings.c b/src/settings.c
+index 6decc49..48a985a 100644
+--- a/src/settings.c
++++ b/src/settings.c
+@@ -109,6 +109,7 @@ phoc_output_config_new (const char *name)
+   oc->y = -1;
+   oc->scale_filter = PHOC_OUTPUT_SCALE_FILTER_AUTO;
+   oc->drm_panel_orientation = false;
++  oc->seam = 0;
+ 
+   return oc;
+ }
+@@ -218,6 +219,15 @@ config_ini_handler (PhocConfig *config, const char *section, const char *name, c
+         g_critical ("Invalid modeline: %s", value);
+     } else if (strcmp (name, "scale-filter") == 0) {
+       oc->scale_filter = parse_scale_filter (value);
++    } else if (strcmp (name, "tiling-seam") == 0) {
++      /* A column in the middle of the output that tiled views keep out of,
++       * as a fraction of the output's width: a hinge between two panels
++       * that are driven as one output */
++      oc->seam = strtof (value, NULL);
++      if (oc->seam < 0 || oc->seam >= 1) {
++        g_critical ("Got invalid output tiling-seam value: %s", value);
++        oc->seam = 0;
++      }
+     } else if (strcmp (name, "drm-panel-orientation") == 0) {
+       oc->drm_panel_orientation = parse_boolean (value, true);
+     } else if (g_str_equal (name, "phys_width")) {
+diff --git a/src/settings.h b/src/settings.h
+index b2a12d9..b2191ea 100644
+--- a/src/settings.h
++++ b/src/settings.h
+@@ -23,6 +23,7 @@ typedef struct _PhocOutputConfig {
+   float                    scale;
+   PhocOutputScaleFilter    scale_filter;
+   bool                     drm_panel_orientation;
++  float                    seam;
+ 
+   struct PhocMode {
+     int   width, height;
+diff --git a/src/view.c b/src/view.c
+index 736b9aa..c48d95b 100644
+--- a/src/view.c
++++ b/src/view.c
+@@ -762,17 +762,35 @@ phoc_view_get_tiled_box (PhocView               *self,
+   struct wlr_box output_box;
+   wlr_output_layout_get_box (desktop->layout, output->wlr_output, &output_box);
+   struct wlr_box usable_area = output->usable_area;
+-  int x;
++  PhocOutputConfig *oc;
++  int x, width, seam = 0;
+ 
+   usable_area.x += output_box.x;
+   usable_area.y += output_box.y;
+ 
++  /* An output made of two panels with a hinge between them (a `tiling-seam`
++   * in its configuration): the halves stop short of the hinge, which sits in
++   * the middle of the output, rather than each reaching half way into it. */
++  oc = phoc_config_get_output (phoc_server_get_config (phoc_server_get_default ()), output);
++  if (oc && oc->seam > 0)
++    seam = (int) (oc->seam * output_box.width + 0.5);
++
+   switch (dir) {
+   case PHOC_VIEW_TILE_LEFT:
+     x = usable_area.x;
++    if (seam)
++      width = output_box.x + output_box.width / 2 - seam / 2 - x;
++    else
++      width = usable_area.width / 2;
+     break;
+   case PHOC_VIEW_TILE_RIGHT:
+-    x = usable_area.x + (0.5 * usable_area.width);
++    if (seam) {
++      x = output_box.x + output_box.width / 2 + (seam - seam / 2);
++      width = usable_area.x + usable_area.width - x;
++    } else {
++      x = usable_area.x + (0.5 * usable_area.width);
++      width = usable_area.width / 2;
++    }
+     break;
+   default:
+     g_error ("Invalid tiling direction %d", dir);
+@@ -780,7 +798,7 @@ phoc_view_get_tiled_box (PhocView               *self,
+ 
+   box->x = x / priv->scale;
+   box->y = usable_area.y / priv->scale;
+-  box->width = usable_area.width / 2 / priv->scale;
++  box->width = width / priv->scale;
+   box->height = usable_area.height / priv->scale;
+ 
+   return TRUE;
+-- 
+2.43.0
+

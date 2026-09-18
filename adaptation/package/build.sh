@@ -731,6 +731,17 @@ if [ -f "$PHOSH_BIN" ]; then
 else
     echo "NOTE: $PHOSH_BIN not found - building without the patched phosh"
 fi
+# The patched phoc (../shell/phoc-patches/0001): tiled windows stop short of
+# the hinge named by `tiling-seam` in phoc.ini. Version-locked like phosh:
+# see sfduo-phoc-install. Built per ../shell/README.md.
+install -m755 "$SHELLDIR/sfduo-phoc-install" "$PKG/usr/local/sbin/"
+PHOC_BIN="$ROOT/out/phoc/phoc-0.47.0-98211ea-sfduo"
+if [ -f "$PHOC_BIN" ]; then
+    install -Dm755 "$PHOC_BIN" "$PKG/usr/lib/sfduo/phoc/phoc"
+    echo "0.47.0-1~git20250520212245.98211ea.next.phosh.0.47" > "$PKG/usr/lib/sfduo/phoc/version"
+else
+    echo "NOTE: $PHOC_BIN not found - building without the patched phoc"
+fi
 install -Dm644 "$SHELLDIR/sfduo-dock.desktop"       "$PKG/etc/xdg/autostart/sfduo-dock.desktop"
 install -Dm644 "$SHELLDIR/sfduo-brightness.desktop" "$PKG/etc/xdg/autostart/sfduo-brightness.desktop"
 install -Dm644 "$SHELLDIR/dock.json" "$PKG/usr/share/sfduo/dock.json.example"
@@ -857,6 +868,7 @@ rm -f /etc/systemd/system/sfduo-slot-guard.service \
 command -v dconf >/dev/null 2>&1 && dconf update || true
 # the patched shell, if this is the phosh it was built for
 /usr/local/sbin/sfduo-phosh-install || true
+/usr/local/sbin/sfduo-phoc-install || true
 # the shell's CSS for the output scale actually configured (a user may have
 # changed /etc/phosh/phoc.ini - it is a conffile and theirs to change)
 /usr/local/sbin/sfduo-shell-css || true

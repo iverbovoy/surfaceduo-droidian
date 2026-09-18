@@ -1,0 +1,63 @@
+#!/bin/sh
+# sfduo-phoc-install: put the port's patched phoc in place of the packaged
+# one - or, with --restore, put the packaged one back and keep it there.
+#
+# The patched binary is phoc 0.47.0 at Droidian's 98211ea plus
+# adaptation/shell/phoc-patches/0001: with a `tiling-seam` in phoc.ini, tiled
+# windows stop short of the hinge instead of each reaching half way into it.
+# Built against exactly that package's wlroots and libraries, so it is
+# installed only beside exactly that version; a phoc upgrade overwrites it
+# with the new stock binary, which is the safe way for this to stop applying.
+# Same mechanics as sfduo-phosh-install: a marker keeps a restore through the
+# package's postinst, --patched removes it.
+set -e
+OURS=/usr/lib/sfduo/phoc/phoc
+WANT=$(cat /usr/lib/sfduo/phoc/version 2>/dev/null || true)
+BIN=/usr/bin/phoc
+STOCK=/usr/bin/phoc.stock
+KEEP_STOCK=/etc/sfduo/phoc-stock
+
+case "$1" in
+--restore)
+    [ -f "$STOCK" ] || { echo "sfduo-phoc: no $STOCK to restore" >&2; exit 1; }
+    mkdir -p "$(dirname "$KEEP_STOCK")"
+    : > "$KEEP_STOCK"
+    if cmp -s "$STOCK" "$BIN"; then
+        echo "sfduo-phoc: packaged phoc already in place; it now stays through package upgrades"
+    else
+        cp -a "$STOCK" "$BIN.tmp" && mv -f "$BIN.tmp" "$BIN"
+        echo "sfduo-phoc: packaged phoc restored - restart the shell (sudo systemctl restart phosh)"
+    fi
+    echo "sfduo-phoc: it stays through package upgrades until 'sfduo-phoc-install --patched'."
+    echo "sfduo-phoc: tiled windows reach half the hinge into the bezel again on this phoc."
+    exit 0
+    ;;
+--patched)
+    rm -f "$KEEP_STOCK"
+    ;;
+"")
+    if [ -f "$KEEP_STOCK" ]; then
+        echo "sfduo-phoc: packaged phoc kept, as --restore asked ($KEEP_STOCK); 'sfduo-phoc-install --patched' undoes that"
+        exit 0
+    fi
+    ;;
+*)
+    echo "usage: sfduo-phoc-install [--restore | --patched]" >&2
+    exit 2
+    ;;
+esac
+
+[ -f "$OURS" ] && [ -n "$WANT" ] || { echo "sfduo-phoc: no patched binary in this package"; exit 0; }
+HAVE=$(dpkg-query -W -f='${Version}' phoc 2>/dev/null || true)
+if [ "$HAVE" != "$WANT" ]; then
+    echo "sfduo-phoc: phoc is $HAVE, the patched binary is for $WANT - left alone;"
+    echo "sfduo-phoc: tiled windows reach half the hinge into the bezel on this phoc"
+    exit 0
+fi
+if cmp -s "$OURS" "$BIN"; then
+    echo "sfduo-phoc: patched phoc already in place"
+    exit 0
+fi
+[ -f "$STOCK" ] || cp -a "$BIN" "$STOCK"
+cp -a "$OURS" "$BIN.tmp" && chmod 755 "$BIN.tmp" && mv -f "$BIN.tmp" "$BIN"
+echo "sfduo-phoc: patched phoc installed (packaged one kept as $STOCK) - restart the shell (sudo systemctl restart phosh)"

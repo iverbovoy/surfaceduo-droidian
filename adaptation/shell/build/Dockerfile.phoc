@@ -1,0 +1,14 @@
+# Build phoc the way this device's phoc was built: on top of the phosh build
+# image (Droidian rolling, arm64 under qemu, Droidian's libraries pinned above
+# Debian's), plus what debian/control of phoc asks for. libwlroots-dev is
+# Droidian's fork (0.17.4 with the hwcomposer backend) - the whole reason the
+# system wlroots and not the wrap has to be used.
+FROM phosh-duo-build:latest
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends --allow-downgrades \
+      libwlroots-dev libinput-dev libpixman-1-dev libxkbcommon-dev \
+      wayland-protocols libxcb1-dev libgnome-desktop-3-dev libgmobile-dev \
+      libjson-glib-dev gsettings-desktop-schemas libglib2.0-dev \
+      libdrm-dev libseat-dev libegl-dev libgles-dev libgbm-dev \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src

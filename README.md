@@ -23,13 +23,14 @@ Microsoft's debugging (`kernel-packaging/droidian/surfaceduo-perf.config`,
 ## What it looks like
 
 Screenshots of the one output both panels share (2784x1800; the 84 px column
-the hinge hides is in the middle), taken on a from-scratch install of 0.13.0.
-The two-panel shell is **experimental and in development**.
+the hinge hides is in the middle), taken on a from-scratch install of 0.14.2
+at the port's output scale of 2.5. The two-panel shell is **experimental and
+in development**.
 
 | | |
 |---|---|
-| ![two apps, one per panel](docs/img/shell-two-apps.png) | ![the dock across both panels](docs/img/shell-desktop.png) |
-| An app per panel: the dock tiles each window onto the side it was launched from. | The dock, cut by the hinge rather than doubled. |
+| ![the first-run wizard on one panel](docs/img/shell-welcome.png) | ![the dock across both panels](docs/img/shell-desktop.png) |
+| A window on the panel it opened on: the dock tiles it there, and the patched phoc stops it at the hinge rather than half way into it. | The dock, cut by the hinge rather than doubled. |
 | ![the app grid](docs/img/shell-grid.png) | ![the lock screen](docs/img/shell-lockscreen.png) |
 | Swipe up from the dock: every app, dealt across the two panels. | The lock screen, kept off the hinge by CSS alone. |
 
@@ -56,7 +57,7 @@ The two-panel shell is **experimental and in development**.
 | GPS | ✅ | vendor GNSS + geoclue hybris source, ~4 m fixes; needs the geoclue keepalive drop-in from the adaptation (see traps below) |
 | Modem (calls/SMS/LTE) | 🟡 | LTE data works (70-90 ms pings) once the adaptation puts the modem online and on LTE at boot - it comes up offline and on 3G otherwise, see [adaptation/system](adaptation/system/README.md). Incoming SMS arrive; sending SMS and calls not tested yet |
 | Video out (USB-C DP) | ❓ | the whole DisplayPort path sits in the stock device tree and probes cleanly; whether the lanes reach the connector has never been tested - see below |
-| Dual-screen aware UI | 🧪 | experimental, in development: stock phosh spans both panels as one; the adaptation adds a dock across both that tiles each app onto the panel it was launched from, and CSS that keeps the shell's own furniture off the hinge - see [adaptation/shell](adaptation/shell/README.md). The on-screen keyboard and the notification shade still span both panels |
+| Dual-screen aware UI | 🧪 | experimental, in development: stock phosh spans both panels as one; the adaptation adds a dock across both that tiles each app onto the panel it was launched from, CSS that keeps the shell's own furniture off the hinge, and patched phosh and phoc binaries (focus after the app grid closes; tiled windows stop at the hinge) - see [adaptation/shell](adaptation/shell/README.md). The on-screen keyboard and the notification shade still span both panels |
 
 ## Repository layout
 
