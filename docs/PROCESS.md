@@ -3,7 +3,7 @@
 **Decided 2026-09-18 (Ivan).** Planning runs on GitHub: one issue per piece of
 work, one board, no other tracker. This is the rulebook for humans and for AI
 agents working in this repository; it is adapted from the rulebook of a larger
-project of the owner's, cut down to what a one-maintainer port with an outside
+project of the same maintainer, cut down to what a one-maintainer port with an outside
 collaborator needs.
 
 ## The three layers
