@@ -1,0 +1,141 @@
+From ea025042d6cb21d79e05e04971e949d81c000575 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Fri, 18 Sep 2026 21:09:22 +0300
+Subject: [PATCH 2/2] osk: taller key rows on a two-panel display
+
+The output scale is chosen for the whole display there - 2 on the Surface
+Duo, where 2.5 is the panels' density - and 50 px rows come out a fifth
+lower than a thumb wants. 60 puts them back; the surface and its
+exclusive zone follow.
+---
+ src/contrib/util.c   | 15 +++++++++++++++
+ src/contrib/util.h   |  6 ++++++
+ src/phosh-osk-stub.c | 19 ++++++++++++++-----
+ src/pos-osk-widget.c |  6 +++---
+ 4 files changed, 38 insertions(+), 8 deletions(-)
+
+diff --git a/src/contrib/util.c b/src/contrib/util.c
+index add4c37..644b157 100644
+--- a/src/contrib/util.c
++++ b/src/contrib/util.c
+@@ -310,3 +310,18 @@ phosh_create_shm_file (off_t size)
+ 
+   return fd;
+ }
++
++
++static int key_height = 50;
++
++int
++pos_key_height (void)
++{
++  return key_height;
++}
++
++void
++pos_set_key_height (int height)
++{
++  key_height = height;
++}
+diff --git a/src/contrib/util.h b/src/contrib/util.h
+index e0a39d8..c5f6a92 100644
+--- a/src/contrib/util.h
++++ b/src/contrib/util.h
+@@ -30,3 +30,9 @@ gboolean         phosh_error_warnv (const char  *log_domain,
+                                     const gchar *fmt,
+                                     ...) G_GNUC_PRINTF(5, 6);
+ int              phosh_create_shm_file (off_t size);
++
++/* The key rows' height: 50 as designed; taller on a two-panel display
++ * (see phosh-osk-stub.c), where the keyboard is one panel wide and the
++ * output scale is chosen for the whole display rather than the keys. */
++int              pos_key_height     (void);
++void             pos_set_key_height (int height);
+diff --git a/src/phosh-osk-stub.c b/src/phosh-osk-stub.c
+index 678a54e..1ead4ff 100644
+--- a/src/phosh-osk-stub.c
++++ b/src/phosh-osk-stub.c
+@@ -11,6 +11,7 @@
+ 
+ #include "pos-config.h"
+ #include "pos.h"
++#include "util.h"
+ 
+ #include "input-method-unstable-v2-client-protocol.h"
+ #include "phoc-device-state-unstable-v1-client-protocol.h"
+@@ -355,7 +356,7 @@ create_input_surface (PhoshOskStub *self)
+   g_autoptr (PosCompleterManager) completer_manager = NULL;
+   g_autoptr (PosClipboardManager) clipboard_manager = NULL;
+   gboolean force_completion;
+-  int panel;
++  int panel, height;
+ 
+   g_assert (PHOSH_IS_OSK_STUB (self));
+   g_assert (self->seat);
+@@ -373,12 +374,20 @@ create_input_surface (PhoshOskStub *self)
+ 
+   force_completion = !!(_debug_flags & POS_DEBUG_FLAG_FORCE_COMPLETEION);
+   panel = panel_width_for_seam ();
+-  if (panel)
+-    g_debug ("Two-panel display: keyboard on the right panel, %d px wide", panel);
++  if (panel) {
++    /* One panel wide, and taller keys: on a two-panel display the output
++     * scale is chosen for the whole display (2 on the Surface Duo, where
++     * 2.5 is the panels' density) and 50 px rows come out a fifth lower
++     * than a thumb wants; 60 puts them back. */
++    pos_set_key_height (60);
++    g_debug ("Two-panel display: keyboard on the right panel, %d px wide, %d px rows",
++             panel, pos_key_height ());
++  }
++  height = pos_key_height () * (INPUT_SURFACE_HEIGHT / 50);
+   self->input_surface = g_object_new (POS_TYPE_INPUT_SURFACE,
+                                       /* layer-surface */
+                                       "layer-shell", self->layer_shell,
+-                                      "height", INPUT_SURFACE_HEIGHT,
++                                      "height", height,
+                                       "width", panel,
+                                       "anchor", panel ?
+                                       (ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
+@@ -388,7 +397,7 @@ create_input_surface (PhoshOskStub *self)
+                                        ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT),
+                                       "layer", ZWLR_LAYER_SHELL_V1_LAYER_TOP,
+                                       "kbd-interactivity", FALSE,
+-                                      "exclusive-zone", INPUT_SURFACE_HEIGHT,
++                                      "exclusive-zone", height,
+                                       "namespace", "osk",
+                                       /* pos-input-surface */
+                                       "input-method", im,
+diff --git a/src/pos-osk-widget.c b/src/pos-osk-widget.c
+index 468a720..1f8525a 100644
+--- a/src/pos-osk-widget.c
++++ b/src/pos-osk-widget.c
+@@ -24,7 +24,7 @@
+ 
+ #include <math.h>
+ 
+-#define KEY_HEIGHT 50
++#define KEY_HEIGHT 50   /* the design; pos_key_height () is what is used */
+ #define KEY_ICON_SIZE 16
+ 
+ /* Default us layout */
+@@ -1409,7 +1409,7 @@ pos_osk_widget_size_allocate (GtkWidget *widget, GdkRectangle *allocation)
+     guint off_y;
+ 
+     layer->key_width = self->width / layer->width;
+-    layer->key_height = KEY_HEIGHT;
++    layer->key_height = pos_key_height ();
+     layer->offset_x = 0.5 * (self->width - (layer->width * layer->key_width));
+     off_y = self->height - (layer->n_rows * layer->key_height);
+ 
+@@ -1492,7 +1492,7 @@ pos_osk_widget_get_preferred_height (GtkWidget       *widget,
+ {
+   PosOskWidget *self = POS_OSK_WIDGET (widget);
+ 
+-  *minimum_height = *natural_height = KEY_HEIGHT * self->layout.n_rows;
++  *minimum_height = *natural_height = pos_key_height () * self->layout.n_rows;
+ 
+ }
+ 
+-- 
+2.43.0
+

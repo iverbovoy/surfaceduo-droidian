@@ -494,7 +494,10 @@ of one panel, computed from the monitor's geometry and the seam - the same
 arithmetic as the CSS and the dock. In portrait the panels are stacked and it
 spans the output as before. The right panel always, for now; following the
 window being typed into would need phosh to tell the keyboard where that
-window is. Built with `build/Dockerfile.osk` from droidian/phosh-osk-stub at
+window is. Since the output scale is 2 (0.15.4) the key rows are 60 px
+instead of the stub's 50 on such a display (`osk-patches/0002`): the scale is
+chosen for the whole display, and 50 px rows came out a fifth lower than at
+2.5. Built with `build/Dockerfile.osk` from droidian/phosh-osk-stub at
 43ef51f, `meson setup _build --prefix=/usr --libdir=lib/aarch64-linux-gnu`,
 `ninja -C _build`; the binary goes to `out/osk/`.
 
