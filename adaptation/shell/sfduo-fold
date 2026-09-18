@@ -94,8 +94,8 @@ FULL_AT = num("FULL_AT", 0.45)         # a half this covered is drawn whole inst
 STAGGER = num("STAGGER", 0.35)         # how far the pieces travel out of step with each other
 
 # ---- how it behaves ------------------------------------------------------------
-LEAD_MS = num("LEAD", 70.0)            # extrapolate the hinge by this much: the sensor lags
-ANGLE_HZ = num("ANGLE_HZ", 26.0)       # rad/s: the drawn angle's own spring, over the lead's noise
+LEAD_MS = num("LEAD", 0.0)             # sfduo-posture carries the estimate forward itself now
+ANGLE_HZ = num("ANGLE_HZ", 0.0)        # rad/s: a spring of our own over it; 0 follows outright
 RATE_EMA = num("RATE_EMA", 0.15)       # how much of a new rate to believe
 LEAD_MAX = num("LEAD_MAX", 12.0)       # never lead by more than this many degrees
 FADE_MS = num("FADE", 120.0)           # the overlay's own fade at the ends
@@ -927,12 +927,15 @@ class Fold:
         now = clock.get_frame_time()
         self.frames.append(now)
         if self.target is not None:
-            dt = min(0.05, (now - self.ticked) / 1e6) if self.ticked else 0.016
-            self.ticked = now
-            acceleration = (ANGLE_HZ * ANGLE_HZ * (self.target - self.angle)
-                            - 2 * ANGLE_HZ * self.angle_rate)
-            self.angle_rate += acceleration * dt
-            self.angle += self.angle_rate * dt
+            if ANGLE_HZ <= 0:
+                self.angle = self.target      # the daemon's estimate is the motion
+            else:
+                dt = min(0.05, (now - self.ticked) / 1e6) if self.ticked else 0.016
+                self.ticked = now
+                acceleration = (ANGLE_HZ * ANGLE_HZ * (self.target - self.angle)
+                                - 2 * ANGLE_HZ * self.angle_rate)
+                self.angle_rate += acceleration * dt
+                self.angle += self.angle_rate * dt
         widget.queue_render()
         return self.active
 

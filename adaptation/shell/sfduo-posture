@@ -15,9 +15,10 @@ readings are honest at rest and coarse in motion.
 This daemon holds the sensorfw session for its life and publishes on the
 session bus, as org.sfduo.Posture at /org/sfduo/Posture:
 
-    Angle    double   the hinge, smoothed: a critically damped spring turns
-                      the 10 Hz steps into a value that moves at 60 Hz
-                      (Mac Duo's design; 16 rad/s)
+    Angle    double   where the hinge is now, sixty times a second: the
+                      readings arrive ten times a second in whole degrees,
+                      fifteen apart during a brisk fold, and what goes out is
+                      an estimate carried forward between them
     Raw      uint32   the last reading as sensorfw gave it
     Posture  string   closed, laptop, flat, folded, or between - with
                       hysteresis, and only after two readings agree
@@ -27,6 +28,7 @@ session bus, as org.sfduo.Posture at /org/sfduo/Posture:
 PropertiesChanged carries every change. The dock, the fold effect and the
 phone mode read these instead of talking to sensorfw themselves (#55).
 """
+import math
 import sys
 import time
 
@@ -44,9 +46,29 @@ BUS_NAME = "org.sfduo.Posture"
 OBJECT_PATH = "/org/sfduo/Posture"
 IFACE = "org.sfduo.Posture"
 
-POLL_MS = 100                 # the sensor's own rate
-FRAME_MS = 16                 # the spring's clock while it moves
-SPRING_HZ = 16.0              # rad/s: follows in ~150 ms, no overshoot
+POLL_MS = 40                  # faster than the sensor changes: notice a change sooner
+FRAME_MS = 16                 # the estimate's own clock while it moves
+# A reading every hundred milliseconds, in whole degrees, fifteen at a time
+# when the hinge is moving. Three ways to turn that into motion, measured
+# against a real fold (the frame-to-frame change of speed is what the eye
+# reads as jitter):
+#
+#   a spring, 16 rad/s    the speed changes every single frame - median 0.13
+#                         degrees, ninth decile 0.51: a wobble at the sensor's
+#                         own rate, because a spring accelerates after each
+#                         step and then eases off
+#   an alpha-beta filter  the speed is guessed from the surprise and carried
+#                         forward: it ran 26 degrees past the end of the fold
+#                         before a reading contradicted it
+#   gliding               the estimate simply travels at a constant speed
+#                         towards the last reading, arriving in about one and
+#                         a half readings' time: no change of speed at all in
+#                         nine frames out of ten, nothing past the end
+#
+# So it glides. The speed is set when a reading arrives and held until the
+# next one; arriving a little later than the next reading is due keeps it
+# moving rather than stalling, and it never passes the reading it is going to.
+ARRIVE = 1.5                  # readings' worth of time to reach the last one
 MOVING_DEG_S = 20.0           # angular speed that counts as the hinge turning
 STILL_AFTER_MS = 400          # no new reading for this long: not moving
 CONFIRM = 2                   # readings in a row before a posture changes
@@ -94,14 +116,13 @@ class Posture:
         self.sensor_session = None
         self.raw = None
         self.raw_at = 0.0
-        self.angle = None             # the spring's value
-        self.velocity_spring = 0.0
-        self.spring_timer = None
+        self.angle = None             # where the hinge is, carried between readings
+        self.velocity = 0.0           # degrees a second, estimated with it
+        self.clock = None
         self.last_tick = 0.0
         self.posture = "between"
         self.candidate = ("between", 0)
         self.moving = False
-        self.velocity = 0.0           # deg/s, from the raw readings
         self.props = {}
         self.registration = None
 
@@ -158,44 +179,47 @@ class Posture:
         reading = value[0]
         degrees = int(reading[1]) if isinstance(reading, tuple) else int(reading)
         now = time.monotonic()
-        if self.raw is not None and degrees != self.raw and now > self.raw_at:
-            self.velocity = (degrees - self.raw) / (now - self.raw_at)
-        if degrees != self.raw:
-            self.raw_at = now
-        changed = degrees != self.raw
-        self.raw = degrees
+        if degrees == self.raw:
+            return
+        if self.raw is None:                  # the first reading: nothing to travel from
+            self.raw, self.raw_at = degrees, now
+            self.angle, self.velocity = float(degrees), 0.0
+            self._update_posture(degrees)
+            self._publish({"Angle": self.angle, "Raw": degrees})
+            return
+        interval = max(0.05, min(0.3, now - self.raw_at))
+        self.velocity = (degrees - self.angle) / (ARRIVE * interval)
+        self.raw, self.raw_at = degrees, now
         self._update_posture(degrees)
         self._update_moving(now)
-        if self.angle is None:
-            self.angle = float(degrees)       # the first reading: no motion to smooth
-            self._publish({"Angle": self.angle, "Raw": degrees})
-        elif changed:
-            self._publish({"Raw": degrees})
-            self._start_spring()
+        self._publish({"Raw": degrees})
+        self._start_clock()
 
-    # ---- the spring ---------------------------------------------------------
+    # ---- gliding to the last reading ---------------------------------------
 
-    def _start_spring(self):
-        if self.spring_timer is None:
+    def _start_clock(self):
+        if self.clock is None:
             self.last_tick = time.monotonic()
-            self.spring_timer = GLib.timeout_add(FRAME_MS, self._tick)
+            self.clock = GLib.timeout_add(FRAME_MS, self._tick)
 
     def _tick(self):
         now = time.monotonic()
-        dt = min(now - self.last_tick, 0.05)     # clamped: stable while hz * dt < 2
+        dt = min(now - self.last_tick, 0.05)
         self.last_tick = now
-        target = float(self.raw)
-        acceleration = SPRING_HZ * SPRING_HZ * (target - self.angle) - 2 * SPRING_HZ * self.velocity_spring
-        self.velocity_spring += acceleration * dt
-        self.angle += self.velocity_spring * dt
-        settled = abs(target - self.angle) < 0.05 and abs(self.velocity_spring) < 0.5
-        if settled:
-            self.angle = target
-            self.velocity_spring = 0.0
-            self.spring_timer = None
+        angle = self.angle + self.velocity * dt
+        arrived = ((self.velocity > 0 and angle >= self.raw)
+                   or (self.velocity < 0 and angle <= self.raw)
+                   or self.velocity == 0)
+        if arrived:
+            self.angle, self.velocity = float(self.raw), 0.0
+            self.clock = None
+            self._publish({"Angle": self.angle})
+            self._update_moving(now)
+            return False
+        self.angle = angle
         self._publish({"Angle": self.angle})
         self._update_moving(now)
-        return not settled
+        return True
 
     # ---- posture and motion ------------------------------------------------
 
@@ -214,8 +238,6 @@ class Posture:
 
     def _update_moving(self, now):
         moving = abs(self.velocity) >= MOVING_DEG_S and (now - self.raw_at) * 1000 < STILL_AFTER_MS
-        if not moving:
-            self.velocity = 0.0 if (now - self.raw_at) * 1000 >= STILL_AFTER_MS else self.velocity
         if moving != self.moving:
             self.moving = moving
             self._publish({"Moving": moving, "Velocity": self.velocity})
