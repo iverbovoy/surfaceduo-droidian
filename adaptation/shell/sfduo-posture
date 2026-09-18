@@ -1,0 +1,280 @@
+#!/usr/bin/python3
+"""sfduo-posture: the hinge, read once and told to everyone.
+
+    sfduo-posture            run (the session autostarts it)
+    sfduo-posture --watch    print what the running one publishes
+
+The Duo's hinge angle comes from sensorfw on the system bus (the port's
+rebuilt sensorfw, `sfduo-sensorfw-install`): a session to request, a
+sensor to start, a property to poll. It arrives at about 10 Hz in whole
+degrees, in steps of 15 degrees or more when the device is folded briskly,
+and it is a fusion of both halves' accelerometers, gyroscopes and
+magnetometers on the SLPI rather than an encoder in the hinge - so the
+readings are honest at rest and coarse in motion.
+
+This daemon holds the sensorfw session for its life and publishes on the
+session bus, as org.sfduo.Posture at /org/sfduo/Posture:
+
+    Angle    double   the hinge, smoothed: a critically damped spring turns
+                      the 10 Hz steps into a value that moves at 60 Hz
+                      (Mac Duo's design; 16 rad/s)
+    Raw      uint32   the last reading as sensorfw gave it
+    Posture  string   closed, laptop, flat, folded, or between - with
+                      hysteresis, and only after two readings agree
+    Moving   boolean  the hinge is turning (over 20 degrees a second)
+    Velocity double   degrees a second, signed: positive opening
+
+PropertiesChanged carries every change. The dock, the fold effect and the
+phone mode read these instead of talking to sensorfw themselves (#55).
+"""
+import sys
+import time
+
+import gi
+
+gi.require_version("GLib", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+SENSORFW = "com.nokia.SensorService"
+SENSOR_MANAGER = "/SensorManager"
+HINGE_PATH = "/SensorManager/hingesensor"
+HINGE_IFACE = "local.HingeSensor"
+
+BUS_NAME = "org.sfduo.Posture"
+OBJECT_PATH = "/org/sfduo/Posture"
+IFACE = "org.sfduo.Posture"
+
+POLL_MS = 100                 # the sensor's own rate
+FRAME_MS = 16                 # the spring's clock while it moves
+SPRING_HZ = 16.0              # rad/s: follows in ~150 ms, no overshoot
+MOVING_DEG_S = 20.0           # angular speed that counts as the hinge turning
+STILL_AFTER_MS = 400          # no new reading for this long: not moving
+CONFIRM = 2                   # readings in a row before a posture changes
+
+# Postures by angle, with the band a reading must leave to change posture
+# (hysteresis): [name, low, high]. What is not in a band is "between".
+POSTURES = [
+    ("closed", -1, 10),
+    ("laptop", 60, 130),
+    ("flat", 150, 210),
+    ("folded", 340, 361),
+]
+HYSTERESIS = 5
+
+INTROSPECTION = """
+<node>
+  <interface name="org.sfduo.Posture">
+    <property name="Angle" type="d" access="read"/>
+    <property name="Raw" type="u" access="read"/>
+    <property name="Posture" type="s" access="read"/>
+    <property name="Moving" type="b" access="read"/>
+    <property name="Velocity" type="d" access="read"/>
+  </interface>
+</node>
+"""
+
+
+def log(message):
+    print(f"sfduo-posture: {message}", file=sys.stderr, flush=True)
+
+
+def posture_for(angle, current):
+    """The posture an angle is in, sticky to `current` within the hysteresis."""
+    for name, low, high in POSTURES:
+        lo, hi = (low - HYSTERESIS, high + HYSTERESIS) if name == current else (low, high)
+        if lo <= angle <= hi:
+            return name
+    return "between"
+
+
+class Posture:
+    def __init__(self):
+        self.system = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        self.session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self.sensor_session = None
+        self.raw = None
+        self.raw_at = 0.0
+        self.angle = None             # the spring's value
+        self.velocity_spring = 0.0
+        self.spring_timer = None
+        self.last_tick = 0.0
+        self.posture = "between"
+        self.candidate = ("between", 0)
+        self.moving = False
+        self.velocity = 0.0           # deg/s, from the raw readings
+        self.props = {}
+        self.registration = None
+
+        node = Gio.DBusNodeInfo.new_for_xml(INTROSPECTION)
+        self.registration = self.session.register_object(
+            OBJECT_PATH, node.interfaces[0], None, self._get_property, None)
+        Gio.bus_own_name_on_connection(self.session, BUS_NAME, Gio.BusNameOwnerFlags.NONE,
+                                       None, lambda *_a: log("name lost"))
+        # sensorfw restarting drops the session: request again
+        self.system.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus",
+                                     "NameOwnerChanged", "/org/freedesktop/DBus", SENSORFW,
+                                     Gio.DBusSignalFlags.NONE,
+                                     lambda *_a: GLib.timeout_add(1500, self._connect))
+        self._connect()
+        GLib.timeout_add(POLL_MS, self._poll)
+
+    # ---- sensorfw --------------------------------------------------------
+
+    def _connect(self):
+        try:
+            self.system.call_sync(SENSORFW, SENSOR_MANAGER, "local.SensorManager", "loadPlugin",
+                                  GLib.Variant("(s)", ("hingesensor",)), None,
+                                  Gio.DBusCallFlags.NONE, 3000, None)
+            reply = self.system.call_sync(SENSORFW, SENSOR_MANAGER, "local.SensorManager",
+                                          "requestSensor", GLib.Variant("(sx)", ("hingesensor", 0)),
+                                          None, Gio.DBusCallFlags.NONE, 3000, None)
+            self.sensor_session = reply[0]
+            self.system.call_sync(SENSORFW, HINGE_PATH, HINGE_IFACE, "start",
+                                  GLib.Variant("(i)", (self.sensor_session,)), None,
+                                  Gio.DBusCallFlags.NONE, 3000, None)
+            log(f"hinge sensor session {self.sensor_session}")
+        except GLib.Error as err:
+            self.sensor_session = None
+            log(f"no hinge sensor yet: {err.message} (is the rebuilt sensorfw installed? sudo sfduo-sensorfw-install)")
+        return False
+
+    def _poll(self):
+        if self.sensor_session is None:
+            return True
+        self.system.call(SENSORFW, HINGE_PATH, "org.freedesktop.DBus.Properties", "Get",
+                         GLib.Variant("(ss)", (HINGE_IFACE, "hinge")), None,
+                         Gio.DBusCallFlags.NONE, 500, None, self._on_reading)
+        return True
+
+    def _on_reading(self, conn, result):
+        try:
+            value = conn.call_finish(result)
+        except GLib.Error as err:
+            log(f"reading failed: {err.message}")
+            self.sensor_session = None
+            GLib.timeout_add(2000, self._connect)
+            return
+        # (timestamp, degrees) in a variant
+        reading = value[0]
+        degrees = int(reading[1]) if isinstance(reading, tuple) else int(reading)
+        now = time.monotonic()
+        if self.raw is not None and degrees != self.raw and now > self.raw_at:
+            self.velocity = (degrees - self.raw) / (now - self.raw_at)
+        if degrees != self.raw:
+            self.raw_at = now
+        changed = degrees != self.raw
+        self.raw = degrees
+        self._update_posture(degrees)
+        self._update_moving(now)
+        if self.angle is None:
+            self.angle = float(degrees)       # the first reading: no motion to smooth
+            self._publish({"Angle": self.angle, "Raw": degrees})
+        elif changed:
+            self._publish({"Raw": degrees})
+            self._start_spring()
+
+    # ---- the spring ---------------------------------------------------------
+
+    def _start_spring(self):
+        if self.spring_timer is None:
+            self.last_tick = time.monotonic()
+            self.spring_timer = GLib.timeout_add(FRAME_MS, self._tick)
+
+    def _tick(self):
+        now = time.monotonic()
+        dt = min(now - self.last_tick, 0.05)     # clamped: stable while hz * dt < 2
+        self.last_tick = now
+        target = float(self.raw)
+        acceleration = SPRING_HZ * SPRING_HZ * (target - self.angle) - 2 * SPRING_HZ * self.velocity_spring
+        self.velocity_spring += acceleration * dt
+        self.angle += self.velocity_spring * dt
+        settled = abs(target - self.angle) < 0.05 and abs(self.velocity_spring) < 0.5
+        if settled:
+            self.angle = target
+            self.velocity_spring = 0.0
+            self.spring_timer = None
+        self._publish({"Angle": self.angle})
+        self._update_moving(now)
+        return not settled
+
+    # ---- posture and motion ------------------------------------------------
+
+    def _update_posture(self, degrees):
+        name = posture_for(degrees, self.posture)
+        if name == self.posture:
+            self.candidate = (name, 0)
+            return
+        cand, count = self.candidate
+        count = count + 1 if cand == name else 1
+        self.candidate = (name, count)
+        if count >= CONFIRM:
+            self.posture = name
+            self.candidate = (name, 0)
+            self._publish({"Posture": name})
+
+    def _update_moving(self, now):
+        moving = abs(self.velocity) >= MOVING_DEG_S and (now - self.raw_at) * 1000 < STILL_AFTER_MS
+        if not moving:
+            self.velocity = 0.0 if (now - self.raw_at) * 1000 >= STILL_AFTER_MS else self.velocity
+        if moving != self.moving:
+            self.moving = moving
+            self._publish({"Moving": moving, "Velocity": self.velocity})
+
+    # ---- D-Bus ------------------------------------------------------------
+
+    def _get_property(self, conn, sender, path, iface, name):
+        if name == "Angle":
+            return GLib.Variant("d", self.angle if self.angle is not None else 0.0)
+        if name == "Raw":
+            return GLib.Variant("u", self.raw if self.raw is not None else 0)
+        if name == "Posture":
+            return GLib.Variant("s", self.posture)
+        if name == "Moving":
+            return GLib.Variant("b", self.moving)
+        if name == "Velocity":
+            return GLib.Variant("d", self.velocity)
+        return None
+
+    def _publish(self, changed):
+        for key, value in changed.items():
+            self.props[key] = value
+        variants = {}
+        for key, value in changed.items():
+            sig = {"Angle": "d", "Raw": "u", "Posture": "s", "Moving": "b", "Velocity": "d"}[key]
+            variants[key] = GLib.Variant(sig, value)
+        try:
+            self.session.emit_signal(None, OBJECT_PATH, "org.freedesktop.DBus.Properties",
+                                     "PropertiesChanged",
+                                     GLib.Variant("(sa{sv}as)", (IFACE, variants, [])))
+        except GLib.Error as err:
+            log(f"emit: {err.message}")
+
+
+def watch():
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+
+    def on_change(conn, sender, path, iface, signal, params):
+        changed = params[1]
+        print(" ".join(f"{k}={changed[k]:.1f}" if isinstance(changed[k], float) else f"{k}={changed[k]}"
+                       for k in changed.keys()), flush=True)
+    bus.signal_subscribe(None, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                         OBJECT_PATH, IFACE, Gio.DBusSignalFlags.NONE, on_change)
+    try:
+        value = bus.call_sync(BUS_NAME, OBJECT_PATH, "org.freedesktop.DBus.Properties", "GetAll",
+                              GLib.Variant("(s)", (IFACE,)), None, Gio.DBusCallFlags.NONE, 1000, None)
+        print("now:", {k: (round(v, 1) if isinstance(v, float) else v) for k, v in value[0].items()}, flush=True)
+    except GLib.Error as err:
+        sys.exit(f"sfduo-posture: not running? {err.message}")
+    GLib.MainLoop().run()
+
+
+def main(argv):
+    if "--watch" in argv:
+        watch()
+        return
+    Posture()
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

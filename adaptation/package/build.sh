@@ -788,6 +788,10 @@ else
     echo "NOTE: $OSK_BIN not found - building without the patched keyboard"
 fi
 install -Dm644 "$SHELLDIR/sfduo-dock.desktop"       "$PKG/etc/xdg/autostart/sfduo-dock.desktop"
+# The hinge, read once and told to everyone: org.sfduo.Posture on the
+# session bus - the smoothed angle, the posture, whether it is moving (#55)
+install -m755  "$SHELLDIR/sfduo-posture"            "$PKG/usr/local/bin/"
+install -Dm644 "$SHELLDIR/sfduo-posture.desktop"    "$PKG/etc/xdg/autostart/sfduo-posture.desktop"
 install -Dm644 "$SHELLDIR/sfduo-brightness.desktop" "$PKG/etc/xdg/autostart/sfduo-brightness.desktop"
 install -Dm644 "$SHELLDIR/dock.json" "$PKG/usr/share/sfduo/dock.json.example"
 # The output scale (2026-09-18): Droidian's generic phoc.ini says 3, which

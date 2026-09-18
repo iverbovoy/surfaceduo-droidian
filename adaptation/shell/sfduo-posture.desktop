@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Surface Duo posture
+Comment=Reads the hinge once and publishes the angle and the posture on the session bus
+Exec=/usr/local/bin/sfduo-posture
+Icon=phone-symbolic
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-Phase=Applications
