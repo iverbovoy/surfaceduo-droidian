@@ -1,0 +1,107 @@
+#!/usr/bin/python3
+"""sfduo-shell-css: write the shell's gtk.css for the output scale in use.
+
+    sfduo-shell-css [--scale S] [--template FILE] [-o FILE]
+
+The shell's stylesheet keeps phosh's own furniture off the hinge with margins
+in logical pixels, and logical pixels depend on the output scale: at scale 3
+the two panels are 928x600 with the hinge at [450, 478], at 2.5 they are
+1113x720 with it at [540, 573]. GTK CSS cannot compute, so this does, from
+the panel geometry that does not change - two 1350x1800 panels with 84 px of
+hinge between them - and the scale.
+
+The scale comes from phoc's configuration unless given: /etc/phosh/phoc.ini
+if it exists (phosh-session prefers it), /usr/share/phosh/phoc.ini otherwise,
+the [output:HWCOMPOSER-1] section. The package runs this at build time for
+the scale it ships; run it again (as root) after changing the scale, then
+restart the shell.
+"""
+import argparse
+import configparser
+import re
+import sys
+
+PANEL_W, PANEL_H, HINGE = 1350, 1800, 84      # physical, one panel and the gap
+SPAN = 2 * PANEL_W + HINGE                    # 2784
+TOPBAR_TAKEN = 136        # the indicators and half the clock, measured at scale 3
+GRID_PAD = 18             # each grid button's side padding
+GRID_SPACING = 6          # phosh's column spacing
+
+TEMPLATE = "/usr/share/sfduo/gtk.css.in"
+OUTPUT = "/usr/share/sfduo/gtk.css"
+
+
+def scale_from_phoc():
+    for path in ("/etc/phosh/phoc.ini", "/usr/share/phosh/phoc.ini"):
+        cfg = configparser.ConfigParser(strict=False)
+        try:
+            with open(path) as fp:
+                cfg.read_file(fp)
+        except OSError:
+            continue
+        if cfg.has_option("output:HWCOMPOSER-1", "scale"):
+            return float(cfg.get("output:HWCOMPOSER-1", "scale")), path
+        return 1.0, path        # phoc's default when the section says nothing
+    return 1.0, None
+
+
+def numbers(scale):
+    """The logical geometry the way phoc rounds it: the output truncated,
+    a panel rounded, the hinge whatever is left between the two panels."""
+    w = int(SPAN / scale)
+    h = int(PANEL_H / scale)
+    left = round(PANEL_W / scale)
+    right = w - left                  # the right panel starts here
+    hinge = right - left
+    # the app grid: six columns, never seven (an odd count straddles the hinge)
+    row = w - GRID_SPACING
+    child = (row - 5 * GRID_SPACING) // 6 - 4
+    return {
+        "SCALE": f"{scale:g}", "W": w, "H": h,
+        "LEFT": left, "RIGHT": right, "HINGE": hinge,
+        "TOPPAD": right + left // 2 - TOPBAR_TAKEN,
+        "OFFGRID": 2 * max(w, h),
+        "GRIDROW": row, "GRIDCHILD": child, "GRIDMIN": child - 2 * GRID_PAD,
+    }
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--scale", type=float)
+    ap.add_argument("--template", default=TEMPLATE)
+    ap.add_argument("-o", "--output", default=OUTPUT)
+    ap.add_argument("--print", action="store_true", help="show the numbers and exit")
+    args = ap.parse_args(argv[1:])
+    if args.scale is not None:
+        scale, where = args.scale, "the command line"
+    else:
+        scale, where = scale_from_phoc()
+    if scale <= 0:
+        sys.exit(f"sfduo-shell-css: scale {scale} makes no sense")
+    values = numbers(scale)
+    if args.print:
+        for k, v in values.items():
+            print(f"{k}={v}")
+        return
+    with open(args.template) as fp:
+        text = fp.read()
+    missing = set()
+
+    def fill(match):
+        key = match.group(1)
+        if key not in values:
+            missing.add(key)
+            return match.group(0)
+        return str(values[key])
+
+    out = re.sub(r"@([A-Z]+)@", fill, text)
+    if missing:
+        sys.exit(f"sfduo-shell-css: no value for {', '.join(sorted(missing))}")
+    with open(args.output, "w") as fp:
+        fp.write(out)
+    print(f"sfduo-shell-css: {args.output} for scale {scale:g} ({where}): "
+          f"{values['W']}x{values['H']}, hinge [{values['LEFT']}, {values['RIGHT']}]")
+
+
+if __name__ == "__main__":
+    main(sys.argv)

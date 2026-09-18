@@ -17,8 +17,9 @@
 # twice it undoes itself. Nothing here talks to the compositor directly;
 # everything is a protocol phoc already speaks.
 #
-# The halves phoc tiles are exactly half the output, which is 14 logical
-# pixels into the hinge on each inner edge. Living with that is deliberate for
+# The halves phoc tiles are exactly half the output, which is half the hinge
+# (14 logical pixels at scale 3, 17 at 2.5) into it on each inner edge -
+# the hinge column is the middle of the span. Living with that is deliberate for
 # now - the alternative is a patch to phoc's view_arrange_tiled to read the
 # same gmobile cutout the shell CSS is built around.
 
@@ -70,7 +71,25 @@ PLACED = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-placed.j
 APP_IDS = os.path.expanduser("~/.config/sfduo/app-ids.json")   # desktop id -> what its window is called
 PANEL_HEIGHT = 32         # phosh's top bar
 HOME_BAR_HEIGHT = 15      # phosh's home bar, under the dock
-SCREEN_HEIGHT = 600       # logical, landscape - like every other number here
+
+
+def output_size():
+    """The output's logical size, asked of the compositor: 928x600 at phoc's
+    scale 3, 1113x720 at 2.5. Every other number here is logical too, and
+    the shell's furniture (the 32 px top bar, this dock's 84 px strip) keeps
+    its logical size across scales, so only the span has to be asked for.
+    Landscape is assumed, like everywhere else in this file."""
+    display = Gdk.Display.get_default()
+    monitor = None
+    if display is not None:
+        monitor = display.get_primary_monitor() or display.get_monitor(0)
+    if monitor is None:
+        return 928, 600
+    geometry = monitor.get_geometry()
+    return geometry.width, geometry.height
+
+
+SCREEN_WIDTH, SCREEN_HEIGHT = output_size()
 STAGE_HEIGHT = SCREEN_HEIGHT - PANEL_HEIGHT   # everything below the top bar
 EDGE = 22                 # the gesture band along the bottom of a busy panel
 CLOSE_PX = 220            # a swipe this long over an app closes it, not just hides it

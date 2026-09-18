@@ -698,6 +698,7 @@ install -Dm644 "$SYSTEM/dconf/50-sfduo-phoc"       "$PKG/etc/dconf/db/local.d/50
 install -Dm644 "$SYSTEM/dconf/locks/50-sfduo-phoc" "$PKG/etc/dconf/db/local.d/locks/50-sfduo-phoc"
 install -Dm644 "$SYSTEM/dconf/profile-user"        "$PKG/etc/dconf/profile/user"
 install -Dm644 "$SYSTEM/dconf/51-sfduo-background" "$PKG/etc/dconf/db/local.d/51-sfduo-background"
+install -Dm644 "$SYSTEM/dconf/52-sfduo-idle"       "$PKG/etc/dconf/db/local.d/52-sfduo-idle"
 # A clean image has no `dconf` to compile these with until the shell's setup
 # step has run, and until then neither the lock nor the black background
 # would apply. Ship the database compiled; postinst's `dconf update` rebuilds
@@ -732,8 +733,23 @@ else
 fi
 install -Dm644 "$SHELLDIR/sfduo-dock.desktop"       "$PKG/etc/xdg/autostart/sfduo-dock.desktop"
 install -Dm644 "$SHELLDIR/sfduo-brightness.desktop" "$PKG/etc/xdg/autostart/sfduo-brightness.desktop"
-install -Dm644 "$SHELLDIR/gtk.css"   "$PKG/usr/share/sfduo/gtk.css"
 install -Dm644 "$SHELLDIR/dock.json" "$PKG/usr/share/sfduo/dock.json.example"
+# The output scale (2026-09-18): Droidian's generic phoc.ini says 3, which
+# makes the panels 928x600 logical - a phone's worth of space, in which GNOME
+# Calculator does not fit. 2.5 is Android's density for these panels and
+# gives 1113x720. phosh-session takes /etc/phosh/phoc.ini whole when it is
+# there, so the package ships Droidian's file with the one line changed. The
+# shell's CSS depends on the scale, so it is a template filled in by
+# sfduo-shell-css: here for the scale shipped, and again in postinst for
+# whatever phoc.ini is in place by then. A conffile: a user's edit survives
+# an upgrade.
+install -Dm644 "$SHELLDIR/phoc.ini"        "$PKG/etc/phosh/phoc.ini"
+install -Dm644 "$SHELLDIR/gtk.css.in"      "$PKG/usr/share/sfduo/gtk.css.in"
+install -m755  "$SHELLDIR/sfduo-shell-css" "$PKG/usr/local/sbin/"
+SHELL_SCALE=$(sed -n '/^\[output:HWCOMPOSER-1\]/,/^\[/{s/^scale = //p}' "$SHELLDIR/phoc.ini" | head -1)
+python3 "$SHELLDIR/sfduo-shell-css" --scale "$SHELL_SCALE" \
+    --template "$SHELLDIR/gtk.css.in" -o "$PKG/usr/share/sfduo/gtk.css"
+echo "/etc/phosh/phoc.ini" >> "$PKG/DEBIAN/conffiles"
 
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: adaptation-droidian-surfaceduo
@@ -841,6 +857,9 @@ rm -f /etc/systemd/system/sfduo-slot-guard.service \
 command -v dconf >/dev/null 2>&1 && dconf update || true
 # the patched shell, if this is the phosh it was built for
 /usr/local/sbin/sfduo-phosh-install || true
+# the shell's CSS for the output scale actually configured (a user may have
+# changed /etc/phosh/phoc.ini - it is a conffile and theirs to change)
+/usr/local/sbin/sfduo-shell-css || true
 # The shell's CSS has to live in the user's own config - GTK reads it from
 # nowhere else. Link it rather than copy it, so an upgrade reaches it; a file
 # somebody put there themselves is left alone. The dock's config directory is

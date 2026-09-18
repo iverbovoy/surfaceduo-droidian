@@ -38,7 +38,7 @@ The two-panel shell is **experimental and in development**.
 | Subsystem | Status | Notes |
 |---|---|---|
 | Boot (RAM-boot) | ✅ | `fastboot boot`, no flashing required for testing |
-| Both displays | ✅ | Phosh session, panel power management works |
+| Both displays | ✅ | Phosh session, panel power management works; output scale 2.5 (1113x720 logical, Android's density) since 0.14.1 - Droidian's generic 3 gave a phone's worth of space |
 | Touch | ✅ | MS D5 controller: kernel spi-hid → vendor HAL → uinput + udev rule |
 | USB networking + ssh | ✅ | RNDIS gadget, 172.16.42.1 |
 | System stability | ✅ | unlimited uptime once the ADSP is booted at start (adaptation handles it) |

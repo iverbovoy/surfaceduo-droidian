@@ -1,0 +1,15 @@
+# Surface Duo: the screen does not blank and lock on its own. Closing the
+# device is what puts it to sleep (the hall sensor, adaptation/system), and
+# an open Duo on a desk is being looked at. The backlight still dims after
+# idle (gsd-power: idle-dim, to idle-brightness percent) - with blanking off
+# it dims after a fixed short delay rather than a fraction of idle-delay.
+# The power button locks as before. Droidian's mobile-power-saver ties its
+# hard saving (powersave governor, frozen processes) to the blanked screen,
+# so with this an open device stays at full speed; idle suspend on battery
+# is off in Droidian anyway (sleep-inactive-battery-type=nothing).
+# A default, not a lock: a user's own value wins.
+[org/gnome/desktop/session]
+idle-delay=uint32 0
+[org/gnome/settings-daemon/plugins/power]
+idle-dim=true
+idle-brightness=30

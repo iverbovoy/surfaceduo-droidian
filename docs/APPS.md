@@ -10,23 +10,29 @@ separate, private repository, but none of this is about that app.
 Phosh presents both panels as a single output:
 
 ```
-output    HWCOMPOSER-1, 2784x1800 @ 60 Hz, phoc scale 3  ->  928x600 logical
+output    HWCOMPOSER-1, 2784x1800 @ 60 Hz, phoc scale 2.5  ->  1113x720 logical
 panels    two 1350x1800 DSI, side by side across the long edge
 hinge     84 physical pixels between them: addressable, and physically hidden
-zones     left [0,450]   seam [450,478]   right [478,928]   (logical, scale 3)
+zones     left [0,540]   seam [540,573]   right [573,1113]   (logical, scale 2.5)
 ```
 
+The scale is the port's choice (`/etc/phosh/phoc.ini`, since 0.14.1; before
+that Droidian's generic 3, which made the output 928x600 with the seam at
+[450, 478]). A user can change it, so an app should derive the zones from
+the output it is given, not from these numbers: the seam is the middle
+84/2784 of the span, whatever the span is in logical pixels.
+
 The compositor will not route around the seam. An app that keeps its content
-out of `[450,478]` gets two clean pages; one that centres itself puts its
-middle under the bezel. Nothing more is needed than that arithmetic - two
-pages, a dead column between them - and it turned out that a desktop layout
-becomes a two-page one by moving three elements, without touching anything
-that draws.
+out of it gets two clean pages; one that centres itself puts its middle under
+the bezel. Nothing more is needed than that arithmetic - two pages, a dead
+column between them - and it turned out that a desktop layout becomes a
+two-page one by moving three elements, without touching anything that draws.
 
-**Fullscreen or nothing.** The phosh panel and home bar leave a window 928x423
-of the 600. A `.desktop` launch that calls `fullscreen()` gets it all.
+**Fullscreen or nothing.** The phosh panel (32 logical px) and home bar take
+their strip off the top and bottom of the 720. A `.desktop` launch that
+calls `fullscreen()` gets it all.
 
-**Rotation.** Rotate the device and the logical output becomes 600x928; the
+**Rotation.** Rotate the device and the logical output becomes 720x1113; the
 panels are now one above the other and the seam is a horizontal band. Compute
 the seam as a *fraction of the span* (84/2784), not as 84 divided by GTK's
 scale factor - rotated, GTK reported a scale of 5 where the output is scaled

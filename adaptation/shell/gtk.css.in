@@ -1,16 +1,22 @@
 /*
  * phosh on a Surface Duo: keep the shell out of the hinge.
  *
- * Both panels are one output, 928x600 logical. The 84 physical pixels of
- * hinge between them are addressable and physically hidden: logically they
- * are the column [450, 478]. gmobile's display-panel description tells phosh
- * where they are, but phosh consults it only when it places the top bar's
- * clock. Everything else the shell centres - the lock screen clock, the home
- * bar handle, the search field - centres on 464, which is the middle of the
- * bezel.
+ * THIS IS A TEMPLATE. sfduo-shell-css fills in the tokens (a name between
+ * at-signs) for the output scale in phoc.ini and writes
+ * /usr/share/sfduo/gtk.css; the package does it
+ * at build time for the scale it ships, and `sudo sfduo-shell-css` does it
+ * again after a change of scale. The numbers below are for @W@x@H@ logical
+ * (scale @SCALE@).
  *
- * So each centred widget is given a left margin of 478px: the near panel plus
- * the hinge. What was centred on the whole screen is then centred on the
+ * Both panels are one output, @W@x@H@ logical. The 84 physical pixels of
+ * hinge between them are addressable and physically hidden: logically they
+ * are the column [@LEFT@, @RIGHT@]. gmobile's display-panel description tells
+ * phosh where they are, but phosh consults it only when it places the top
+ * bar's clock. Everything else the shell centres - the lock screen clock, the
+ * home bar handle, the search field - centres on the middle of the bezel.
+ *
+ * So each centred widget is given a left margin of @RIGHT@px: the near panel
+ * plus the hinge. What was centred on the whole screen is then centred on the
  * right panel, under the thumb of a right hand holding the device.
  *
  * Margins land only on widgets GTK3 allocates through a CSS gadget, and only
@@ -29,13 +35,14 @@
 
    Widening the group on the left is what phosh itself does for a notch, and
    it is stable - a centre child stays centred until a side child crowds it,
-   and then moves by exactly the overlap. 560 lands the clock on 696 against
-   the right panel's centre of 703.
+   and then moves by exactly the overlap. The padding is the right panel's
+   centre less what the indicators and half the clock take (136, measured at
+   scale 3 and independent of it).
 
    This is the job gmobile's cutout description was supposed to do, and it did
    do it - at the price of the entire shade, which unfolded to a black screen
    with nothing drawn in it at all. See the README. */
-#top-bar > :first-child { padding-right: 560px; }
+#top-bar > :first-child { padding-right: @TOPPAD@px; }
 
 /* ---- lock screen ------------------------------------------------------ */
 
@@ -44,44 +51,44 @@
    margin" - as long as there is slack, that is: margin plus width less than
    the box. So there is no slack. The box is given the display's width, and
    each child is given a margin of one panel plus the hinge and a width of
-   exactly the other panel: 478 + 450 = 928, nothing left to distribute, and
-   the child sits where the arithmetic says. Clock and date on the right
-   panel, under the thumb; the notifications on the left, where the eyes are
-   and no hand is.
+   exactly the other panel: @RIGHT@ + @LEFT@ = @W@, nothing left to
+   distribute, and the child sits where the arithmetic says. Clock and date
+   on the right panel, under the thumb; the notifications on the left, where
+   the eyes are and no hand is.
 
    The arrow, the hint under it and the keypad live in boxes of their own and
-   never needed this: 478 puts them on 703 as it is.
+   never needed this: @RIGHT@ puts them on the right panel's centre as it is.
 
    All of it is the landscape width, like every other number here. */
-phosh-lockscreen .p-large { min-width: 928px; }
+phosh-lockscreen .p-large { min-width: @W@px; }
 
 #phosh-lockscreen-clock,
 #phosh-lockscreen-date {
-  margin-left: 478px;
-  min-width: 450px;
+  margin-left: @RIGHT@px;
+  min-width: @LEFT@px;
 }
 
 phosh-lockscreen scrolledwindow {
   margin-left: 0;
-  margin-right: 478px;
+  margin-right: @RIGHT@px;
 }
 
 /* The arrow above the hint, and the whole passcode page - status line, the
    entry, the keypad and the button - which is one centred box. */
 .phosh-lockscreen-arrow,
 .phosh-lockscreen-unlocker {
-  margin-left: 478px;
+  margin-left: @RIGHT@px;
 }
 
 /* The hint under the arrow has no name of its own, only "dim-label" - and so
    does the artist line in the media player, which shares this screen, hidden
    in a revealer. A revealer that shows nothing still asks for its child's
-   width, so a 478px margin on that label made the player ask for 598, the
-   area holding the notifications could shrink no further, and the card sat
-   right of centre with the clock dragged along. Selecting the hint by where
-   it lives - a direct child of a direct child of the deck's page - reaches
-   nothing else. */
-phosh-lockscreen deck > box > box > label.dim-label { margin-left: 478px; }
+   width, so a margin on that label made the player ask for more than the
+   panel, the area holding the notifications could shrink no further, and the
+   card sat right of centre with the clock dragged along. Selecting the hint
+   by where it lives - a direct child of a direct child of the deck's page -
+   reaches nothing else. */
+phosh-lockscreen deck > box > box > label.dim-label { margin-left: @RIGHT@px; }
 
 /* ---- home bar --------------------------------------------------------- */
 
@@ -91,7 +98,7 @@ phosh-lockscreen deck > box > box > label.dim-label { margin-left: 478px; }
    box that centres it is an ordinary GtkBox and does not. Only the handle
    moves - the event box behind it still spans the whole width, so the swipe
    still starts anywhere along the bottom edge. */
-#home-bar { margin-left: 478px; }
+#home-bar { margin-left: @RIGHT@px; }
 
 /* ---- the desktop ------------------------------------------------------ */
 
@@ -100,36 +107,35 @@ phosh-lockscreen deck > box > box > label.dim-label { margin-left: 478px; }
    which is what this device wants, since its launcher is the dock along the
    bottom. So the grid is pushed past the bottom edge: it is still there, still
    reachable by search when the margin is removed, but nothing of it is on the
-   screen and nothing of it can be touched. 1200 is simply more than the
-   panel's 600 logical pixels, in either orientation.
+   screen and nothing of it can be touched. @OFFGRID@ is twice the longer
+   side, more than the screen in either orientation.
 
    The alternative was to cover the grid with the dock, which worked and cost
    the notification shade: pulled down, it unfolded underneath the cover and
    could not be reached. */
-phosh-app-grid { margin-top: 1200px; }
+phosh-app-grid { margin-top: @OFFGRID@px; }
 
 /* ---- app grid --------------------------------------------------------- */
 
 .phosh-search-bar,
 #phosh-filter-adaptive-btn {
-  margin-left: 478px;
+  margin-left: @RIGHT@px;
 }
 
 /* The grid itself keeps both panels; only its columns move. A flow box fits
    as many equal columns as the child's minimum width allows, and an odd count
    always puts one column astride the hinge - at the icons' natural width that
    is seven columns, with the fourth in the bezel. Six columns instead, and
-   the gap between the third and the fourth lands on 464, the middle of the
-   seam.
-   
+   the gap between the third and the fourth lands on the middle of the seam.
+
    The minimum that produces six is the child's whole width, padding included:
-   145 = 109 + 2x18, against 922 of usable row and 6px of column spacing. The
-   padding is the other half of the trick - it insets each icon far enough
-   that the two columns beside the gap stop drawing well before the bezel
-   starts. */
+   @GRIDMIN@ + 2x18 = @GRIDCHILD@, against @GRIDROW@ of usable row and 6px of
+   column spacing - six of them fit, seven do not. The padding is the other
+   half of the trick - it insets each icon far enough that the two columns
+   beside the gap stop drawing well before the bezel starts. */
 phosh-app-grid-button,
 phosh-app-grid-folder-button {
-  min-width: 109px;
+  min-width: @GRIDMIN@px;
   padding-left: 18px;
   padding-right: 18px;
 }

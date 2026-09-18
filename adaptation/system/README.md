@@ -91,6 +91,24 @@ Once locked, the fingerprint sensor on the power key unlocks it the moment a
 finger rests there - which, on a device you hold by that edge, is the moment
 you open it. It can look as if the lock screen never came.
 
+## An open device stays on
+
+Since 0.14.1 the screen does not blank and lock on its own
+(`dconf/52-sfduo-idle`: `org.gnome.desktop.session idle-delay` is 0, a
+default a user's own value overrides). An open Duo on a desk is being looked
+at, and closing it is how it is put away; the backlight still dims after a
+short idle (`idle-dim`, to 30 %), and the power button locks as before.
+
+There is a second reason, found while measuring the kernel: Droidian's
+`mobile-power-saver` ties its hard saving to the blanked screen - the CPU
+governor goes to `powersave` (every core at its lowest clock: 576 MHz on the
+little ones, 826 MHz on the big one, of 2.8 GHz) and processes are frozen.
+Anything measured over ssh with the screen off measures that, not the
+system: a root login that starts a user manager took 20 s that way and
+1.5 s with the screen on, `systemctl daemon-reload` 7 s against 1.7 s. With
+idle blanking off an open device runs at full speed; Droidian already has
+idle suspend on battery off (`sleep-inactive-battery-type` is `nothing`).
+
 ## Panel power
 
 `sfduo-screens off|on|toggle` drives `bl_power` on the two panel backlights,
