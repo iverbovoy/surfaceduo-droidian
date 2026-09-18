@@ -754,8 +754,9 @@ if [ -f "$PHOSH_BIN" ]; then
 else
     echo "NOTE: $PHOSH_BIN not found - building without the patched phosh"
 fi
-# The patched phoc (../shell/phoc-patches/0001): tiled windows stop short of
-# the hinge named by `tiling-seam` in phoc.ini. Version-locked like phosh:
+# The patched phoc (../shell/phoc-patches/0001, 0002): tiled windows stop
+# short of the hinge named by `tiling-seam` in phoc.ini, and a new window
+# opens on the panel touched last. Version-locked like phosh:
 # see sfduo-phoc-install. Built per ../shell/README.md.
 install -m755 "$SHELLDIR/sfduo-phoc-install" "$PKG/usr/local/sbin/"
 PHOC_BIN="$ROOT/out/phoc/phoc-0.47.0-98211ea-sfduo"
@@ -765,8 +766,9 @@ if [ -f "$PHOC_BIN" ]; then
 else
     echo "NOTE: $PHOC_BIN not found - building without the patched phoc"
 fi
-# The patched on-screen keyboard (../shell/osk-patches/0001): on this display
-# it takes the right panel instead of both. Version-locked like the others.
+# The patched on-screen keyboard (../shell/osk-patches/0001, 0002): on this
+# display it takes the right panel instead of both, with 60 px key rows.
+# Version-locked like the others.
 install -m755 "$SHELLDIR/sfduo-osk-install" "$PKG/usr/local/sbin/"
 OSK_BIN="$ROOT/out/osk/phosh-osk-stub-0.47.0-43ef51f-sfduo"
 if [ -f "$OSK_BIN" ]; then

@@ -22,16 +22,16 @@ Microsoft's debugging (`kernel-packaging/droidian/surfaceduo-perf.config`,
 ## What it looks like
 
 Screenshots of the one output both panels share (2784x1800; the 84 px column
-the hinge hides is in the middle), taken on a from-scratch install of 0.14.2
-at the port's output scale of 2.5 (since 0.15.4 it is 2, see the status table). The two-panel shell is **experimental and
-in development**.
+the hinge hides is in the middle), taken on 0.15.4 at the port's output scale
+of 2 (the first-run wizard on a from-scratch install of 0.14.2, at 2.5). The
+two-panel shell is **experimental and in development**.
 
 | | |
 |---|---|
 | ![the first-run wizard on one panel](docs/img/shell-welcome.png) | ![the dock across both panels](docs/img/shell-desktop.png) |
-| A window on the panel it opened on: the dock tiles it there, and the patched phoc stops it at the hinge rather than half way into it. | The dock, cut by the hinge rather than doubled. |
+| A window on the panel it opened on: the dock tiles it there, and the patched phoc stops it at the hinge rather than half way into it. | The dock in two halves, one at each panel's outer edge, under the thumbs. |
 | ![the app grid](docs/img/shell-grid.png) | ![the lock screen](docs/img/shell-lockscreen.png) |
-| Swipe up on a panel: every app, on that panel, and the dock crosses to the other. | The lock screen, kept off the hinge by CSS alone. |
+| Swipe up on a panel: every app, on that panel, and the dock's halves join on the other. | The lock screen, kept off the hinge by CSS alone; 55-60 fps on the unlock swipe at scale 2. |
 
 ## Status (2026-09-17)
 
