@@ -9,8 +9,16 @@
 # Android ("downstream") kernel
 VARIANT = android
 
-# Kernel base version (msm-4.14, branch surfaceduo/11/2022.902.48)
-KERNEL_BASE_VERSION = 4.14-190
+# Kernel base version (msm-4.14, branch surfaceduo/11/2022.902.48).
+# "-perf" since 2026-09: the release string (uname -r, module vermagic) is
+# KERNEL_BASE_VERSION-microsoft-surfaceduo, and a kernel built without
+# Microsoft's debugging (droidian/surfaceduo-perf.config) has a different
+# module ABI from the 4.14-190-microsoft-surfaceduo builds before it -
+# DEBUG_SPINLOCK, DEBUG_MUTEXES and DEBUG_OBJECTS change struct layouts, and
+# CONFIG_MODVERSIONS refuses the old wlan and audio modules. A distinct
+# release lets the adaptation package carry modules per kernel, and says
+# at a glance which kernel a device runs.
+KERNEL_BASE_VERSION = 4.14-190-perf
 
 # Stock cmdline (extracted from out/recovery/images/boot.img) plus the
 # Droidian bits: console=tty0, datapart (userdata = /dev/sda6 on LUN 0,
@@ -28,8 +36,10 @@ DEVICE_HAS_INIT_BOOT = 0
 # configuration fragments (see kernel-snippet.mk). The snippet hardcodes
 # droidian/common_fragments/halium.config + droidian.config, then applies
 # droidian/surfaceduo.config (device fragment) and the extras below.
+# surfaceduo-perf.config turns off the debugging that Microsoft's defconfig
+# (their debug one) leaves on - see the comments in that file.
 KERNEL_CONFIG_USE_FRAGMENTS = 1
-KERNEL_CONFIG_EXTRA_FRAGMENTS = common_fragments/container.config
+KERNEL_CONFIG_EXTRA_FRAGMENTS = common_fragments/container.config surfaceduo-perf.config
 KERNEL_DEFCONFIG = vendor/surfaceduo_defconfig
 
 # Header v2: DTB lives inside boot.img.

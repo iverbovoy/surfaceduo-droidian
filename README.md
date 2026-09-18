@@ -15,7 +15,10 @@ July 2026.
 
 A boot to a fully working system (both panels, touch, WiFi auto-connect,
 sshd over USB) takes about two minutes, hands-off - measured in September
-2026 at 95-135 s from reboot to an ssh login.
+2026 at 95-135 s from reboot to an ssh login. With the kernel built without
+Microsoft's debugging (`kernel-packaging/droidian/surfaceduo-perf.config`,
+2026-09-18) it is 40-50 s to the ssh login after `fastboot boot`, and
+`systemctl daemon-reload` takes 2 s rather than 30.
 
 ## What it looks like
 
@@ -185,9 +188,21 @@ Full walkthrough: [docs/PORT-GUIDE.md](docs/PORT-GUIDE.md).
   `systemctl daemon-reload` takes 26-30 s, every time, with pid 1 spending
   it in `kmem_cache_alloc`/`kmem_cache_free` and spinlock release; an ssh
   login that has to start a user manager takes about 27 s; a package
-  postinst that enables a dozen units took nine minutes. Building the perf
-  config (plus this port's fragment) is the fix and has not been done or
-  tested yet; `slub_debug=-` on the cmdline would be the cheap half of it.
+  postinst that enables a dozen units took nine minutes. Microsoft's perf
+  defconfig is not the fix: it also drops what the port stands on (the
+  backlight class, the GENI console, serdev). The fix is
+  `kernel-packaging/droidian/surfaceduo-perf.config`, a fragment on top of
+  the debug defconfig that turns off exactly the debugging - 92 config
+  lines differ from the debug build, all of them debug options. Measured
+  on the device (RAM-boot, 2026-09-18): `daemon-reload` 2.3 s, ssh login
+  39-51 s after `fastboot boot`, Slab 182 MB instead of 745 MB. The
+  release string is `4.14-190-perf-microsoft-surfaceduo`: the module ABI
+  differs from the debug builds (`DEBUG_SPINLOCK` and friends change struct
+  layouts), so the adaptation package carries wlan and audio modules per
+  kernel release (`/usr/lib/sfduo/modules/<uname -r>/`) and the units pick
+  the set for the running kernel. An ssh login that has to start root's
+  user manager still takes ~20 s on the perf kernel: that one is not the
+  kernel's, and is open.
 - **GL for applications lands on llvmpipe**: `/usr/share/glvnd/egl_vendor.d/`
   registers only mesa, and mesa has no driver for this kernel, so any
   client that asks glvnd for EGL (WebKitGTK's WebGL, for one) gets the

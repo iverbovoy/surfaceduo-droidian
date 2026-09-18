@@ -41,6 +41,21 @@ git -C ../surface-duo-oss-kernel.msm-4.14 apply \
 Skipping 0004 gets you a phone that freezes under I/O load and 40 s
 GPS/geoclue startups - see `docs/FREEZE-FORENSICS.md`.
 
+The config is Microsoft's debug defconfig plus fragments. Since 2026-09-18
+`droidian/surfaceduo-perf.config` is one of them and turns the debugging
+off (slab and page poisoning, page owner, debug objects, kmemleak, lock
+debugging, fault injection, the irq-off/preempt-off tracers - the comments
+in the file say what each cost). Microsoft's own `surfaceduo-perf_defconfig`
+is not used as the base: it also drops the backlight class, the GENI
+console and serdev. The release string carries `-perf`
+(`KERNEL_BASE_VERSION` in `kernel-info.mk`) because the module ABI is not
+the one of the debug builds; the modules built below are keyed by it.
+
+The wlan and audio module builds further down need the same toolchain
+PATH the kernel build used - `/usr/lib/llvm-android-9.0-r353983c/bin` for
+`clang`, and `debian/path-override` for a `python` that is python 2 - or
+they die on `clang: not found` and `env: 'python': No such file`.
+
 Then:
 
 ```
@@ -134,8 +149,13 @@ aarch64-linux-gnu-strip --strip-debug wlan/qcacld-3.0/wlan.ko
 ```
 
 Requires `CONFIG_MODULE_SIG_FORCE=n` (already in the device fragment).
-Drop the stripped `wlan.ko` at `out/wlan.ko` (repo root) - the
-adaptation package picks it up and autoloads it before NetworkManager.
+Drop the stripped `wlan.ko` at `out/modules/<kernel release>/wlan.ko`
+(repo root; the release is `uname -r` on the device, e.g.
+`4.14-190-perf-microsoft-surfaceduo`) - the adaptation package carries one
+set of modules per kernel release it finds there, and the device loads the
+set for the kernel it booted, before NetworkManager. Modules built against
+one release do not load into another (`CONFIG_MODVERSIONS`): a debug build
+and a perf build differ in their struct layouts.
 The Android container's ueventd serves the firmware requests
 (`wlan/qca_cld/WCNSS_qcom_cfg.ini`) - no extra plumbing needed.
 
@@ -190,9 +210,13 @@ Copy the built modules to where `adaptation/package/build.sh` picks
 them up:
 
 ```
-mkdir -p out/audio-modules   # at the repo root
-find <kernel>/out/KERNEL_OBJ/techpack -name '*.ko' -exec cp {} out/audio-modules/ \;
+mkdir -p out/modules/<kernel release>/audio   # at the repo root
+find <kernel>/out/KERNEL_OBJ/techpack -name '*.ko' -exec cp {} out/modules/<kernel release>/audio/ \;
 ```
+
+The kernel build's own `linux-image-*.deb` carries the same 23 modules
+under `lib/modules/<release>/kernel/techpack/audio/`; `dpkg-deb -x` and a
+`find -name '*_dlkm.ko'` is the other way to the same files.
 
 ## Kernel patches (patches/)
 

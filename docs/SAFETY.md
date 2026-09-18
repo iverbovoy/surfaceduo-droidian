@@ -99,6 +99,13 @@ fastboot flash misc misc-brake.img    # re-arm the parking brake
 # the moment the device lands back in fastboot: re-arm the brake FIRST
 ```
 
+A brake armed *before* a `fastboot boot` does not survive that session
+(seen 2026-09-18): the next `reboot` from the RAM-booted system went
+straight into the flashed slot, not into fastboot - the one-shot BCB had
+already been consumed. To get back to fastboot from a RAM-booted system,
+`reboot bootloader` is what works; the brake is for the case where the
+device resets on its own.
+
 ## If flashing is attempted anyway: three confusing behaviours
 
 Rule 1 stands: RAM-boot is the only mode this port recommends, and

@@ -1,3 +1,13 @@
+linux-android-microsoft-surfaceduo (4.14.190+sfduo2) trixie; urgency=medium
+
+  * Build without Microsoft's kernel debugging (droidian/surfaceduo-perf.config):
+    slab and page poisoning, page owner, debug objects, kmemleak, lock
+    debugging, fault injection and the irq-off/preempt-off tracers are off.
+    The release string gains "-perf" - the module ABI is not the one of the
+    4.14-190 builds.
+
+ -- Ivan Verbovoy <ivanverbovoy@gmail.com>  Fri, 18 Sep 2026 10:40:00 +0300
+
 linux-android-microsoft-surfaceduo (4.14.190+sfduo1) trixie; urgency=medium
 
   * Initial Droidian packaging for the Microsoft Surface Duo (surfaceduo,
