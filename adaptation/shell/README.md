@@ -170,6 +170,13 @@ setter ran before that binding, and the binding put the notifications back
 on the near half after every unlock. It runs from a `notify::on-lockscreen`
 handler connected after the template, which runs after the binding.
 
+The lock screen is also where a second shade's brightness scale showed:
+at zero, whatever the backlight. phosh's brightness helper kept one scale
+in its globals, and the second shade's took them over.
+`phosh-patches/0007` keeps a list: one connection to the power daemon,
+every scale showing its value and following a change made from any of them
+(checked from either side on the device).
+
 ### A shade folds from anywhere
 
 phosh lets an open shade be folded only by its handle: `update_drag_handle`
@@ -486,7 +493,7 @@ both, because which comes first depends on how long the shell took to start
 start that is still most of a minute after the lock screen is drawn, so the
 dock also treats "nobody owns `org.gnome.ScreenSaver` yet" as locked.
 
-The package carries the patched binary (0001-0006) and
+The package carries the patched binary (0001-0007) and
 `sudo sfduo-phosh-install` puts it in place at install time - but only beside
 exactly the phosh version it was built for; on any other it says so and
 leaves the packaged shell alone. `sudo sfduo-phosh-install --restore` puts the

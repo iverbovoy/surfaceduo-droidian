@@ -1,0 +1,203 @@
+--- a/src/settings/brightness.h
++++ b/src/settings/brightness.h
+@@ -7,5 +7,5 @@
+  */
+ 
+ void brightness_init (GtkScale *scale, gulong handler_id);
+-void brightness_dispose (void);
++void brightness_dispose (GtkScale *scale);
+ void brightness_set (int brightness);
+--- a/src/settings/brightness.c
++++ b/src/settings/brightness.c
+@@ -15,10 +15,36 @@
+ #include "util.h"
+ 
+ 
++/*
++ * One brightness, and a scale for it in every settings menu there is. A
++ * display with a seam has a shade per half, and each carries a scale; they
++ * all show the one value and follow a change made from any of them. This
++ * used to hold a single scale in these globals, and a second menu's init
++ * took them over: its scale showed nothing and the first one's updates
++ * blocked the wrong handler.
++ */
++typedef struct {
++  GtkScale *scale;
++  gulong    handler_id;
++} BrightnessScale;
++
+ static GDBusProxy *brightness_proxy;
+ static GCancellable *gsd_power_cancel;
+ static gboolean setting_brightness;
+-static gulong scale_handler_id;
++static GSList *scales;
++
++
++static void
++set_scales (int value)
++{
++  for (GSList *l = scales; l; l = l->next) {
++    BrightnessScale *bs = l->data;
++
++    g_signal_handler_block (G_OBJECT (bs->scale), bs->handler_id);
++    gtk_range_set_value (GTK_RANGE (bs->scale), value);
++    g_signal_handler_unblock (G_OBJECT (bs->scale), bs->handler_id);
++  }
++}
+ 
+ 
+ static void
+@@ -27,7 +53,6 @@
+                        GVariant   *invalidated_props,
+                        gpointer   *user_data)
+ {
+-  GtkScale *scale = GTK_SCALE (user_data);
+   int value;
+   gboolean ret;
+ 
+@@ -37,20 +62,19 @@
+   ret = g_variant_lookup (changed_props,
+                           "Brightness",
+                           "i", &value);
+-  g_return_if_fail (ret);
++  if (!ret)
++    return;
+   if (value < 0 || value > 100)
+     value = 100.0;
+ 
+-  g_signal_handler_block (G_OBJECT (scale), scale_handler_id);
+-  gtk_range_set_value (GTK_RANGE (scale), value);
+-  g_signal_handler_unblock (G_OBJECT (scale), scale_handler_id);
++  set_scales (value);
+ }
+ 
+ 
+ static void
+ brightness_init_cb (GObject      *source_object,
+                     GAsyncResult *res,
+-                    GtkScale     *scale)
++                    gpointer      unused)
+ {
+   g_autoptr (GError) err = NULL;
+   g_autoptr (GVariant) var = NULL;
+@@ -62,21 +86,17 @@
+     return;
+   }
+ 
+-  g_return_if_fail (GTK_IS_SCALE (scale));
+-
+-  /* Set scale to current brightness */
++  /* Set the scales to the current brightness */
+   var = g_dbus_proxy_get_cached_property (brightness_proxy, "Brightness");
+   if (var) {
+     g_variant_get (var, "i", &value);
+-    setting_brightness = TRUE;
+-    gtk_range_set_value (GTK_RANGE (scale), value);
+-    setting_brightness = FALSE;
++    set_scales (value);
+   }
+ 
+   g_signal_connect (brightness_proxy,
+                     "g-properties-changed",
+                     G_CALLBACK (brightness_changed_cb),
+-                    scale);
++                    NULL);
+ }
+ 
+ 
+@@ -85,8 +105,26 @@
+ {
+   g_autoptr (GError) err = NULL;
+   g_autoptr (GDBusConnection) session_con = NULL;
++  BrightnessScale *bs = g_new0 (BrightnessScale, 1);
+ 
+-  scale_handler_id = handler_id;
++  bs->scale = scale;
++  bs->handler_id = handler_id;
++  scales = g_slist_append (scales, bs);
++
++  /* A later scale joins what is there */
++  if (brightness_proxy) {
++    g_autoptr (GVariant) var = g_dbus_proxy_get_cached_property (brightness_proxy, "Brightness");
++
++    if (var) {
++      int value;
++
++      g_variant_get (var, "i", &value);
++      set_scales (value);
++    }
++    return;
++  }
++  if (gsd_power_cancel)
++    return;
+ 
+   session_con = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, &err);
+   if (err != NULL) {
+@@ -103,7 +141,7 @@
+                     "org.gnome.SettingsDaemon.Power.Screen",
+                     gsd_power_cancel,
+                     (GAsyncReadyCallback)brightness_init_cb,
+-                    scale);
++                    NULL);
+ }
+ 
+ 
+@@ -114,12 +152,11 @@
+   g_autoptr (GVariant) var = NULL;
+ 
+   var = g_dbus_proxy_call_finish (proxy, res, &err);
++  setting_brightness = FALSE;
+   if (err) {
+     g_warning ("Could not set brightness %s", err->message);
+     return;
+   }
+-
+-  setting_brightness = FALSE;
+ }
+ 
+ 
+@@ -132,6 +169,10 @@
+   if (setting_brightness)
+     return;
+ 
++  /* the scale being moved has the value already; the others follow it
++   * here, since the change the daemon reports comes while this is set */
++  set_scales (brightness);
++
+   setting_brightness = TRUE;
+   g_dbus_proxy_call (brightness_proxy,
+                      "org.freedesktop.DBus.Properties.Set",
+@@ -149,8 +190,21 @@
+ 
+ 
+ void
+-brightness_dispose (void)
++brightness_dispose (GtkScale *scale)
+ {
++  for (GSList *l = scales; l; l = l->next) {
++    BrightnessScale *bs = l->data;
++
++    if (bs->scale == scale) {
++      scales = g_slist_delete_link (scales, l);
++      g_free (bs);
++      break;
++    }
++  }
++  /* the proxy goes with the last scale */
++  if (scales)
++    return;
++
+   g_cancellable_cancel (gsd_power_cancel);
+   g_clear_object (&gsd_power_cancel);
+   g_clear_object (&brightness_proxy);
+--- a/src/settings.c
++++ b/src/settings.c
+@@ -487,7 +487,7 @@
+ {
+   PhoshSettings *self = PHOSH_SETTINGS (object);
+ 
+-  brightness_dispose ();
++  brightness_dispose (GTK_SCALE (self->scale_brightness));
+ 
+   g_clear_object (&self->torch_manager);
+ 
