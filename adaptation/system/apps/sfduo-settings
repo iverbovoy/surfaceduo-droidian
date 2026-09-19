@@ -201,6 +201,7 @@ class Window(Adw.ApplicationWindow):
         view.set_content(page)
         self.nav.add(Adw.NavigationPage(title="Settings", child=view))
         self.set_content(self.nav)
+        self.connect("notify::is-active", self._on_active)
 
     def _row(self, name, subtitle, icon, target):
         row = Adw.ActionRow(title=name, activatable=True)
@@ -208,17 +209,88 @@ class Window(Adw.ApplicationWindow):
             row.set_subtitle(subtitle)
         row.add_prefix(Gtk.Image.new_from_icon_name(icon))
         row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
-        row.connect("activated", lambda _r: self._open(target))
+        row.connect("activated", lambda _r: self._open(name, target))
         return row
 
-    def _open(self, target):
+    def _open(self, name, target):
         kind = target[0]
+        if kind == "duo":
+            self.nav.push(DuoPage())
+            return
+        # The page is another program's window, a second or so away on a
+        # cold start. Answer the tap now, in this window's own motion: slide
+        # in a page with the same title, and let the window land on it.
+        self._wait(name)
         if kind == "gnome":
             run([GNOME, *target[1:]])
         elif kind == "mobile":
             run([MOBILE, target[1]])
-        elif kind == "duo":
-            self.nav.push(DuoPage())
+
+    # ---- the page another program shows --------------------------------------
+    #
+    # A row that opens GNOME Settings or Mobile Settings pushes a stand-in
+    # here first, titled as the page will be, and the program's window then
+    # comes up over it on this panel (the dock's Follow). Back in that window
+    # closes it (sfduo-one-column), this window is the active one again, and
+    # the stand-in slides away: to the eye, one program going forward and
+    # back. If the window never comes, the stand-in goes by itself.
+
+    WAIT_SPINNER_MS = 500           # a spinner only if the wait is long enough to see
+    WAIT_GIVE_UP_S = 8
+
+    def _wait(self, title):
+        self._end_wait()
+        spinner = Adw.Spinner()
+        spinner.set_size_request(32, 32)
+        spinner.set_halign(Gtk.Align.CENTER)
+        spinner.set_valign(Gtk.Align.CENTER)
+        spinner.set_visible(False)
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(spinner)
+        self.stand_in = Adw.NavigationPage(title=title, child=view)
+        self.stand_in.connect("hidden", lambda page: self._stand_in_gone(page))
+        self.left = False
+        self.nav.push(self.stand_in)
+        self.wait_timers = {
+            "spinner": GLib.timeout_add(self.WAIT_SPINNER_MS, self._fired, "spinner",
+                                        lambda: spinner.set_visible(True)),
+            "give-up": GLib.timeout_add_seconds(self.WAIT_GIVE_UP_S, self._fired, "give-up",
+                                                self._give_up),
+        }
+
+    def _fired(self, key, action):
+        self.wait_timers.pop(key, None)
+        action()
+        return False
+
+    def _on_active(self, *_args):
+        stand_in = getattr(self, "stand_in", None)
+        if stand_in is None:
+            return
+        if not self.is_active():
+            self.left = True                # the program's window took over
+            self._stop_timers()
+        elif self.left:
+            self.nav.pop_to_page(self.nav.get_previous_page(stand_in) or stand_in)
+
+    def _give_up(self):
+        if getattr(self, "stand_in", None) is not None and not self.left:
+            self.nav.pop()
+
+    def _stop_timers(self):
+        for timer in getattr(self, "wait_timers", {}).values():
+            GLib.source_remove(timer)
+        self.wait_timers = {}
+
+    def _stand_in_gone(self, page):
+        if page is getattr(self, "stand_in", None):
+            self._end_wait()
+
+    def _end_wait(self):
+        self._stop_timers()
+        self.stand_in = None
+        self.left = False
 
 
 class App(Adw.Application):

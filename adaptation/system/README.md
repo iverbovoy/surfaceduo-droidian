@@ -208,6 +208,17 @@ up over the list and the other panel is left as it was; a window of that
 program already open on the other panel is moved across. The Surface Duo
 page says what is installed; its switches are #20.
 
+A page from another program is a window a second away on a cold start,
+and the first version showed exactly that: a tap, a second of nothing, a
+floating window jumping into place under a black curtain. Now Settings
+answers the tap in its own motion - it slides in a page titled as the one
+coming, with a spinner if the wait passes half a second - and the other
+program's window lands on it. The dock's curtain for a window that follows
+another is the colour of a libadwaita window, without an icon, so it reads
+as that page. Back closes the window; Settings is the active window again
+and slides its stand-in away, back to the list. If the window never comes,
+the stand-in goes by itself after 8 s.
+
 Left out, on purpose, and why:
 
 | Page | Why |

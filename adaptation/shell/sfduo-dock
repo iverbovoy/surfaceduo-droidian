@@ -134,6 +134,10 @@ CSS = b"""
    windows of their own and paint their own black. */
 window.sfduo-dock, window.sfduo-grid, window.sfduo-pane { background-color: transparent; }
 window.sfduo-curtain { background-color: #000000; }
+/* A window following another onto its panel (Follow) lands on that one's
+   page: its curtain is the colour of a libadwaita window and has no icon,
+   so it reads as the page it covers rather than as a launch. */
+window.sfduo-curtain.quiet, .curtain.quiet { background-color: #222226; }
 viewport { background-color: transparent; }
 .grid-stage { background-color: transparent; }
 .dock-pane {
@@ -459,6 +463,7 @@ class CurtainPanel(Gtk.Window):
         GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
         box = Gtk.Box()
         box.get_style_context().add_class("curtain")
+        self.box = box
         self.icon = Gtk.Image()
         self.icon.set_pixel_size(CURTAIN_ICON)
         self.icon.set_halign(Gtk.Align.CENTER)
@@ -466,7 +471,15 @@ class CurtainPanel(Gtk.Window):
         box.pack_start(self.icon, True, True, 0)
         self.add(box)
 
-    def raise_(self, gicon):
+    def raise_(self, gicon, quiet=False):
+        for widget in (self, self.box):
+            context = widget.get_style_context()
+            if quiet:
+                context.add_class("quiet")
+            else:
+                context.remove_class("quiet")
+        if quiet:
+            gicon = None
         if gicon is not None:
             self.icon.set_from_gicon(gicon, Gtk.IconSize.DIALOG)
         else:
@@ -1003,7 +1016,7 @@ class Dock(Gtk.Window):
             follow = getattr(self, "follow", {})
             sides = {self.placed.get(follow.get(a)) for a in strangers}
             side = sides.pop() if len(sides) == 1 and None not in sides else None
-            GLib.idle_add(lambda: self._raise_curtain(side=side) or False)
+            GLib.idle_add(lambda: self._raise_curtain(side=side, quiet=side is not None) or False)
         try:
             self._adopt(strangers)
         finally:
@@ -2208,12 +2221,13 @@ class Dock(Gtk.Window):
     # is above everything - covers the stage for that second and lifts when
     # the window is where it belongs.
 
-    def _raise_curtain(self, info=None, side=None, hold=False):
+    def _raise_curtain(self, info=None, side=None, hold=False, quiet=False):
         """Cover the panel an app is being launched onto (both, for a window
-        nobody launched and nobody has placed yet)."""
+        nobody launched and nobody has placed yet). Quiet: the colour of a
+        window, no icon - for a window following another onto its panel."""
         sides = ("left", "right") if side is None else (side,)
         for where in sides:
-            self.curtains[where].raise_(info.get_icon() if info is not None else None)
+            self.curtains[where].raise_(info.get_icon() if info is not None else None, quiet)
         self.curtain_up = True
         # Whatever happens to the launch, the curtain does not stay - unless
         # it is being held under the lock screen, where nobody can see it and
