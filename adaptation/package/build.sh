@@ -11,7 +11,7 @@ ACCESS="$HERE/../access"
 SYSTEM="$HERE/../system"
 SHELLDIR="$HERE/../shell"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.13.1}"
+VER="${1:-0.16.0}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 
@@ -824,11 +824,8 @@ install -Dm644 "$SHELLDIR/sfduo-dock.desktop"       "$PKG/etc/xdg/autostart/sfdu
 # session bus - the smoothed angle, the posture, whether it is moving (#55)
 install -m755  "$SHELLDIR/sfduo-posture"            "$PKG/usr/local/bin/"
 install -Dm644 "$SHELLDIR/sfduo-posture.desktop"    "$PKG/etc/xdg/autostart/sfduo-posture.desktop"
-# The fold effect: the lit pieces of the screen turn as the device is opened
-# and come back to flat, driven by the angle above (#36). It reads the hinge
-# only through org.sfduo.Posture, so it is inert if that daemon is missing.
-install -m755  "$SHELLDIR/sfduo-fold"               "$PKG/usr/local/bin/"
-install -Dm644 "$SHELLDIR/sfduo-fold.desktop"       "$PKG/etc/xdg/autostart/sfduo-fold.desktop"
+# The fold effect (../shell/sfduo-fold, #36) is experimental and stays out of
+# the package: installed by hand, it autostarts from its own .desktop.
 install -Dm644 "$SHELLDIR/sfduo-brightness.desktop" "$PKG/etc/xdg/autostart/sfduo-brightness.desktop"
 # A finger unlocks a locked, lit phone (#61). Droidian's fpd-unlockd arms the
 # reader only when logind's IdleHint leaves idle, which this port's
@@ -988,6 +985,22 @@ if id droidian >/dev/null 2>&1; then
     else
         echo "sfduo: $H/.config/gtk-3.0/gtk.css is not ours - left alone;" >&2
         echo "sfduo: the shell's CSS is at /usr/share/sfduo/gtk.css" >&2
+    fi
+    # 0.16: "Settings" on the dock is the port's own (org.sfduo.Settings);
+    # GNOME Settings left the grid. A dock config written before keeps the
+    # old one, which would stand beside the new one as a second gear.
+    if [ -f "$H/.config/sfduo/dock.json" ] && \
+       ! grep -q org.sfduo.Settings.desktop "$H/.config/sfduo/dock.json"; then
+        sed -i 's/"org\.gnome\.Settings\.desktop"/"org.sfduo.Settings.desktop"/' \
+            "$H/.config/sfduo/dock.json"
+    fi
+    # D-Bus service files the package adds (the settings wrappers) are seen
+    # by a session bus that is already running only once it reloads.
+    U=$(id -u droidian)
+    if [ -S "/run/user/$U/bus" ]; then
+        runuser -u droidian -- env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$U/bus" \
+            dbus-send --session --type=method_call --dest=org.freedesktop.DBus \
+            /org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig 2>/dev/null || true
     fi
 fi
 if [ -d /run/systemd/system ]; then
