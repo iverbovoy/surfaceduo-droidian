@@ -188,6 +188,53 @@ remove the hidden packages, after marking the metapackage's other
 dependencies as wanted. No Spotify: there is no client for arm64 Linux and
 the web player needs Widevine, which Firefox lacks here.
 
+## Settings
+
+The device came with three settings programs: GNOME Settings (gnome-control-
+center 48), Mobile Settings (phosh-mobile-settings) and Droidian's
+mobile-settings service, which has no window. Neither of the two with a
+window carried any of the port's own settings, and GNOME Settings offered
+pages for hardware this phone does not have.
+
+`sfduo-settings` ("Settings" in the grid) is the one list now, grouped for
+this device: Connections, Screen, Sound and Notifications, Surface Duo,
+Security, Apps and Accounts, System, For Developers. Each row opens its page
+in whichever program has it (`gnome-control-center wifi`,
+`phosh-mobile-settings osk`, `gnome-control-center system datetime`) or a
+page of its own. On the Duo the page is a window the dock puts on the other
+panel, so the list and the page sit on either side of the hinge. The
+Surface Duo page says what is installed; its switches are #20.
+
+Left out, on purpose, and why:
+
+| Page | Why |
+|---|---|
+| Displays | phosh applies a scale set there live, over phoc.ini's 2, and the dock and the shell's CSS are made for phoc.ini's |
+| Printers, Remote desktop, Thunderbolt, Device security | nothing to do on this phone |
+| NFC | `nfcd` does not start and there is no NFC device |
+| Waydroid | not installed (#21) |
+| Encryption | not tried with this boot chain; a device that cannot unlock its root cannot boot |
+| Mobile Settings: alerts, convergence | alerts are broken here (its schema is missing), convergence is an external display, never tested |
+
+GNOME Settings and Mobile Settings stay installed and leave the grid by
+`NoDisplay` overrides in `/usr/local/share/applications`, not `Hidden` ones -
+a hidden entry is gone for launching by id too, and phosh and the dock
+launch Settings by id. Settings' SSH page cannot be reached from its command
+line in 48 (`system secure-shell` lands on System), so that row opens System.
+
+Both old programs are split views that show the list and the page side by
+side above a width (550sp and 500sp); a window on one panel is 675 logical
+px, so both did. `sfduo-one-column`, installed as
+`/usr/local/bin/gnome-control-center` and `/usr/local/bin/phosh-mobile-settings`
+and named by D-Bus service files in `/usr/local/share/dbus-1/services` (both
+are D-Bus activated), takes the window's `.ui` from the installed binary at
+launch, raises the line to 900sp and serves it through `G_RESOURCE_OVERLAYS`:
+list, then page, on one panel; two columns spanned across both. It
+re-extracts when the binary changes and runs the program untouched if the
+line is not in the file any more. A session bus that started before the
+service directory existed needs `org.freedesktop.DBus.ReloadConfig` or a new
+login.
+
 ## The hinge angle
 
 `sudo sfduo-sensorfw-install`, once after the package: the hinge-angle

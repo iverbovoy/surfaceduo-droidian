@@ -1,0 +1,224 @@
+#!/usr/bin/python3
+# sfduo-settings: one Settings for this device (#78).
+#
+# The device came with three settings programs and none of them fits it:
+# GNOME Settings (22 pages, a fifth of them for hardware this phone does not
+# have), Mobile Settings (the shell's knobs, on pages of their own), and the
+# port's switches, which were files and scripts. GNOME Settings keeps its
+# grouping in its code, so regrouping it would be a third patched binary to
+# keep in step with its package. This is a list of our own instead: the
+# pages grouped for a phone with two panels, each row opening the page it
+# names in whichever program has it - `gnome-control-center <panel>`,
+# `phosh-mobile-settings <panel>` - or a page of this one.
+#
+# Left out on purpose: Printers; NFC (nfcd does not start, there is no NFC
+# device); Waydroid (not installed); Remote desktop; Thunderbolt and Device
+# security; Mobile Settings' alerts (broken here: its schema is missing) and
+# convergence (an external display, never tested); Displays - phosh applies a
+# scale set there live, over phoc.ini's, and the dock and the shell's CSS
+# are made for the scale in phoc.ini; Encryption, until it has been tried
+# with this device's boot chain. The programs stay installed and can still
+# be opened directly.
+#
+# On the Duo the page a row opens is a window the dock puts on the other
+# panel: the list on one side of the hinge, the page on the other.
+
+import os
+import subprocess
+import sys
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+
+APP_ID = "org.sfduo.Settings"
+GNOME = "gnome-control-center"
+MOBILE = "phosh-mobile-settings"
+
+# (title, subtitle, icon, what it opens)
+#   ("gnome", panel, subpage...)  a GNOME Settings page
+#   ("mobile", panel)             a Mobile Settings page
+#   ("duo",)                      this program's own page
+BLOCKS = [
+    ("Connections", [
+        ("Wi-Fi", "Networks, hotspot", "network-wireless-symbolic", ("gnome", "wifi")),
+        ("Mobile Network", "SIM, data, roaming", "network-cellular-symbolic", ("gnome", "wwan")),
+        ("Bluetooth", None, "bluetooth-active-symbolic", ("gnome", "bluetooth")),
+        ("VPN and Proxy", None, "network-vpn-symbolic", ("gnome", "network")),
+    ]),
+    ("Screen", [
+        ("Appearance", "Style, wallpaper", "preferences-desktop-appearance-symbolic", ("gnome", "background")),
+        ("Top Bar", "What the status bar shows", "view-app-grid-symbolic", ("mobile", "topbar")),
+        ("Lock Screen", "What shows while locked", "system-lock-screen-symbolic", ("mobile", "lockscreen")),
+    ]),
+    ("Sound and Notifications", [
+        ("Sound", None, "audio-speakers-symbolic", ("gnome", "sound")),
+        ("Notifications", None, "preferences-system-notifications-symbolic", ("gnome", "notifications")),
+        ("Feedback", "Vibration and sounds for events", "phone-vibrate-symbolic", ("mobile", "feedback")),
+    ]),
+    ("Surface Duo", [
+        ("Surface Duo", "Two panels, the dock, the hinge", "phone-symbolic", ("duo",)),
+        ("On-Screen Keyboard", None, "input-keyboard-symbolic", ("mobile", "osk")),
+    ]),
+    ("Security", [
+        ("Fingerprint", "Unlock with a finger", "fingerprint-detection-symbolic", ("gnome", "fingerprint")),
+        ("Privacy", "Screen lock, location, camera, microphone", "preferences-system-privacy-symbolic", ("gnome", "privacy")),
+    ]),
+    ("Apps and Accounts", [
+        ("Apps", "Permissions, default apps", "view-grid-symbolic", ("gnome", "applications")),
+        ("Online Accounts", None, "goa-panel-symbolic", ("gnome", "online-accounts")),
+    ]),
+    ("System", [
+        ("Battery and Power", None, "battery-good-symbolic", ("gnome", "power")),
+        ("Keyboard", "Layouts, shortcuts", "input-keyboard-symbolic", ("gnome", "keyboard")),
+        ("Accessibility", None, "org.gnome.Settings-accessibility-symbolic", ("gnome", "universal-access")),
+        ("Language and Region", None, "preferences-desktop-locale-symbolic", ("gnome", "system", "region")),
+        ("Date and Time", None, "preferences-system-time-symbolic", ("gnome", "system", "datetime")),
+        ("Users", None, "system-users-symbolic", ("gnome", "system", "users")),
+        ("About", None, "help-about-symbolic", ("gnome", "system", "about")),
+    ]),
+    ("For Developers", [
+        ("USB Networking", "Networking and SSH over USB", "drive-removable-media-symbolic", ("gnome", "usb")),
+        # Settings 48 opens its SSH and remote login pages only from inside
+        # System ("system secure-shell" lands on System itself), so the row
+        # says where to look
+        ("System Services", "Secure shell, remote login", "utilities-terminal-symbolic", ("gnome", "system")),
+        ("Compositor", "Scale windows to fit", "video-display-symbolic", ("mobile", "compositor")),
+        ("Shell Features", None, "applications-engineering-symbolic", ("mobile", "features")),
+        ("Mouse and Touchpad", None, "input-mouse-symbolic", ("gnome", "mouse")),
+    ]),
+]
+
+
+def run(argv):
+    """Start a program and forget it: the pages are windows of their own."""
+    try:
+        subprocess.Popen(argv, start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as err:
+        print(f"sfduo-settings: {argv[0]}: {err}", file=sys.stderr)
+
+
+def read(path):
+    try:
+        with open(path) as fp:
+            return fp.read().strip()
+    except OSError:
+        return None
+
+
+class DuoPage(Adw.NavigationPage):
+    """What the port is, and what it changed. The switches come in #20."""
+
+    def __init__(self):
+        super().__init__(title="Surface Duo")
+        page = Adw.PreferencesPage()
+
+        about = Adw.PreferencesGroup(title="This Device")
+        for title, value in (
+            ("Port", self._package_version()),
+            ("Kernel", os.uname().release),
+            ("Shell", self._shell()),
+            ("Output scale", self._scale()),
+        ):
+            row = Adw.ActionRow(title=title, subtitle=value or "unknown")
+            row.add_css_class("property")
+            about.add(row)
+        page.add(about)
+
+        later = Adw.PreferencesGroup(
+            title="Switches",
+            description="The two-panel shell, the dock, the fold effect and the "
+                        "output scale will be switched here. Until then they are "
+                        "changed with the sfduo-* commands.")
+        page.add(later)
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(page)
+        self.set_child(view)
+
+    @staticmethod
+    def _package_version():
+        try:
+            out = subprocess.run(
+                ["dpkg-query", "-W", "-f", "${Version}", "adaptation-droidian-surfaceduo"],
+                capture_output=True, text=True, check=False).stdout.strip()
+        except OSError:
+            return None
+        return out or None
+
+    @staticmethod
+    def _shell():
+        if os.path.exists("/etc/sfduo/phosh-stock"):
+            return "stock phosh (the port's shell restored away)"
+        version = read("/usr/lib/sfduo/phosh/version")
+        return "phosh with the port's patches" if version else "stock phosh"
+
+    @staticmethod
+    def _scale():
+        text = read("/etc/phosh/phoc.ini") or ""
+        for line in text.splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == "scale":
+                return value.strip()
+        return None
+
+
+class Window(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Settings")
+        self.set_default_size(420, 800)
+
+        self.nav = Adw.NavigationView()
+        page = Adw.PreferencesPage()
+        for title, rows in BLOCKS:
+            group = Adw.PreferencesGroup(title=title)
+            for name, subtitle, icon, target in rows:
+                group.add(self._row(name, subtitle, icon, target))
+            page.add(group)
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(page)
+        self.nav.add(Adw.NavigationPage(title="Settings", child=view))
+        self.set_content(self.nav)
+
+    def _row(self, name, subtitle, icon, target):
+        row = Adw.ActionRow(title=name, activatable=True)
+        if subtitle:
+            row.set_subtitle(subtitle)
+        row.add_prefix(Gtk.Image.new_from_icon_name(icon))
+        row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
+        row.connect("activated", lambda _r: self._open(target))
+        return row
+
+    def _open(self, target):
+        kind = target[0]
+        if kind == "gnome":
+            run([GNOME, *target[1:]])
+        elif kind == "mobile":
+            run([MOBILE, target[1]])
+        elif kind == "duo":
+            self.nav.push(DuoPage())
+
+
+class App(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID,
+                         flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+
+    def do_activate(self):
+        window = self.get_active_window() or Window(self)
+        window.present()
+
+
+def main():
+    GLib.set_prgname(APP_ID)
+    sys.exit(App().run(sys.argv))
+
+
+if __name__ == "__main__":
+    main()

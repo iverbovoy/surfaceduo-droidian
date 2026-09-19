@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Comment=Settings for this device, grouped: connections, screen, sound, the Surface Duo, security, apps, system
+Exec=/usr/local/bin/sfduo-settings
+Icon=org.gnome.Settings
+Terminal=false
+Categories=Settings;
+StartupNotify=true
+X-Purism-FormFactor=Workstation;Mobile;

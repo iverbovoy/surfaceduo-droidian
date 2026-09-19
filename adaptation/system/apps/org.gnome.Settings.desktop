@@ -1,0 +1,13 @@
+[Desktop Entry]
+# Out of the grid, not out of reach: the port's Settings (org.sfduo.Settings)
+# opens its pages. NoDisplay rather than Hidden, so it can still be launched
+# by its id and by D-Bus. Installed by adaptation-droidian-surfaceduo.
+Type=Application
+Name=GNOME Settings
+Exec=gnome-control-center
+Icon=org.gnome.Settings
+Terminal=false
+Categories=GNOME;GTK;Settings;
+StartupNotify=true
+DBusActivatable=true
+NoDisplay=true

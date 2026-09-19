@@ -1,0 +1,65 @@
+#!/bin/sh
+# sfduo-one-column: the settings programs one step at a time on one panel
+# (#77, #78). Installed as /usr/local/bin/gnome-control-center and
+# /usr/local/bin/phosh-mobile-settings - ahead of /usr/bin in PATH, and named
+# by D-Bus service files in /usr/local/share/dbus-1/services, since both are
+# D-Bus activated - and it tells which one it is by the name it is run as.
+#
+# Both windows are split views, a list of pages beside the open page, that
+# collapse to one column below a width: 550sp for GNOME Settings, 500sp for
+# Mobile Settings. A window on one of the Duo's panels is 675 logical px at
+# scale 2, so both took themselves for a desktop and put two cramped columns
+# side by side. This raises the line to 900sp: one panel goes list, then
+# page, with a back button; spanned across both panels (1392 px) it is two
+# columns as before.
+#
+# No rebuild: GLib's G_RESOURCE_OVERLAYS serves a resource from a file on
+# disk instead. The file is taken from the installed binary at launch and
+# patched here, cached against the binary's mtime and size, so an upgrade
+# never meets a stale copy; if the condition is not in it any more, the
+# program runs untouched. The session already sets G_RESOURCE_OVERLAYS
+# (Droidian's gmobile display panel), so this one is added to it.
+#
+# Mobile Settings also draws nothing at all with GTK's default renderer on
+# this device - an empty grey window - and draws with GSK_RENDERER=gl, so
+# that is set for it unless the user has set a renderer of their own.
+
+name=${0##*/}
+case "$name" in
+gnome-control-center)
+    RESOURCE=/org/gnome/Settings/gtk/cc-window.ui
+    FROM='<condition>max-width: 550sp</condition>'
+    ;;
+phosh-mobile-settings)
+    RESOURCE=/mobi/phosh/MobileSettings/ui/mobile-settings-window.ui
+    FROM='<condition>max-width: 500sp</condition>'
+    : "${GSK_RENDERER:=gl}"
+    export GSK_RENDERER
+    ;;
+*)
+    echo "sfduo-one-column: run as gnome-control-center or phosh-mobile-settings" >&2
+    exit 1
+    ;;
+esac
+REAL=/usr/bin/$name
+TO='<condition>max-width: 900sp</condition>'
+DIR="${XDG_RUNTIME_DIR:-/tmp}/sfduo-one-column/$name"
+UI="$DIR/window.ui"
+
+stamp=$(stat -c '%Y %s' "$REAL" 2>/dev/null)
+if [ "$(cat "$DIR/stamp" 2>/dev/null)" != "$stamp" ]; then
+    mkdir -p "$DIR"
+    rm -f "$UI" "$DIR/stamp"
+    if gresource extract "$REAL" "$RESOURCE" > "$UI.new" 2>/dev/null \
+       && grep -qF "$FROM" "$UI.new"; then
+        sed "s|$FROM|$TO|" "$UI.new" > "$UI"
+    fi
+    rm -f "$UI.new"
+    echo "$stamp" > "$DIR/stamp"
+fi
+
+if [ -s "$UI" ]; then
+    G_RESOURCE_OVERLAYS="${G_RESOURCE_OVERLAYS:+$G_RESOURCE_OVERLAYS:}$RESOURCE=$UI"
+    export G_RESOURCE_OVERLAYS
+fi
+exec "$REAL" "$@"

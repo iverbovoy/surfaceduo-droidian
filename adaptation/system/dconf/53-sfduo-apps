@@ -3,4 +3,4 @@
 # Droidian's own default is a gschema override; a system dconf default sits
 # above it. A default, not a lock - the user's own value wins.
 [sm/puri/phosh]
-favorites=['droidian-camera.desktop', 'org.gnome.Maps.desktop', 'org.gnome.Settings.desktop', 'org.telegram.desktop.desktop', 'firefox.desktop', 'cool-retro-term.desktop']
+favorites=['droidian-camera.desktop', 'org.gnome.Maps.desktop', 'org.sfduo.Settings.desktop', 'org.telegram.desktop.desktop', 'firefox.desktop', 'cool-retro-term.desktop']
