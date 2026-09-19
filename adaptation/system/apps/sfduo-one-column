@@ -29,9 +29,10 @@
 # are hidden with it. Should the file not have the shape this expects, only
 # the width is changed.
 #
-# Mobile Settings also draws nothing at all with GTK's default renderer on
-# this device - an empty grey window - and draws with GSK_RENDERER=gl, so
-# that is set for it unless the user has set a renderer of their own.
+# Mobile Settings draws nothing at all with GTK's own default renderer on
+# this device - an empty grey window - and draws with GSK_RENDERER=gl. The
+# phosh session sets that for everything it starts; this sets it too, for a
+# start from anywhere else, unless a renderer was chosen already.
 
 name=${0##*/}
 case "$name" in

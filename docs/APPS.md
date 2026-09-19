@@ -80,14 +80,13 @@ ICD is picked up by every glvnd client - phosh, droidian-camera, everything -
 and each of them has to be checked afterwards. Until then an app passes
 `__EGL_VENDOR_LIBRARY_FILENAMES` itself.
 
-**GTK4's default renderer can draw nothing.** Mobile Settings
-(phosh-mobile-settings 0.49, GTK 4.18) opened as an empty grey window - the
-sidebar's shade and nothing in it - with the renderer GTK picks by itself,
-and drew correctly with `GSK_RENDERER=gl` (and with `cairo`, in software).
-GNOME Settings, GTK4 as well, draws with the default. The port starts
-Mobile Settings with `gl` (`adaptation/system/apps/sfduo-one-column`); a GTK4
-app that comes up empty here is worth one try with `GSK_RENDERER=gl` before
-anything else.
+**GTK4 without `GSK_RENDERER=gl` can draw nothing.** Droidian's phosh
+session sets `GSK_RENDERER=gl` for everything it starts. A GTK4 program
+started from somewhere else - over ssh, say - picks GTK's own default and
+can come up as an empty grey window: Mobile Settings and the port's own
+Settings both did, and both drew correctly with `gl` (or `cairo`, in
+software). Started from the session, they are fine. When testing a GTK4 app
+by hand, set `GSK_RENDERER=gl` first.
 
 ## Touch, as WebKit delivers it
 
