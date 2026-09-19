@@ -108,6 +108,7 @@ GRID_TRAVEL = 0.55        # the finger's share of the stage that opens the grid 
 GRID_COMMIT = 0.3         # a slow release past this much of the way opens it
 MOVE_MS = 240             # the dock crossing to the other panel
 RISE_MS = 360             # the dock's halves coming in from the sides after an unlock
+RISE_DELAY_MS = 250       # ... once the lock screen has all but faded (phosh-patches/0010)
 WATCH_MS = 500            # how often to ask which windows are open
 WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
 FOCUS_TIMEOUT = 4         # seconds a mapped window gets to take the focus
@@ -1647,7 +1648,10 @@ class Dock(Gtk.Window):
         else:
             for w in self._windows():
                 GtkLayerShell.set_layer(w, GtkLayerShell.Layer.OVERLAY)
-            self._rise()
+            # The lock screen fades away over 300 ms on the same layer and
+            # in front: a rise started now played out behind it, and the
+            # dock seemed simply to be there. It starts as the fade ends.
+            GLib.timeout_add(RISE_DELAY_MS, lambda: (self.locked or self._rise()) and False)
             if self.curtain_up:
                 # held until now; from here it is an ordinary curtain, lifted
                 # by the adoption on the next beat or by the clock
