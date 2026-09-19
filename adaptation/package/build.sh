@@ -755,12 +755,23 @@ install -m755 "$SHELLDIR/sfduo-dock"       "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-brightness" "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-shell-setup" "$PKG/usr/local/sbin/"
 install -m755 "$SHELLDIR/sfduo-phosh-install" "$PKG/usr/local/sbin/"
-# The patched phosh (../shell/phosh-patches 0001-0003, nothing else), built
-# per ../shell/README.md. Version-locked: see sfduo-phosh-install.
+# The patched phosh (../shell/phosh-patches 0001-0004), built per
+# ../shell/README.md. Version-locked: see sfduo-phosh-install.
 PHOSH_BIN="$ROOT/out/phosh/phosh-0.49.0-cf38ab5-sfduo"
 if [ -f "$PHOSH_BIN" ]; then
     install -Dm755 "$PHOSH_BIN" "$PKG/usr/lib/sfduo/phosh/phosh"
     echo "0.49.0+git20250824213429.cf38ab5.next.phosh.0.49" > "$PKG/usr/lib/sfduo/phosh/version"
+    # The hinge, described to gmobile as a cutout running the display's whole
+    # height. It is staged here and copied into /var/lib/droidian/phosh-notch,
+    # where Droidian's phosh.service already points G_RESOURCE_OVERLAYS and
+    # where nothing ever put a file. phosh-patches/0004 reads a
+    # full-height cutout as a seam and gives the display a top bar - and so a
+    # notification shade - per half; an UNPATCHED phosh reads it as a notch
+    # and pushes the whole shade off the bottom of the screen, which is why
+    # sfduo-phosh-install puts this file down only beside the patched binary
+    # and takes it away again on --restore.
+    install -Dm644 "$SHELLDIR/qcom,sm8150-mtp.json" \
+        "$PKG/usr/lib/sfduo/phosh/display-panels/qcom,sm8150-mtp.json"
 else
     echo "NOTE: $PHOSH_BIN not found - building without the patched phosh"
 fi

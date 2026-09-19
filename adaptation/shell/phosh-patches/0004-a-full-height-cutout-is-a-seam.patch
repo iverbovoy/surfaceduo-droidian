@@ -182,14 +182,7 @@
  }
  
  
-@@ -387,18 +426,56 @@
-   PhoshMonitor *monitor;
-   PhoshAppGrid *app_grid;
-   guint32 top_layer;
-+  GdkRectangle seam;
- 
-   monitor = phosh_shell_get_primary_monitor (self);
-   g_return_if_fail (monitor);
+@@ -394,12 +433,55 @@
  
    top_layer = priv->locked ? ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY : ZWLR_LAYER_SHELL_V1_LAYER_TOP;
  
@@ -204,11 +197,15 @@
 +   * half, each with its own bar and its own shade, so that neither is cut in
 +   * two by the bezel and either half can be pulled down on its own.
 +   *
++   * Both stay anchored to three edges - phoc will not make a surface
++   * draggable otherwise - and reach only their own half by leaving a margin
++   * on the side of the seam they do not belong to.
++   *
 +   * Only the first one claims an exclusive zone: the zones of surfaces
 +   * anchored to the same edge are added up, and two of them would reserve
 +   * twice the bar's height across the whole top. */
 +  if (phosh_layout_manager_get_seam (priv->layout_manager, &seam)) {
-+    int right = monitor->logical.width - (seam.x + seam.width);
++    int past_seam = seam.x + seam.width;
 +
 +    g_debug ("Seam at %d, %d wide: a top panel per half", seam.x, seam.width);
 +    priv->top_panel = PHOSH_DRAG_SURFACE (phosh_top_panel_new (
@@ -216,19 +213,23 @@
 +                                            phosh_wayland_get_zphoc_layer_shell_effects_v1 (wl),
 +                                            monitor,
 +                                            top_layer,
-+                                            ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-+                                            ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT,
-+                                            seam.x,
++                                            0,
++                                            monitor->logical.width - seam.x,
 +                                            PHOSH_TOP_BAR_HEIGHT));
 +    priv->top_panel_right = PHOSH_DRAG_SURFACE (phosh_top_panel_new (
 +                                                  phosh_wayland_get_zwlr_layer_shell_v1 (wl),
 +                                                  phosh_wayland_get_zphoc_layer_shell_effects_v1 (wl),
 +                                                  monitor,
 +                                                  top_layer,
-+                                                  ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-+                                                  ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT,
-+                                                  right,
++                                                  past_seam,
++                                                  0,
 +                                                  0));
++    /* The far half is marked so a stylesheet can tell the two apart. Both
++     * bars carry the same clock and the same indicators, and side by side
++     * that reads as one bar drawn twice rather than as two halves; the port
++     * hides this one's contents and keeps it as a handle for its own shade. */
++    gtk_style_context_add_class (gtk_widget_get_style_context (GTK_WIDGET (priv->top_panel_right)),
++                                 "phosh-far-half");
 +    gtk_widget_set_visible (GTK_WIDGET (priv->top_panel_right), TRUE);
 +  } else {
 +    priv->top_panel = PHOSH_DRAG_SURFACE (phosh_top_panel_new (
@@ -236,16 +237,14 @@
 +                                            phosh_wayland_get_zphoc_layer_shell_effects_v1 (wl),
 +                                            monitor,
 +                                            top_layer,
-+                                            ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-+                                            ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
-+                                            ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT,
++                                            0,
 +                                            0,
 +                                            PHOSH_TOP_BAR_HEIGHT));
 +  }
    gtk_widget_set_visible (GTK_WIDGET (priv->top_panel), TRUE);
  
    /* Home is created after the top-panel so it honors its exclusive zone */
-@@ -417,6 +494,17 @@
+@@ -418,6 +500,17 @@
                              G_CALLBACK (on_top_panel_state_changed),
                              self);
  
@@ -263,7 +262,7 @@
    g_signal_connect_swapped (priv->home,
                              "notify::state",
                              G_CALLBACK (on_home_state_changed),
-@@ -436,6 +524,7 @@
+@@ -437,6 +530,7 @@
  {
    PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
  
@@ -271,7 +270,7 @@
    g_clear_pointer (&priv->top_panel, phosh_cp_widget_destroy);
    g_clear_pointer (&priv->home, phosh_cp_widget_destroy);
  }
-@@ -457,6 +546,8 @@
+@@ -458,6 +552,8 @@
       unblanking the screen which can be confusing */
    if (priv->top_panel)
      phosh_top_panel_fold (PHOSH_TOP_PANEL (priv->top_panel));
@@ -280,7 +279,7 @@
  
    update_top_level_layer (self);
    update_top_bar_transparency (self);
-@@ -653,7 +744,7 @@
+@@ -654,7 +750,7 @@
    /* Clear existing banner */
    g_clear_pointer (&priv->notification_banner, phosh_cp_widget_destroy);
    if (phosh_notify_manager_get_show_notification_banner (manager, notification) &&
@@ -289,7 +288,7 @@
        !priv->locked) {
      priv->notification_banner = phosh_notification_banner_new (notification);
      g_signal_connect (priv->notification_banner,
-@@ -685,6 +776,8 @@
+@@ -686,6 +782,8 @@
    priv = phosh_shell_get_instance_private (self);
  
    phosh_top_panel_fold (PHOSH_TOP_PANEL (priv->top_panel));
@@ -300,28 +299,32 @@
  
 --- a/src/top-panel.c
 +++ b/src/top-panel.c
-@@ -912,22 +912,24 @@
+@@ -912,13 +912,23 @@
  phosh_top_panel_new (struct zwlr_layer_shell_v1          *layer_shell,
                       struct zphoc_layer_shell_effects_v1 *layer_shell_effects,
                       PhoshMonitor                        *monitor,
 -                     guint32                              layer)
 +                     guint32                              layer,
-+                     guint32                              anchor,
-+                     int                                  width,
++                     int                                  margin_left,
++                     int                                  margin_right,
 +                     int                                  exclusive)
  {
++  /* Anchored to three edges, always: phoc refuses to make a layer surface
++   * draggable otherwise ("Surface not anchored to three edges"), and the
++   * shade is a dragged surface. A panel that covers half the display gets
++   * there by leaving a margin on the side it does not reach, not by letting
++   * go of an anchor. */
    return g_object_new (PHOSH_TYPE_TOP_PANEL,
                         /* layer-surface */
                         "layer-shell", layer_shell,
                         "wl-output", monitor->wl_output,
                         "height", PHOSH_TOP_BAR_HEIGHT,
--                       "anchor", ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
--                                 ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
--                                 ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT,
-+                       "width", width,
-+                       "anchor", anchor,
-                        "layer", layer,
-                        "kbd-interactivity", FALSE,
++                       "margin-left", margin_left,
++                       "margin-right", margin_right,
+                        "anchor", ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
+                                  ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
+                                  ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT,
+@@ -927,7 +937,7 @@
                         "namespace", "phosh top-panel",
                         /* drag-surface */
                         "layer-shell-effects", layer_shell_effects,
@@ -338,8 +341,8 @@
                                          PhoshMonitor                        *monitor,
 -                                        guint32                              layer);
 +                                        guint32                              layer,
-+                                        guint32                              anchor,
-+                                        int                                  width,
++                                        int                                  margin_left,
++                                        int                                  margin_right,
 +                                        int                                  exclusive);
  void               phosh_top_panel_toggle_fold (PhoshTopPanel *self);
  void               phosh_top_panel_fold (PhoshTopPanel *self);

@@ -28,21 +28,33 @@
 
 /* ---- top bar and the shade -------------------------------------------- */
 
-/* The clock is a centre child of the bar, so it sits in the bezel. A margin
-   on the clock itself moves it, but by an amount that depends on how wide the
-   indicators next to it happen to be: it read 560 with four icons and went
-   off the right edge entirely once the modem added "4G" to them.
+/* Nothing here any more. The clock used to sit in the bezel, and a padding on
+   the group left of it pushed the clock onto the right panel. The patched
+   shell (phosh-patches/0004) gives a display with a seam a top bar per half
+   instead: each is @LEFT@px wide, each centres its own clock inside its own
+   panel, and either can be pulled down on its own. Nudging the clock now
+   would push it off the half it belongs to.
 
-   Widening the group on the left is what phosh itself does for a notch, and
-   it is stable - a centre child stays centred until a side child crowds it,
-   and then moves by exactly the overlap. The padding is the right panel's
-   centre less what the indicators and half the clock take (136, measured at
-   scale 3 and independent of it).
+   That patch also needs the hinge described to it, which is what
+   display-panels/qcom,sm8150-mtp.json does; sfduo-phosh-install puts the
+   description down with the patched binary and takes it away with it. On
+   stock phosh, without the description, both bars become one again and its
+   clock goes back to the middle of the bezel - a rescue path, not a mode
+   anyone lives in. */
 
-   This is the job gmobile's cutout description was supposed to do, and it did
-   do it - at the price of the entire shade, which unfolded to a black screen
-   with nothing drawn in it at all. See the README. */
-#top-bar > :first-child { padding-right: @TOPPAD@px; }
+/* One status bar, not two. Each half has a bar of its own, and both carried
+   the same clock, the same signal and the same battery: side by side that
+   reads as one bar drawn twice, not as two halves. It showed on the lock
+   screen first, where the bar is only indicators and the pair of them sat a
+   hinge apart.
+
+   So the far half's bar is emptied and kept. Emptied, not removed: the strip
+   is what the finger pulls, and the shade behind it is the whole point of
+   splitting the panel. It is transparent rather than hidden so the strip
+   keeps its height and stays where the drag starts. Only the folded bar goes
+   - the unfolded shade is a different page of the same stack and draws in
+   full on both halves. */
+.phosh-far-half #top-bar { opacity: 0; }
 
 /* ---- lock screen ------------------------------------------------------ */
 

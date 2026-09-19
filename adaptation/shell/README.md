@@ -6,9 +6,11 @@ are a single output, so the middle of the screen is the middle of the hinge:
 screen's clock was cut in half by it, the home bar's drag handle was entirely
 inside it, and a column of app icons fell into it.
 
-One file fixes that without patching phosh: `gtk.css`. The second thing you
-would reach for - gmobile's cutout description - is a trap, and the reason is
-worth the section below.
+One file fixes most of that without patching phosh: `gtk.css`. The second
+thing you would reach for - gmobile's cutout description - was a trap for a
+long time, and is now how the top bar and the notification shade are split in
+two. Both stories are below, because the trap is still there on a stock
+phosh.
 
 ## gmobile's cutout: what it does, and what it costs
 
@@ -40,16 +42,36 @@ does work: the log says `Mapped file … as a resource overlay` and the top
 bar's clock moves out of the bezel. That is also the only thing phosh does
 with cutouts.
 
-**And it breaks the notification shade completely.** With that file in place,
-pulling the shade down gives a black screen: no clock, no quick settings, no
-notifications, and the status bar gone with them - the panel unfolds and
-nothing at all is drawn in it. Remove the file, restart phosh, and the shade
-comes back exactly as it should. It was reproduced both ways, twice.
+**And on a stock phosh it breaks the notification shade completely.** With
+that file in place, pulling the shade down gives a black screen: no clock, no
+quick settings, no notifications, and the status bar gone with them - the
+panel unfolds and nothing at all is drawn in it. Remove the file, restart
+phosh, and the shade comes back exactly as it should. It was reproduced both
+ways, twice.
 
-So the file is not installed on this device, and the clock is moved with two
-lines of CSS instead, which costs nothing and moves the shade's clock too.
-A phone whose notifications are unreachable is a worse phone than one with a
-clock in an odd place.
+The cause is one line. phosh treats a cutout that overlaps the clock as a
+notch and shifts the bar's contents by `notch.height + notch.y` - and that
+same shift is applied as a top margin to the settings menu. A notch is tens
+of pixels tall. A hinge is the whole display, so the shade is pushed 1800
+pixels down, off the bottom of a screen 1800 pixels tall.
+
+`phosh-patches/0004` says so: a cutout as tall as the panel is not a notch
+but a **seam**, a hinge between two halves of one display. Phosh skips the
+notch arithmetic for it, and the shell gives such a display a top bar - and
+so a notification shade - per half, each anchored to its own three edges and
+reaching only as far as the seam. Either half can be pulled down on its own,
+neither is cut in two by the bezel, and each centres its own clock, so the
+CSS that used to nudge the clock out of the bezel is gone.
+
+Both bars carried the same clock and the same indicators, which side by side
+reads as one bar drawn twice rather than as two halves - it showed on the
+lock screen first, where the bar is only indicators. The far half's bar is
+emptied by `gtk.css` and kept as the handle its own shade is pulled by.
+
+So the file **is** installed, by `sfduo-phosh-install`, in step with the
+patched binary and never without it: `--restore` takes it away again. On a
+stock phosh the shade would be unreachable, which is a worse phone than one
+with a clock in an odd place.
 
 ## The output scale
 
@@ -158,7 +180,8 @@ exits. Once online:
 sudo sfduo-shell-setup
 ```
 
-The gmobile cutout described above is not installed: it costs the whole
+The gmobile cutout described above is installed with the patched phosh and
+only with it, by `sfduo-phosh-install`: on a stock phosh it costs the whole
 notification shade, as that section explains.
 
 All of this is experimental and changes from one release to the next. To go
@@ -341,7 +364,7 @@ both, because which comes first depends on how long the shell took to start
 start that is still most of a minute after the lock screen is drawn, so the
 dock also treats "nobody owns `org.gnome.ScreenSaver` yet" as locked.
 
-The package carries the patched binary (0001-0003, not the unfinished 0004) and
+The package carries the patched binary (0001-0004) and
 `sudo sfduo-phosh-install` puts it in place at install time - but only beside
 exactly the phosh version it was built for; on any other it says so and
 leaves the packaged shell alone. `sudo sfduo-phosh-install --restore` puts the
@@ -360,9 +383,10 @@ package was built from, configured as the package is (`--prefix=/usr
 --libdir=lib/aarch64-linux-gnu`; a `/usr/local` build looks for its plugins in
 the wrong place). The binary replaces `/usr/libexec/phosh`; the packaged one
 is kept beside it as `phosh.stock`. `0002` makes the status bar say LTE
-rather than 4G. `0004` is unfinished work on a top bar per panel, inert
-without a full-height cutout in gmobile's device description, and is not in
-the packaged binary.
+rather than 4G. `0004` reads a cutout that runs the display's whole height as
+a seam and gives such a display a top bar, and a notification shade, per
+half; it is inert without that cutout in gmobile's device description, which
+is why the two are installed and withdrawn together.
 
 While the phone is locked the dock is not hidden - a hidden layer surface is
 a destroyed one, and takes a few frames to come back - it steps down from the

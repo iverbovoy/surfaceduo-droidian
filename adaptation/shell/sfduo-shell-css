@@ -23,7 +23,6 @@ import sys
 
 PANEL_W, PANEL_H, HINGE = 1350, 1800, 84      # physical, one panel and the gap
 SPAN = 2 * PANEL_W + HINGE                    # 2784
-TOPBAR_TAKEN = 136        # the indicators and half the clock, measured at scale 3
 GRID_PAD = 18             # each grid button's side padding
 GRID_SPACING = 6          # phosh's column spacing
 
@@ -59,7 +58,6 @@ def numbers(scale):
     return {
         "SCALE": f"{scale:g}", "W": w, "H": h,
         "LEFT": left, "RIGHT": right, "HINGE": hinge,
-        "TOPPAD": right + left // 2 - TOPBAR_TAKEN,
         "OFFGRID": 2 * max(w, h),
         "GRIDROW": row, "GRIDCHILD": child, "GRIDMIN": child - 2 * GRID_PAD,
     }

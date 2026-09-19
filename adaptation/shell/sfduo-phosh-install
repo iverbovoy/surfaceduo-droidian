@@ -3,10 +3,11 @@
 # one - or, with --restore, put the packaged one back and keep it there.
 #
 # The patched binary is phosh 0.49.0 at Droidian's cf38ab5 plus the patches
-# 0001-0003 in adaptation/shell/phosh-patches of the port's repository: it
-# tells logind it came up locked, it says LTE rather than 4G, and its home
+# 0001-0004 in adaptation/shell/phosh-patches of the port's repository: it
+# tells logind it came up locked, it says LTE rather than 4G, its home
 # overview lets go of the keyboard when a window opens, so windows can take
-# the focus and be tiled. It is built against exactly that package's
+# the focus and be tiled, and it gives a display with a seam down it a top
+# bar and a shade per half. It is built against exactly that package's
 # libraries and resources, so it is installed only beside exactly that
 # version. A phosh upgrade overwrites it with the new stock binary, which is
 # the safe way for this to stop applying.
@@ -24,6 +25,15 @@
 # phoc refuses a maximize request for a window without the focus, so nothing
 # else can put it right. So the lock is there exactly when the patched phosh
 # is, and the packaged phosh maximizes windows itself, as it does anywhere.
+#
+# The hinge description goes with the patched binary for the same reason. It
+# is a gmobile display-panel file naming the 84 physical pixels of hinge as a
+# cutout; the patched phosh reads a cutout that runs the panel's whole height
+# as a seam and splits the top bar on it. The packaged phosh reads the same
+# file as a notch, applies its height as a top margin to the settings menu,
+# and pushes the shade off the bottom of the display - pulled down it gives a
+# black screen with nothing drawn in it. So the file is present exactly when
+# the patched binary is.
 set -e
 OURS=/usr/lib/sfduo/phosh/phosh
 WANT=$(cat /usr/lib/sfduo/phosh/version 2>/dev/null || true)
@@ -31,6 +41,9 @@ BIN=/usr/libexec/phosh
 STOCK=/usr/libexec/phosh.stock
 KEEP_STOCK=/etc/sfduo/phosh-stock
 LOCK=/etc/dconf/db/local.d/locks/50-sfduo-phoc
+PANELS=/usr/lib/sfduo/phosh/display-panels
+# where G_RESOURCE_OVERLAYS in Droidian's phosh.service already points
+PANELS_LIVE=/var/lib/droidian/phosh-notch
 
 tiling_lock() {
     # on: windows tile, off: phosh maximizes them (its own default)
@@ -47,6 +60,25 @@ tiling_lock() {
     command -v dconf >/dev/null 2>&1 && dconf update || true
 }
 
+hinge_description() {
+    # on: the shell is told where the hinge is, off: it is not told at all
+    [ -d "$PANELS" ] || return 0
+    for panel in "$PANELS"/*.json; do
+        [ -e "$panel" ] || continue
+        live=$PANELS_LIVE/$(basename "$panel")
+        if [ "$1" = on ]; then
+            cmp -s "$panel" "$live" && continue
+            mkdir -p "$PANELS_LIVE"
+            cp -a "$panel" "$live.tmp" && mv -f "$live.tmp" "$live"
+            echo "sfduo-phosh: hinge described to the shell ($live) - a top bar and a shade per half"
+        else
+            [ -e "$live" ] || continue
+            rm -f "$live"
+            echo "sfduo-phosh: hinge description withdrawn ($live) - one top bar across both halves"
+        fi
+    done
+}
+
 case "$1" in
 --restore)
     [ -f "$STOCK" ] || { echo "sfduo-phosh: no $STOCK to restore" >&2; exit 1; }
@@ -60,6 +92,7 @@ case "$1" in
         echo "sfduo-phosh: it stays through package upgrades until 'sfduo-phosh-install --patched'"
     fi
     tiling_lock off
+    hinge_description off
     echo "sfduo-phosh: restart the shell (sudo systemctl restart phosh). Only the phosh binary and"
     echo "sfduo-phosh: the tiling changed: the dock, the CSS and the black background are separate -"
     echo "sfduo-phosh: see adaptation/shell/README.md to turn them off. The packaged phosh does not"
@@ -74,6 +107,7 @@ case "$1" in
     if [ -f "$KEEP_STOCK" ]; then
         echo "sfduo-phosh: packaged phosh kept, as --restore asked ($KEEP_STOCK); 'sfduo-phosh-install --patched' undoes that"
         tiling_lock off
+        hinge_description off
         exit 0
     fi
     ;;
@@ -83,17 +117,19 @@ case "$1" in
     ;;
 esac
 
-[ -f "$OURS" ] && [ -n "$WANT" ] || { echo "sfduo-phosh: no patched binary in this package"; tiling_lock off; exit 0; }
+[ -f "$OURS" ] && [ -n "$WANT" ] || { echo "sfduo-phosh: no patched binary in this package"; tiling_lock off; hinge_description off; exit 0; }
 HAVE=$(dpkg-query -W -f='${Version}' phosh 2>/dev/null || true)
 if [ "$HAVE" != "$WANT" ]; then
     echo "sfduo-phosh: phosh is $HAVE, the patched binary is for $WANT - left alone;"
     echo "sfduo-phosh: windows will not tile to a panel on this phosh (see adaptation/shell/README.md)"
     tiling_lock off
+    hinge_description off
     exit 0
 fi
 if cmp -s "$OURS" "$BIN"; then
     echo "sfduo-phosh: patched phosh already in place"
     tiling_lock on
+    hinge_description on
     exit 0
 fi
 # keep the packaged binary, once: never overwrite the copy with our own
@@ -101,4 +137,5 @@ fi
 # a running binary cannot be written over, only replaced
 cp -a "$OURS" "$BIN.tmp" && chmod 755 "$BIN.tmp" && mv -f "$BIN.tmp" "$BIN"
 tiling_lock on
+hinge_description on
 echo "sfduo-phosh: patched phosh installed (packaged one kept as $STOCK) - restart the shell (sudo systemctl restart phosh)"
