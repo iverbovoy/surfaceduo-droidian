@@ -901,13 +901,33 @@ class Dock(Gtk.Window):
 
     def _move_group(self, app_ids, side):
         """Move windows to a panel in order - the last one ends up on top -
-        and look at the windows again at once, so the dock follows."""
+        and set off across at once, with them: the panels they take are
+        known now, the next look at the windows only confirms it."""
         for app_id in app_ids:
             self._move_to(app_id, side)
+        running = getattr(self, "running", {})
+        self.window_busy = {self.placed.get(a, "both") for a, minimized in running.items()
+                            if not minimized}
+        GLib.idle_add(self._apply_mode)
         self.watch_wake.set()
 
     def _move_to(self, app_id, side):
-        """Put an open window on a panel: focus it, then the tiling chord."""
+        """Put an open window on a panel.
+
+        The port's phoc does it directly (org.sfduo.Phoc.Tile): no focus, no
+        raise, and the window slides across. Anywhere else, as a user would:
+        focus it, wait for it, the tiling chord - half a second a window."""
+        try:
+            tiled = self.session_bus.call_sync(
+                "org.sfduo.Phoc", "/org/sfduo/Phoc", "org.sfduo.Phoc", "Tile",
+                GLib.Variant("(ss)", (app_id, side)), GLib.VariantType("(u)"),
+                Gio.DBusCallFlags.NO_AUTO_START, 1000, None)[0]
+        except GLib.Error:
+            tiled = 0
+        if tiled:
+            self.placed[app_id] = side
+            self._save_placed()
+            return
         if not self._take_focus(app_id):
             return
         key = "Left" if side == "left" else "Right"
@@ -1045,13 +1065,7 @@ class Dock(Gtk.Window):
             if leader_side in ("left", "right"):
                 side = leader_side                      # see _on_dock_method
             debug(f"adopting {app_id} onto the {side} panel")
-            if not self._take_focus(app_id):
-                continue
-            key = "Left" if side == "left" else "Right"
-            if subprocess.run(["wtype", "-M", "logo", "-k", key, "-m", "logo"],
-                              check=False).returncode == 0:
-                self.placed[app_id] = side
-                self._save_placed()
+            self._move_to(app_id, side)         # phoc's Tile, or focus and the chord
 
     # ---- a shell that cannot place windows -----------------------------------
     #

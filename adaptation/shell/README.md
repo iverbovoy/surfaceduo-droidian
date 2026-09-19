@@ -284,9 +284,19 @@ shell that says nothing.
 With an app on one panel the dock stands on the other. A tap there on that
 app's button used to give its window the focus where it was - nothing to
 see. The hand is on the free panel, so the app comes to it: the dock moves
-the window across (focus, then the tiling chord), with any window following
-it (a page the port's Settings opened over itself) moved after it so it
-stays on top, and then takes the panel the app left.
+the window across, with any window following it (a page the port's Settings
+opened over itself), and takes the panel the app left.
+
+It first did that as a user would - focus, wait for it, the tiling chord -
+half a second a window, and a pair came across as two jumps with the page
+disappearing under the list between them. `phoc-patches/0007` gives the dock
+a direct way: `org.sfduo.Phoc.Tile(app_id, side)` on the session bus tiles
+an app's windows without focusing or raising anything, and each slides
+across (its last buffer moving, the window shown on arrival, 260 ms). The
+dock sets off at the same moment instead of after its next look at the
+windows. Measured: 24-37 ms from the tap to both moving; the dock's
+crossing 16.2 ms a frame. New windows it adopts are tiled the same way. On
+a stock phoc the old way still works.
 
 ### A shade folds from anywhere
 

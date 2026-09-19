@@ -1,0 +1,448 @@
+From 631d2f70bc637021e966829433e028f8be4c31ea Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Sat, 19 Sep 2026 23:54:51 +0300
+Subject: [PATCH] sfduo-control: org.sfduo.Phoc.Tile puts an app's windows on a
+ half, sliding
+
+The port's dock moved a window to the other half as a user would: focus,
+wait, the tiling chord - half a second a window, and two windows of a pair
+were raised in turn and jumped one after the other. Tile(app_id, side) on
+the session bus tiles an app's windows directly: nothing is focused or
+raised, and each window's last buffer slides from where it was to where it
+goes (a MOVE ghost, 260 ms) while the window itself is hidden, then shown.
+---
+ src/meson.build     |   1 +
+ src/server.c        |   2 +
+ src/sfduo-control.c | 164 ++++++++++++++++++++++++++++++++++++++++++++
+ src/sfduo-control.h |  15 ++++
+ src/view-ghost.c    |  88 +++++++++++++++++++++---
+ src/view-ghost.h    |   2 +
+ 6 files changed, 264 insertions(+), 8 deletions(-)
+ create mode 100644 src/sfduo-control.c
+ create mode 100644 src/sfduo-control.h
+
+diff --git a/src/meson.build b/src/meson.build
+index 5cc26e9..8ea113e 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -113,6 +113,7 @@ sources = files(
+   'utils.h',
+   'view.c',
+   'view-ghost.c',
++  'sfduo-control.c',
+   'view.h',
+   'view-child.c',
+   'view-child-private.h',
+diff --git a/src/server.c b/src/server.c
+index aaa9758..2c1be51 100644
+--- a/src/server.c
++++ b/src/server.c
+@@ -13,6 +13,7 @@
+ #include "debug-control.h"
+ #include "render-private.h"
+ #include "seat.h"
++#include "sfduo-control.h"
+ #include "server.h"
+ #include "surface.h"
+ #include "utils.h"
+@@ -356,6 +357,7 @@ phoc_server_initable_init (GInitable    *initable,
+ 
+   self->debug_control = phoc_debug_control_new (self);
+   phoc_debug_control_set_exported (self->debug_control, TRUE);
++  phoc_sfduo_control_start ();
+ 
+   return TRUE;
+ }
+diff --git a/src/sfduo-control.c b/src/sfduo-control.c
+new file mode 100644
+index 0000000..ac3861f
+--- /dev/null
++++ b/src/sfduo-control.c
+@@ -0,0 +1,164 @@
++/*
++ * Copyright (C) 2026 The Surface Duo port
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++
++#define G_LOG_DOMAIN "phoc-sfduo-control"
++
++#include "phoc-config.h"
++
++#include "desktop.h"
++#include "server.h"
++#include "sfduo-control.h"
++#include "view.h"
++#include "view-ghost.h"
++
++#include <gio/gio.h>
++
++/*
++ * org.sfduo.Phoc on the session bus: what the port's dock needs the
++ * compositor to do for it, done directly.
++ *
++ * Tile(app_id, side) puts the windows of an app on one half of the output.
++ * The dock used to do it as a user would: give the window the focus, wait
++ * for it, send the tiling chord - half a second a window, and with two
++ * windows of a pair (a page over the list it came from) each was raised in
++ * turn, so the one underneath came up over the other, jumped, and the
++ * other jumped after it. Here nothing is focused or raised: the stacking
++ * stays as it was, and each window slides across instead of jumping
++ * (phoc_view_ghost_move).
++ */
++
++#define SFDUO_BUS_NAME "org.sfduo.Phoc"
++#define SFDUO_OBJECT_PATH "/org/sfduo/Phoc"
++
++static const char introspection_xml[] =
++  "<node>"
++  "  <interface name='org.sfduo.Phoc'>"
++  "    <method name='Tile'>"
++  "      <arg name='app_id' type='s' direction='in'/>"
++  "      <arg name='side' type='s' direction='in'/>"
++  "      <arg name='tiled' type='u' direction='out'/>"
++  "    </method>"
++  "  </interface>"
++  "</node>";
++
++
++static void
++tile_view (PhocView *view, PhocViewTileDirection dir)
++{
++  struct wlr_surface *surface = view->wlr_surface;
++  struct wlr_box from, to, tiled, geom;
++  float scale = 1.0;
++
++  if (phoc_view_is_tiled (view) && phoc_view_get_tile_direction (view) == dir)
++    return;
++
++  /* The surface's box, where it is and where it is going: the tile's box
++   * is the window's geometry, the surface sits geom.x/y before it. */
++  if (surface && phoc_view_get_tiled_box (view, dir, NULL, &tiled)) {
++    struct wlr_box box;
++
++    phoc_view_get_box (view, &box);
++    if (view->box.width > 0)
++      scale = (float)box.width / view->box.width;
++    phoc_view_get_geometry (view, &geom);
++    from = (struct wlr_box) {
++      .x = view->box.x, .y = view->box.y,
++      .width = surface->current.width * scale, .height = surface->current.height * scale,
++    };
++    to = from;
++    to.x = tiled.x - geom.x / scale;
++    to.y = tiled.y - geom.y / scale;
++    phoc_view_tile (view, dir, NULL);
++    phoc_view_ghost_move (view, &from, &to);
++    return;
++  }
++
++  phoc_view_tile (view, dir, NULL);
++}
++
++
++static void
++handle_method_call (GDBusConnection       *connection,
++                    const char            *sender,
++                    const char            *object_path,
++                    const char            *interface_name,
++                    const char            *method_name,
++                    GVariant              *parameters,
++                    GDBusMethodInvocation *invocation,
++                    gpointer               user_data)
++{
++  PhocDesktop *desktop = phoc_server_get_desktop (phoc_server_get_default ());
++  const char *app_id, *side;
++  PhocViewTileDirection dir;
++  guint tiled = 0;
++
++  if (g_strcmp0 (method_name, "Tile") != 0) {
++    g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_METHOD,
++                                           "No method %s", method_name);
++    return;
++  }
++
++  g_variant_get (parameters, "(&s&s)", &app_id, &side);
++  if (g_strcmp0 (side, "left") == 0) {
++    dir = PHOC_VIEW_TILE_LEFT;
++  } else if (g_strcmp0 (side, "right") == 0) {
++    dir = PHOC_VIEW_TILE_RIGHT;
++  } else {
++    g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
++                                           "side is left or right, not %s", side);
++    return;
++  }
++
++  for (GList *l = phoc_desktop_get_views (desktop)->head; l; l = l->next) {
++    PhocView *view = PHOC_VIEW (l->data);
++
++    if (!phoc_view_is_mapped (view) || view->parent != NULL)
++      continue;
++    if (g_strcmp0 (phoc_view_get_app_id (view), app_id) != 0)
++      continue;
++    tile_view (view, dir);
++    tiled++;
++  }
++  g_debug ("Tile %s %s: %u", app_id, side, tiled);
++  g_dbus_method_invocation_return_value (invocation, g_variant_new ("(u)", tiled));
++}
++
++
++static const GDBusInterfaceVTable vtable = { handle_method_call, NULL, NULL, { 0 } };
++
++
++static void
++on_bus_acquired (GDBusConnection *connection, const char *name, gpointer data)
++{
++  g_autoptr (GDBusNodeInfo) node = NULL;
++  g_autoptr (GError) err = NULL;
++
++  node = g_dbus_node_info_new_for_xml (introspection_xml, &err);
++  if (node == NULL) {
++    g_warning ("Cannot describe %s: %s", SFDUO_BUS_NAME, err->message);
++    return;
++  }
++  if (g_dbus_connection_register_object (connection, SFDUO_OBJECT_PATH, node->interfaces[0],
++                                         &vtable, NULL, NULL, &err) == 0)
++    g_warning ("Cannot publish %s: %s", SFDUO_OBJECT_PATH, err->message);
++}
++
++
++/**
++ * phoc_sfduo_control_start:
++ *
++ * Put org.sfduo.Phoc on the session bus.
++ */
++void
++phoc_sfduo_control_start (void)
++{
++  static guint id;
++
++  if (id)
++    return;
++  id = g_bus_own_name (G_BUS_TYPE_SESSION, SFDUO_BUS_NAME, G_BUS_NAME_OWNER_FLAGS_NONE,
++                       on_bus_acquired, NULL, NULL, NULL, NULL);
++}
+diff --git a/src/sfduo-control.h b/src/sfduo-control.h
+new file mode 100644
+index 0000000..79a7ea5
+--- /dev/null
++++ b/src/sfduo-control.h
+@@ -0,0 +1,15 @@
++/*
++ * Copyright (C) 2026 The Surface Duo port
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++
++#pragma once
++
++#include <glib.h>
++
++G_BEGIN_DECLS
++
++void phoc_sfduo_control_start (void);
++
++G_END_DECLS
+diff --git a/src/view-ghost.c b/src/view-ghost.c
+index fa91b32..4c57212 100644
+--- a/src/view-ghost.c
++++ b/src/view-ghost.c
+@@ -23,6 +23,7 @@
+ 
+ #define PHOC_ANIM_DURATION_WINDOW_CLOSE 200
+ #define PHOC_ANIM_DURATION_WINDOW_MINIMIZE 280
++#define PHOC_ANIM_DURATION_WINDOW_MOVE 260
+ #define PHOC_VIEW_GHOST_CLOSE_SCALE 0.92      /* a closed window shrinks a little */
+ #define PHOC_VIEW_GHOST_MINIMIZE_SCALE 0.3    /* a minimized one goes down small */
+ #define PHOC_VIEW_GHOST_MINIMIZE_GAP 12       /* ... and stops this far above the edge */
+@@ -62,6 +63,9 @@ struct _PhocViewGhost {
+   enum wl_output_transform  transform;
+   PhocViewGhostKind         kind;
+   float                     progress;   /* 0 as the window was .. 1 gone */
++  /* moving: where the window is going, and the window, hidden meanwhile */
++  struct wlr_box            to;
++  PhocView                 *view;
+ };
+ 
+ G_DEFINE_TYPE (PhocViewGhost, phoc_view_ghost, G_TYPE_OBJECT)
+@@ -71,11 +75,20 @@ static GList *ghosts;
+ static void on_output_destroyed (gpointer data, GObject *where_the_object_was);
+ 
+ 
++static void damage_box (PhocViewGhost *self, struct wlr_box box);
++
+ static void
+ damage (PhocViewGhost *self)
+ {
+-  struct wlr_box box = self->box;
++  damage_box (self, self->box);
++  if (self->kind == PHOC_VIEW_GHOST_MOVE)
++    damage_box (self, self->to);
++}
+ 
++
++static void
++damage_box (PhocViewGhost *self, struct wlr_box box)
++{
+   if (self->output == NULL || self->output->wlr_output == NULL)
+     return;
+ 
+@@ -179,6 +192,15 @@ place (PhocViewGhost *self, struct wlr_box *out, float *alpha)
+   cx = self->box.x + self->box.width / 2.0;
+   cy = self->box.y + self->box.height / 2.0;
+ 
++  if (self->kind == PHOC_VIEW_GHOST_MOVE) {
++    out->x = self->box.x + (self->to.x - self->box.x) * p;
++    out->y = self->box.y + (self->to.y - self->box.y) * p;
++    out->width = self->box.width + (self->to.width - self->box.width) * p;
++    out->height = self->box.height + (self->to.height - self->box.height) * p;
++    *alpha = 1.0;
++    return;
++  }
++
+   if (self->kind == PHOC_VIEW_GHOST_MINIMIZE) {
+     float end_cy;
+ 
+@@ -202,6 +224,13 @@ place (PhocViewGhost *self, struct wlr_box *out, float *alpha)
+ static void
+ on_animation_done (PhocViewGhost *self)
+ {
++  if (self->view) {
++    /* the window is where the ghost arrived: show it again */
++    g_object_set (self->view, "alpha", 1.0f, NULL);
++    phoc_view_damage_whole (self->view);
++    g_object_remove_weak_pointer (G_OBJECT (self->view), (gpointer *) &self->view);
++    self->view = NULL;
++  }
+   damage (self);
+   ghosts = g_list_remove (ghosts, self);
+   g_object_unref (self);
+@@ -224,8 +253,45 @@ on_output_destroyed (gpointer data, GObject *where_the_object_was)
+  * Leave a ghost of @view behind that fades and shrinks away. Call it
+  * while the view is still mapped and its surface still has its buffer.
+  */
++static PhocViewGhost *ghost_new (PhocView *view, PhocViewGhostKind kind,
++                                  const struct wlr_box *to);
++
+ void
+ phoc_view_ghost_leave (PhocView *view, PhocViewGhostKind kind)
++{
++  ghost_new (view, kind, NULL);
++}
++
++
++/**
++ * phoc_view_ghost_move:
++ * @view: A view that has just been told to go elsewhere
++ * @from: where its surface was, in layout coordinates
++ * @to: where its surface is going
++ *
++ * A window put on the other panel jumped there in a frame. Its last
++ * buffer slides from @from to @to instead, and the window itself is not
++ * drawn until the ghost has arrived.
++ */
++void
++phoc_view_ghost_move (PhocView *view, const struct wlr_box *from, const struct wlr_box *to)
++{
++  PhocViewGhost *self;
++
++  if (from->x == to->x && from->y == to->y)
++    return;
++  self = ghost_new (view, PHOC_VIEW_GHOST_MOVE, to);
++  if (self == NULL)
++    return;
++  self->box = *from;
++  self->view = view;
++  g_object_add_weak_pointer (G_OBJECT (view), (gpointer *) &self->view);
++  g_object_set (view, "alpha", 0.0f, NULL);
++}
++
++
++static PhocViewGhost *
++ghost_new (PhocView *view, PhocViewGhostKind kind, const struct wlr_box *to)
+ {
+   PhocDesktop *desktop = phoc_server_get_desktop (phoc_server_get_default ());
+   g_autoptr (PhocTimedAnimation) anim = NULL;
+@@ -236,14 +302,14 @@ phoc_view_ghost_leave (PhocView *view, PhocViewGhostKind kind)
+   float scale;
+ 
+   if (!phoc_desktop_get_enable_animations (desktop) || view->parent != NULL)
+-    return;
++    return NULL;
+   if (phoc_view_is_fullscreen (view))
+-    return;
++    return NULL;
+   if (surface == NULL || surface->buffer == NULL || surface->buffer->texture == NULL)
+-    return;
++    return NULL;
+   output = phoc_view_get_output (view);
+   if (output == NULL)
+-    return;
++    return NULL;
+ 
+   self = g_object_new (PHOC_TYPE_VIEW_GHOST, NULL);
+   self->kind = kind;
+@@ -261,26 +327,31 @@ phoc_view_ghost_leave (PhocView *view, PhocViewGhostKind kind)
+     .width = surface->current.width * scale,
+     .height = surface->current.height * scale,
+   };
++  if (to)
++    self->to = *to;
+   ghosts = g_list_prepend (ghosts, self);
+ 
+   /* closing eases out, it is over quickly; minimizing eases in and out,
+    * a movement that starts and lands */
+   easer = g_object_new (PHOC_TYPE_PROPERTY_EASER,
+                         "target", self,
+-                        "easing", kind == PHOC_VIEW_GHOST_MINIMIZE ?
+-                                  PHOC_EASING_EASE_IN_OUT_CUBIC : PHOC_EASING_EASE_OUT_CUBIC,
++                        "easing", kind == PHOC_VIEW_GHOST_CLOSE ?
++                                  PHOC_EASING_EASE_OUT_CUBIC : PHOC_EASING_EASE_IN_OUT_CUBIC,
+                         NULL);
+   phoc_property_easer_set_props (easer, "progress", 0.0, 1.0, NULL);
+   anim = g_object_new (PHOC_TYPE_TIMED_ANIMATION,
+                        "animatable", output,
+                        "duration", kind == PHOC_VIEW_GHOST_MINIMIZE ?
+                                    PHOC_ANIM_DURATION_WINDOW_MINIMIZE :
++                                   kind == PHOC_VIEW_GHOST_MOVE ?
++                                   PHOC_ANIM_DURATION_WINDOW_MOVE :
+                                    PHOC_ANIM_DURATION_WINDOW_CLOSE,
+                        "property-easer", easer,
+                        "dispose-on-done", TRUE,
+                        NULL);
+   g_signal_connect_swapped (anim, "done", G_CALLBACK (on_animation_done), self);
+   phoc_timed_animation_play (anim);
++  return self;
+ }
+ 
+ 
+@@ -294,7 +365,8 @@ phoc_view_ghost_leave (PhocView *view, PhocViewGhostKind kind)
+ void
+ phoc_view_ghosts_render (PhocOutput *output, PhocRenderContext *ctx)
+ {
+-  for (GList *l = ghosts; l; l = l->next) {
++  /* oldest first, so the ghost of the window put last is on top */
++  for (GList *l = g_list_last (ghosts); l; l = l->prev) {
+     PhocViewGhost *self = PHOC_VIEW_GHOST (l->data);
+     struct wlr_output *wlr_output = output->wlr_output;
+     struct wlr_box dst, clip;
+diff --git a/src/view-ghost.h b/src/view-ghost.h
+index de93bfa..71964fc 100644
+--- a/src/view-ghost.h
++++ b/src/view-ghost.h
+@@ -26,9 +26,11 @@ G_DECLARE_FINAL_TYPE (PhocViewGhost, phoc_view_ghost, PHOC, VIEW_GHOST, GObject)
+ typedef enum {
+   PHOC_VIEW_GHOST_CLOSE,
+   PHOC_VIEW_GHOST_MINIMIZE,
++  PHOC_VIEW_GHOST_MOVE,
+ } PhocViewGhostKind;
+ 
+ void   phoc_view_ghost_leave      (PhocView *view, PhocViewGhostKind kind);
++void   phoc_view_ghost_move       (PhocView *view, const struct wlr_box *from, const struct wlr_box *to);
+ void   phoc_view_ghosts_render    (PhocOutput *output, PhocRenderContext *ctx);
+ 
+ G_END_DECLS
+-- 
+2.43.0
+
