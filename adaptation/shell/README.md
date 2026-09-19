@@ -232,6 +232,21 @@ new height on a bar at rest was stored and ignored, and the window stayed
 32 px down. Now the commit that sets it applies it and the output
 rearranges, which re-tiles the tiled windows too.
 
+### Back, from the edge
+
+A window's back arrow is at its top, far from a thumb. As on Android, a
+swipe in from the side edge is "back" (#80): the dock keeps a 14 px strip
+along the outer edge of a panel with a window on it (the left panel's left
+edge, the right panel's right edge - where the thumbs are when the Duo is
+held like a book), from below the bar to above its own band. A round "<"
+comes out of the edge with the finger and turns blue past 64 px; let go
+there and the dock gives the window on that panel the focus and sends it
+Alt+Left, which is back to libadwaita's navigation (Settings, Mobile
+Settings, the port's Settings, the GNOME apps) and to Firefox. Terminals
+are left out by app id - Alt+Left is a word back there. The strips take
+touches only where the bottom band does: a busy panel, no shade, no grid,
+not locked.
+
 ### A shade folds from anywhere
 
 phosh lets an open shade be folded only by its handle: `update_drag_handle`

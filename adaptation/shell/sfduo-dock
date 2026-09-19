@@ -109,6 +109,14 @@ GRID_COMMIT = 0.3         # a slow release past this much of the way opens it
 MOVE_MS = 240             # the dock crossing to the other panel
 RISE_MS = 360             # the dock's halves coming in from the sides after an unlock
 RISE_DELAY_MS = 250       # ... once the lock screen has all but faded (phosh-patches/0010)
+BACK_STRIP = 14           # the strip along a busy panel's outer edge that swipes "back"
+BACK_SIZE = 56            # the round arrow that comes out of the edge with the finger
+BACK_ARM = 64             # how far in the finger goes before letting go means back
+BACK_TOP = 48             # the strip starts below the bar, clear of the shade's handle
+# Alt+Left is "back" to libadwaita's navigation and to Firefox, and "a word
+# back" to a shell: a swipe over these does nothing.
+TERMINALS = {"cool-retro-term", "org.gnome.Console", "kgx", "org.gnome.Terminal",
+             "foot", "Alacritty", "org.wezfurlong.wezterm", "xterm"}
 WATCH_MS = 500            # how often to ask which windows are open
 WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
 FOCUS_TIMEOUT = 4         # seconds a mapped window gets to take the focus
@@ -151,6 +159,14 @@ viewport { background-color: transparent; }
   border-radius: 14px;
 }
 .running-dot { color: #e8e4d9; font-size: 9px; margin-bottom: 1px; }
+/* Back from the edge: a round arrow that comes out with the finger and turns
+   blue once letting go would go back. */
+.edge-back {
+  background-color: rgba(40,40,44,0.94);
+  border-radius: 999px;
+  color: #e8e4d9;
+}
+.edge-back.armed { background-color: #3584e4; color: #ffffff; }
 /* The launch curtain: black over both panels while a new window is being put
    on its panel, the app's icon where it is going to be. */
 .curtain { background-color: #000000; }
@@ -461,6 +477,114 @@ class CurtainPanel(Gtk.Window):
         self.hide()
 
 
+class BackStrip(Gtk.Window):
+    """The outer edge of one panel, where a swipe in means "back" (#80).
+
+    A layer surface as narrow as a thumb's edge, the panel's height less the
+    bar above and the dock's band below, transparent and taking touches only
+    while a window is on that panel. The finger's travel inwards drives a
+    BackArrow; letting go past BACK_ARM sends the window Alt+Left.
+    """
+
+    def __init__(self, dock, side):
+        super().__init__()
+        self.dock = dock
+        self.side = side
+        self.active = None
+        screen = Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+        self.set_app_paintable(True)
+        self.set_size_request(BACK_STRIP, -1)
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_namespace(self, "sfduo-back")
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+        for edge in (GtkLayerShell.Edge.TOP, GtkLayerShell.Edge.BOTTOM,
+                     GtkLayerShell.Edge.LEFT if side == "left" else GtkLayerShell.Edge.RIGHT):
+            GtkLayerShell.set_anchor(self, edge, True)
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, BACK_TOP)
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, DOCK_HEIGHT)
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        self.add(Gtk.Box())
+        self.drag = Gtk.GestureDrag.new(self)
+        self.drag.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        self.drag.set_touch_only(True)
+        self.drag.connect("drag-begin", lambda g, x, y: dock._back_begin(self, y))
+        self.drag.connect("drag-update", lambda g, dx, dy: dock._back_update(self, dx))
+        self.drag.connect("drag-end", lambda g, dx, dy: dock._back_end(self))
+        self.drag.connect("cancel", lambda g, s: dock._back_cancel(self))
+        self.connect("map", lambda *_a: self.set_active(bool(self.active)))
+        self.show_all()
+
+    def set_active(self, on):
+        """Take touches, or let every one through to the window beneath."""
+        self.active = on
+        win = self.get_window()
+        if win is None:
+            return
+        if on:
+            region = cairo.Region(cairo.RectangleInt(0, 0, BACK_STRIP, 10000))
+        else:
+            region = cairo.Region()
+        win.input_shape_combine_region(region, 0, 0)
+        self.queue_draw()           # the region travels with a commit - see Dock._shape
+
+
+class BackArrow(Gtk.Window):
+    """The round "<" that comes out of an edge with the finger. Parked beyond
+    the edge, taking no touches; moved by its margins, never redrawn but for
+    the colour it turns when armed."""
+
+    def __init__(self, side):
+        super().__init__()
+        self.side = side
+        screen = Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+        self.set_app_paintable(True)
+        self.set_size_request(BACK_SIZE, BACK_SIZE)
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_namespace(self, "sfduo-back-arrow")
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.TOP, True)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT if side == "left"
+                                 else GtkLayerShell.Edge.RIGHT, True)
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        self.bubble = Gtk.Box()
+        self.bubble.get_style_context().add_class("edge-back")
+        icon = Gtk.Image.new_from_icon_name("go-previous-symbolic", Gtk.IconSize.LARGE_TOOLBAR)
+        icon.set_pixel_size(26)
+        self.bubble.pack_start(icon, True, True, 0)
+        self.add(self.bubble)
+        self.move(0, -BACK_SIZE)
+        self.connect("map", lambda *_a: self._no_touch())
+        self.show_all()
+
+    def _no_touch(self):
+        win = self.get_window()
+        if win is not None:
+            win.input_shape_combine_region(cairo.Region(), 0, 0)
+
+    def move(self, y, out):
+        """Put the arrow at y, `out` pixels in from the edge (negative: hidden)."""
+        top = int(y - BACK_SIZE / 2)
+        if self.side == "left":
+            raw_margins(self, top=top, left=int(out))
+        else:
+            raw_margins(self, top=top, right=int(out))
+
+    def set_armed(self, armed):
+        context = self.bubble.get_style_context()
+        if armed:
+            context.add_class("armed")
+        else:
+            context.remove_class("armed")
+
+
 class PaneWindow(Gtk.Window):
     """Half of the dock: a layer surface the size of its buttons, put where
     it belongs by its left margin, moved and never redrawn.
@@ -620,6 +744,9 @@ class Dock(Gtk.Window):
         self.grids = {side: GridPanel(self, side, pane)
                       for side, pane in (("left", self.grid_left), ("right", self.grid_right))}
         self.curtains = {side: CurtainPanel(side) for side in ("left", "right")}
+        # back from the outer edges (#80)
+        self.back_strips = {side: BackStrip(self, side) for side in ("left", "right")}
+        self.back_arrows = {side: BackArrow(side) for side in ("left", "right")}
         strip = Gtk.Box()
         strip.set_size_request(-1, DOCK_HEIGHT)
         self.add(strip)
@@ -1261,6 +1388,11 @@ class Dock(Gtk.Window):
         # this window draws nothing to commit: without a frame the strip kept
         # its old region, and an open shade lost its bottom 84 px to it.
         self.queue_draw()
+        # the outer edges swipe back where the bottom band swipes the window
+        for side, strip in getattr(self, "back_strips", {}).items():
+            strip.set_active(not self.locked and not self._shade_over(side)
+                             and not (self.progress > 0.0 and side == self.grid_side)
+                             and self.mode not in ("both", side))
         for pane in self.panes.values():
             pane.passthrough(self._shade_over(self._panel_of_pane(pane)))
 
@@ -1304,6 +1436,59 @@ class Dock(Gtk.Window):
         self._animate_to(1.0 if open_ else 0.0)
 
     # ---- the finger -------------------------------------------------------
+
+    # ---- back from the edge (#80) --------------------------------------------
+
+    def _back_begin(self, strip, y):
+        self.back_y = BACK_TOP + y
+        self.back_travel = 0
+        self.back_armed = False
+        self.back_claimed = False
+
+    def _back_update(self, strip, dx):
+        travel = max(0.0, dx if strip.side == "left" else -dx)
+        if not self.back_claimed and travel >= SWIPE_PX:
+            self.back_claimed = True
+            strip.drag.set_state(Gtk.EventSequenceState.CLAIMED)
+        self.back_travel = travel
+        arrow = self.back_arrows[strip.side]
+        # out of the edge with the finger, a little slower than it, until
+        # all but a sliver of it is out: the arrow shows, the finger decides
+        arrow.move(self.back_y, min(travel * 0.7, BACK_SIZE * 0.9) - BACK_SIZE)
+        armed = travel >= BACK_ARM
+        if armed != self.back_armed:
+            self.back_armed = armed
+            arrow.set_armed(armed)
+
+    def _back_end(self, strip):
+        arrow = self.back_arrows[strip.side]
+        arrow.set_armed(False)
+        arrow.move(self.back_y, -BACK_SIZE)
+        if getattr(self, "back_armed", False):
+            self.back_armed = False
+            threading.Thread(target=self._go_back, args=(strip.side,), daemon=True).start()
+
+    def _back_cancel(self, strip):
+        self.back_armed = False
+        self._back_end(strip)
+
+    def _go_back(self, panel):
+        """Alt+Left to the window on that panel: back, to libadwaita and to
+        Firefox. The one on top when there are two there - a page Settings
+        opened over itself (Follow) - is the follower."""
+        running = getattr(self, "running", {})
+        here = [a for a, p in self.placed.items()
+                if p == panel and a in running and not running[a]]
+        followers = [a for a in here if a in getattr(self, "follow", {})]
+        target = (followers or here or [None])[-1]
+        if target in TERMINALS:
+            debug(f"back on the {panel} panel: {target} is a terminal, nothing sent")
+            return
+        if target is not None:
+            subprocess.run(["wlrctl", "toplevel", "focus", f"app_id:{target}"], check=False)
+            time.sleep(0.05)
+        debug(f"back on the {panel} panel: {target or 'the active window'}")
+        subprocess.run(["wtype", "-M", "alt", "-k", "Left", "-m", "alt"], check=False)
 
     def _panel_at(self, x):
         """The panel under an x of this window, which spans the display."""
