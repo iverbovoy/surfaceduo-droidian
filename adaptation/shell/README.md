@@ -197,6 +197,18 @@ carries no geometry. The dock publishes what it placed on the session bus -
 `right`, with PropertiesChanged behind it - and the rows follow it. Without
 the dock the rows just leave the panel out.
 
+### The unlock hands the desktop back
+
+The lock screen used to be destroyed on the unlock and the desktop was there
+in the next frame. `phosh-patches/0010` fades it out instead, 300 ms easing
+out: the compositor applies a layer surface's alpha while it composes, so
+nothing is repainted and the desktop shows through as it goes. The unlock
+itself - the locked state, logind - happens at once as before; only the
+picture lingers, and it takes no touches and no keys while it does. The dock's
+halves come in from the sides at the same moment (#72). Measured with
+`sfduo-perfcheck` against the build without it: launches 0.9 s and 1.0 s,
+every animation 16.1-17.4 ms a frame - no cost.
+
 ### A shade folds from anywhere
 
 phosh lets an open shade be folded only by its handle: `update_drag_handle`
@@ -513,7 +525,7 @@ both, because which comes first depends on how long the shell took to start
 start that is still most of a minute after the lock screen is drawn, so the
 dock also treats "nobody owns `org.gnome.ScreenSaver` yet" as locked.
 
-The package carries the patched binary (0001-0009) and
+The package carries the patched binary (0001-0010) and
 `sudo sfduo-phosh-install` puts it in place at install time - but only beside
 exactly the phosh version it was built for; on any other it says so and
 leaves the packaged shell alone. `sudo sfduo-phosh-install --restore` puts the

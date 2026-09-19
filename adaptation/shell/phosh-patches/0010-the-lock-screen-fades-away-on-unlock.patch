@@ -1,0 +1,92 @@
+--- a/src/lockscreen-manager.c
++++ b/src/lockscreen-manager.c
+@@ -9,10 +9,14 @@
+ 
+ #define G_LOG_DOMAIN "phosh-lockscreen-manager"
+ 
++#include "phosh-config.h"
++
++#include "animation.h"
+ #include "background-cache.h"
+ #include "background-image.h"
+ #include "lockscreen-manager-priv.h"
+ #include "lockscreen-priv.h"
++#include "layersurface-priv.h"
+ #include "lockshield.h"
+ #include "monitor-manager.h"
+ #include "monitor/monitor.h"
+@@ -194,6 +198,63 @@
+ }
+ 
+ 
++#define UNLOCK_FADE_MS 300
++
++static void
++on_unlock_fade_value (double value, PhoshLockscreen *lockscreen)
++{
++  phosh_layer_surface_set_alpha (PHOSH_LAYER_SURFACE (lockscreen), 1.0 - value);
++}
++
++
++static void
++on_unlock_fade_done (PhoshLockscreen *lockscreen)
++{
++  PhoshAnimation *fade = g_object_steal_data (G_OBJECT (lockscreen), "unlock-fade");
++
++  g_clear_pointer (&fade, phosh_animation_unref);
++  phosh_cp_widget_destroy (GTK_WIDGET (lockscreen));
++}
++
++
++/*
++ * The lock screen used to be destroyed on the unlock, and the desktop was
++ * there in the next frame. It fades away instead: the compositor applies a
++ * layer surface's alpha while it composes, so nothing is repainted and the
++ * desktop comes through it as it goes. Everything else about the unlock -
++ * the locked state, logind, the shields - happens at once, as before; only
++ * the picture lingers, and it takes no touches or keys while it does.
++ */
++static void
++fade_away (PhoshLockscreen *lockscreen)
++{
++  PhoshAnimation *fade;
++  cairo_region_t *region;
++
++  if (!gtk_widget_get_mapped (GTK_WIDGET (lockscreen))) {
++    phosh_cp_widget_destroy (GTK_WIDGET (lockscreen));
++    return;
++  }
++
++  region = cairo_region_create ();
++  gtk_widget_input_shape_combine_region (GTK_WIDGET (lockscreen), region);
++  cairo_region_destroy (region);
++  phosh_layer_surface_set_kbd_interactivity (PHOSH_LAYER_SURFACE (lockscreen), FALSE);
++  phosh_layer_surface_wl_surface_commit (PHOSH_LAYER_SURFACE (lockscreen));
++
++  fade = phosh_animation_new (GTK_WIDGET (lockscreen),
++                              0.0,
++                              1.0,
++                              UNLOCK_FADE_MS * PHOSH_ANIMATION_SLOWDOWN,
++                              PHOSH_ANIMATION_TYPE_EASE_OUT_CUBIC,
++                              (PhoshAnimationValueCallback) on_unlock_fade_value,
++                              (PhoshAnimationDoneCallback) on_unlock_fade_done,
++                              lockscreen);
++  g_object_set_data (G_OBJECT (lockscreen), "unlock-fade", fade);
++  phosh_animation_start (fade);
++}
++
++
+ static void
+ on_lockscreen_unlock (PhoshLockscreenManager *self, PhoshLockscreen *lockscreen)
+ {
+@@ -207,7 +268,9 @@
+   g_signal_handlers_disconnect_by_data (monitor_manager, self);
+   g_signal_handlers_disconnect_by_data (primary_monitor, self);
+   g_signal_handlers_disconnect_by_data (shell, self);
+-  g_clear_pointer (&self->lockscreen, phosh_cp_widget_destroy);
++  /* it goes on its own now; nothing it says any more is ours to hear */
++  g_signal_handlers_disconnect_by_data (lockscreen, self);
++  fade_away (PHOSH_LOCKSCREEN (g_steal_pointer (&self->lockscreen)));
+ 
+   /* Unlock all other outputs */
+   g_clear_pointer (&self->shields, g_ptr_array_unref);
