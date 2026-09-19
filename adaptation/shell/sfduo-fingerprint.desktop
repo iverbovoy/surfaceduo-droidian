@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Surface Duo fingerprint unlock
+Comment=Arm the fingerprint reader whenever the phone is locked and lit
+Exec=/usr/local/bin/sfduo-fingerprint
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-Phase=Applications

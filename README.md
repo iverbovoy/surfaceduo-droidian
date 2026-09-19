@@ -47,7 +47,7 @@ two-panel shell is **experimental and in development**.
 | Audio | ✅ | 23 techpack modules from MS OSS + ADSP boot ordering; PulseAudio/droid picks the card up; TTS spoken through the speaker |
 | Bluetooth | ✅ | bluebinder exonerated (the lockup was dead-ADSP collateral); needs the timeout drop-in + a provided board-address |
 | Camera | ✅ | droidian-camera (QT_QPA_PLATFORM=wayland) - full 11MP stills |
-| Fingerprint | ✅ | droidian-fpd + enroll; unlock-by-finger via fpd-unlockd |
+| Fingerprint | ✅ | droidian-fpd; enrol in the settings, unlock by finger via sfduo-fingerprint whenever the locked screen is lit |
 | Suspend | ✅ | dwc3-msm kernel patch + sleep hook + AllowSuspend override; wake = long power press; RTC-through-sleep pending |
 | Flashlight / vibration | ✅ | sysfs LEDs (video group via udev); da7280 (FF_CONSTANT only) |
 | Pen (stylus) | 🟡 | it inks, but it is not a stylus to applications. The digitizer sends graded pressure, both buttons and a tool type; libinput discards all of it, because the node has to be classified as a touchscreen or touch dies. Measurements and the fix: [docs/PEN.md](docs/PEN.md) |

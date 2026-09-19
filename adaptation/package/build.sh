@@ -809,6 +809,17 @@ install -Dm644 "$SHELLDIR/sfduo-posture.desktop"    "$PKG/etc/xdg/autostart/sfdu
 install -m755  "$SHELLDIR/sfduo-fold"               "$PKG/usr/local/bin/"
 install -Dm644 "$SHELLDIR/sfduo-fold.desktop"       "$PKG/etc/xdg/autostart/sfduo-fold.desktop"
 install -Dm644 "$SHELLDIR/sfduo-brightness.desktop" "$PKG/etc/xdg/autostart/sfduo-brightness.desktop"
+# A finger unlocks a locked, lit phone (#61). Droidian's fpd-unlockd arms the
+# reader only when logind's IdleHint leaves idle, which this port's
+# idle-delay 0 never lets happen: after the first lock nobody listened.
+# sfduo-fingerprint arms it on what the screen shows instead. droidian-fpd
+# takes one client at a time, so fpd-unlockd is masked for every user by a
+# link to /dev/null in the user-unit admin directory; removing this package
+# removes the link and fpd-unlockd comes back.
+install -m755  "$SHELLDIR/sfduo-fingerprint"        "$PKG/usr/local/bin/"
+install -Dm644 "$SHELLDIR/sfduo-fingerprint.desktop" "$PKG/etc/xdg/autostart/sfduo-fingerprint.desktop"
+mkdir -p "$PKG/etc/systemd/user"
+ln -s /dev/null "$PKG/etc/systemd/user/fpd-unlockd.service"
 install -Dm644 "$SHELLDIR/dock.json" "$PKG/usr/share/sfduo/dock.json.example"
 # The output scale (2026-09-18): Droidian's generic phoc.ini says 3, which
 # makes the panels 928x600 logical - a phone's worth of space, in which GNOME

@@ -1,0 +1,220 @@
+#!/usr/bin/python3
+# sfduo-fingerprint: a finger unlocks the phone whenever it is locked and lit.
+#
+# Droidian's fpd-unlockd does the unlocking with droidian-fpd, and the
+# reader, the daemon and the unlock all work - but it arms the reader only
+# when logind's IdleHint goes from idle to active. This port never lets the
+# session go idle (idle-delay 0), so IdleHint never moves: the reader was
+# armed once, when fpd-unlockd started, the daemon gave the attempt up after
+# its 30 seconds, and a locked phone never listened again. Measured: a whole
+# boot with IdleSinceHint=0, a lock at 19:25:51, no Identify after it; the
+# same finger unlocked the phone at once when the reader was armed by hand.
+#
+# So this arms it on what the phone actually shows: the session is locked
+# (logind's LockedHint) and the screen is lit (org.gnome.ScreenSaver's
+# Active is false - on phosh "active" means blanked, not locked). It arms
+# again whenever the daemon falls back to idle while that still holds - the
+# 30 s timeout, a finger it did not know - and gives the reader up when the
+# screen goes dark or the phone is unlocked some other way. A finger it
+# knows unlocks the session; one it does not gets a buzz.
+#
+# The daemon serves one client at a time, so this replaces fpd-unlockd
+# rather than running beside it: the package masks that user unit.
+
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+FP_NAME = "org.droidian.fingerprint"
+FP_PATH = "/org/droidian/fingerprint"
+LOGIN_NAME = "org.freedesktop.login1"
+LOGIN_PATH = "/org/freedesktop/login1"
+SAVER_NAME = "org.gnome.ScreenSaver"
+SAVER_PATH = "/org/gnome/ScreenSaver"
+FEEDBACK_NAME = "org.sigxcpu.Feedback"
+FEEDBACK_PATH = "/org/sigxcpu/Feedback"
+APP_ID = "sfduo-fingerprint"
+UNLOCKED_EVENT = "message-sent-instant"     # 150 ms in the default theme
+UNKNOWN_EVENT = "bell-terminal"             # 100 ms
+
+REPLY_STARTED = 0
+REARM_MS = 400          # after the daemon goes idle, before asking again
+BACKOFF_MS = 5000       # after a refusal - busy enrolling, no fingers stored
+
+
+def log(message):
+    print(f"sfduo-fingerprint: {message}", file=sys.stderr, flush=True)
+
+
+class Unlocker:
+    def __init__(self):
+        self.system = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        self.session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self.session_path = self._seat_session()
+        self.session_id = None
+        self.locked = False
+        self.blanked = False
+        self.armed = False          # an Identify of ours is running
+        self.pending = None         # a timeout that will re-evaluate
+
+        if self.session_path is None:
+            log("no session on seat0; nothing to do")
+            sys.exit(0)
+        self.session_id = self._session_prop("Id")
+
+        self.system.signal_subscribe(
+            LOGIN_NAME, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+            self.session_path, None, Gio.DBusSignalFlags.NONE,
+            self._on_session_changed)
+        self.session.signal_subscribe(
+            None, SAVER_NAME, "ActiveChanged", SAVER_PATH, None,
+            Gio.DBusSignalFlags.NONE, self._on_saver_changed)
+        self.system.signal_subscribe(
+            FP_NAME, FP_NAME, None, FP_PATH, None,
+            Gio.DBusSignalFlags.NONE, self._on_fingerprint)
+
+        self.locked = bool(self._session_prop("LockedHint"))
+        self.blanked = self._saver_active()
+        log(f"session {self.session_id}: locked={self.locked} blanked={self.blanked}")
+        self._evaluate()
+
+    # ---- what the phone shows ---------------------------------------------
+
+    def _seat_session(self):
+        try:
+            sessions = self.system.call_sync(
+                LOGIN_NAME, LOGIN_PATH, "org.freedesktop.login1.Manager",
+                "ListSessions", None, None, Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error as err:
+            log(f"logind: {err.message}")
+            return None
+        for _sid, _uid, _user, seat, path in sessions[0]:
+            if seat == "seat0":
+                return path
+        return None
+
+    def _session_prop(self, name):
+        try:
+            value = self.system.call_sync(
+                LOGIN_NAME, self.session_path, "org.freedesktop.DBus.Properties",
+                "Get", GLib.Variant("(ss)", ("org.freedesktop.login1.Session", name)),
+                None, Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error:
+            return None
+        return value[0]
+
+    def _saver_active(self):
+        try:
+            value = self.session.call_sync(
+                SAVER_NAME, SAVER_PATH, SAVER_NAME, "GetActive", None, None,
+                Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error:
+            return False            # no shell yet: nothing is blanked by it
+        return bool(value[0])
+
+    def _on_session_changed(self, _c, _s, _p, _i, _sig, params):
+        changed = params[1]
+        if "LockedHint" in changed.keys():
+            self.locked = bool(changed["LockedHint"])
+            log(f"locked={self.locked}")
+            self._evaluate()
+
+    def _on_saver_changed(self, _c, _s, _p, _i, _sig, params):
+        self.blanked = bool(params[0])
+        log(f"blanked={self.blanked}")
+        self._evaluate()
+
+    # ---- the reader -------------------------------------------------------
+
+    def _wanted(self):
+        return self.locked and not self.blanked
+
+    def _schedule(self, ms):
+        if self.pending is not None:
+            GLib.source_remove(self.pending)
+        self.pending = GLib.timeout_add(ms, self._on_pending)
+
+    def _on_pending(self):
+        self.pending = None
+        self._evaluate()
+        return False
+
+    def _evaluate(self):
+        if self._wanted() and not self.armed:
+            self._identify()
+        elif not self._wanted() and self.armed:
+            self._abort()
+
+    def _call(self, method):
+        try:
+            reply = self.system.call_sync(
+                FP_NAME, FP_PATH, FP_NAME, method, None, None,
+                Gio.DBusCallFlags.NONE, 5000, None)
+        except GLib.Error as err:
+            log(f"{method}: {err.message}")
+            return None
+        return reply[0] if reply is not None and reply.n_children() else None
+
+    def _identify(self):
+        reply = self._call("Identify")
+        if reply == REPLY_STARTED:
+            self.armed = True
+            log("reader armed")
+        else:
+            log(f"Identify refused ({reply}); trying again later")
+            self._schedule(BACKOFF_MS)
+
+    def _abort(self):
+        self.armed = False
+        self._call("Abort")
+        log("reader given up")
+
+    def _on_fingerprint(self, _c, _s, _p, _i, signal, params):
+        if signal == "Identified" and self.armed:
+            self.armed = False
+            log(f"identified: {params[0]}")
+            self._unlock()
+        elif signal == "ErrorInfo" and self.armed:
+            if params[0] == "FINGER_NOT_RECOGNIZED":
+                log("finger not recognised")
+                self._feedback(UNKNOWN_EVENT)
+        elif signal == "StateChanged" and params[0] == "FPSTATE_IDLE":
+            # the attempt is over - timed out, failed or done; while the
+            # phone is still locked and lit, listen again
+            if self.armed:
+                self.armed = False
+                self._schedule(REARM_MS)
+
+    def _unlock(self):
+        try:
+            self.system.call_sync(
+                LOGIN_NAME, LOGIN_PATH, "org.freedesktop.login1.Manager",
+                "UnlockSession", GLib.Variant("(s)", (self.session_id,)), None,
+                Gio.DBusCallFlags.NONE, 5000, None)
+        except GLib.Error as err:
+            log(f"unlock: {err.message}")
+            return
+        # a buzz you can feel: button-released, what fpd-unlockd used, is a
+        # 12 ms rumble in feedbackd's default theme and went unnoticed
+        self._feedback(UNLOCKED_EVENT)
+
+    def _feedback(self, event):
+        try:
+            self.session.call_sync(
+                FEEDBACK_NAME, FEEDBACK_PATH, FEEDBACK_NAME, "TriggerFeedback",
+                GLib.Variant("(ssa{sv}i)", (APP_ID, event, {}, -1)), None,
+                Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error:
+            pass
+
+
+def main():
+    Unlocker()
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    main()

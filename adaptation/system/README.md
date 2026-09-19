@@ -91,6 +91,23 @@ Once locked, the fingerprint sensor on the power key unlocks it the moment a
 finger rests there - which, on a device you hold by that edge, is the moment
 you open it. It can look as if the lock screen never came.
 
+Who arms the reader matters. Droidian's `fpd-unlockd` asks droidian-fpd to
+listen only when logind's `IdleHint` goes from idle to active, and the
+idle-delay of 0 below (0.14.1) means the session is never idle: the reader
+listened once, when `fpd-unlockd` started, the daemon gave that attempt up
+after its 30 seconds, and every later lock had nobody listening - the finger
+did nothing and the enrolment looked broken. `sfduo-fingerprint` (in
+`../shell`) arms it on what the screen shows instead: locked and lit. It
+listens again after each timeout or unknown finger, lets go when the screen
+goes dark or the phone is unlocked another way, and buzzes - 150 ms on an
+unlock, 100 ms for a finger it does not know; `fpd-unlockd`'s buzz was 12 ms
+and went unnoticed. droidian-fpd serves one client at a time, so the package
+masks `fpd-unlockd` with a link to `/dev/null` in `/etc/systemd/user`.
+
+A finger is enrolled from the settings (`droidian-fpd-gui` and
+`droidian-fpd-client` from the archive cannot be installed: both need
+`libbatman-wrappers`, which rolling no longer carries).
+
 ## An open device stays on
 
 Since 0.14.1 the screen does not blank and lock on its own
