@@ -899,6 +899,13 @@ class Dock(Gtk.Window):
                 and self.placed.get(app_id) != side:
             threading.Thread(target=self._move_to, args=(app_id, side), daemon=True).start()
 
+    def _move_group(self, app_ids, side):
+        """Move windows to a panel in order - the last one ends up on top -
+        and look at the windows again at once, so the dock follows."""
+        for app_id in app_ids:
+            self._move_to(app_id, side)
+        self.watch_wake.set()
+
     def _move_to(self, app_id, side):
         """Put an open window on a panel: focus it, then the tiling chord."""
         if not self._take_focus(app_id):
@@ -2211,7 +2218,19 @@ class Dock(Gtk.Window):
         app_id = wayland_app_id(info)
         if app_id in getattr(self, "running", {}):
             # It has a window: bring that back rather than start another.
-            # Where it goes is where it was; a hidden window keeps its panel.
+            # Tapped on the other panel's dock, it comes to that panel - the
+            # dock was there because the panel was free, and the hand is
+            # there - with the windows that follow it (a page Settings has
+            # open over itself); the dock then takes the panel it left.
+            where = self.placed.get(app_id)
+            if where in ("left", "right") and where != side:
+                group = [app_id] + [a for a, leader in getattr(self, "follow", {}).items()
+                                    if leader == app_id and self.placed.get(a) == where
+                                    and a in self.running]
+                debug(f"{app_id} called to the {side} panel from the {where}")
+                threading.Thread(target=self._move_group, args=(group, side),
+                                 daemon=True).start()
+                return
             subprocess.Popen(["wlrctl", "toplevel", "focus", f"app_id:{app_id}"])
             return
         before = toplevel_ids()

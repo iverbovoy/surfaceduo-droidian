@@ -279,6 +279,15 @@ phosh now says it at once on `org.sfduo.Shade`: `WindowsChanged("opened" |
 move about 200 ms after the command. The half-second beat stays, for a
 shell that says nothing.
 
+### An open app, called to the other panel
+
+With an app on one panel the dock stands on the other. A tap there on that
+app's button used to give its window the focus where it was - nothing to
+see. The hand is on the free panel, so the app comes to it: the dock moves
+the window across (focus, then the tiling chord), with any window following
+it (a page the port's Settings opened over itself) moved after it so it
+stays on top, and then takes the panel the app left.
+
 ### A shade folds from anywhere
 
 phosh lets an open shade be folded only by its handle: `update_drag_handle`
