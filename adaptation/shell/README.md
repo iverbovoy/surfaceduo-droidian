@@ -177,6 +177,13 @@ in its globals, and the second shade's took them over.
 every scale showing its value and following a change made from any of them
 (checked from either side on the device).
 
+A new notification's banner was the last thing that crossed the hinge:
+phosh anchors it to the top edge alone, so it is centred on the output, and
+the centre of this output is the seam. `phosh-patches/0008` anchors it to
+the top and the right on a display with a seam and centres it in the far
+half, where the shade that holds the notifications is. The slide in and out
+keeps that margin; phosh's own animation used to set the other three to zero.
+
 ### A shade folds from anywhere
 
 phosh lets an open shade be folded only by its handle: `update_drag_handle`
@@ -493,7 +500,7 @@ both, because which comes first depends on how long the shell took to start
 start that is still most of a minute after the lock screen is drawn, so the
 dock also treats "nobody owns `org.gnome.ScreenSaver` yet" as locked.
 
-The package carries the patched binary (0001-0007) and
+The package carries the patched binary (0001-0008) and
 `sudo sfduo-phosh-install` puts it in place at install time - but only beside
 exactly the phosh version it was built for; on any other it says so and
 leaves the packaged shell alone. `sudo sfduo-phosh-install --restore` puts the

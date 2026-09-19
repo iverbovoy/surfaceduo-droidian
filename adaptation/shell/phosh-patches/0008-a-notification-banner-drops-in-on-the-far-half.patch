@@ -1,0 +1,81 @@
+--- a/src/notifications/notification-banner.c
++++ b/src/notifications/notification-banner.c
+@@ -11,6 +11,7 @@
+ #include "phosh-config.h"
+ #include "animation.h"
+ #include "layersurface-priv.h"
++#include "layout-manager.h"
+ #include "notification-banner.h"
+ #include "notification-frame.h"
+ #include "shell-priv.h"
+@@ -43,6 +44,8 @@
+ 
+   gboolean slide_up;
+   PhoshAnimation *animation;
++  /* on a display with a seam: the banner's distance from the right edge */
++  int margin_right;
+ };
+ typedef struct _PhoshNotificationBanner PhoshNotificationBanner;
+ 
+@@ -67,7 +70,7 @@
+   gtk_window_get_size (GTK_WINDOW (self), NULL, &height);
+   margin = -(height * 0.9) * (self->slide_up ? value : (1.0 - value));
+ 
+-  phosh_layer_surface_set_margins (PHOSH_LAYER_SURFACE (self), margin, 0, 0, 0);
++  phosh_layer_surface_set_margins (PHOSH_LAYER_SURFACE (self), margin, self->margin_right, 0, 0);
+ 
+   phosh_layer_surface_wl_surface_commit (PHOSH_LAYER_SURFACE (self));
+ }
+@@ -259,19 +262,35 @@
+ phosh_notification_banner_new (PhoshNotification *notification)
+ {
+   PhoshWayland *wl = phosh_wayland_get_default ();
+-  PhoshMonitor *monitor = phosh_shell_get_primary_monitor (phosh_shell_get_default ());
+-  int width = BANNER_MIN_WIDTH;
+-
+-  phosh_shell_get_usable_area (phosh_shell_get_default (), NULL, NULL, &width, NULL);
++  PhoshShell *shell = phosh_shell_get_default ();
++  PhoshMonitor *monitor = phosh_shell_get_primary_monitor (shell);
++  PhoshNotificationBanner *self;
++  guint32 anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
++  int width = BANNER_MIN_WIDTH, margin_right = 0;
++  GdkRectangle seam;
++
++  phosh_shell_get_usable_area (shell, NULL, NULL, &width, NULL);
++
++  /* Anchored to the top edge alone, a banner is centred on the output, and
++   * on a display with a seam the centre is the seam: it dropped in across
++   * the hinge. It goes to the far half instead, centred there - the half
++   * whose shade holds the notifications. */
++  if (monitor && phosh_layout_manager_get_seam (phosh_shell_get_layout_manager (shell), &seam)) {
++    int half = monitor->logical.width - (seam.x + seam.width);
++
++    width = MIN (width, half);
++    anchor |= ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
++    margin_right = MAX ((half - MIN (width, 450)) / 2, 0);
++  }
+ 
+-  return g_object_new (PHOSH_TYPE_NOTIFICATION_BANNER,
++  self = g_object_new (PHOSH_TYPE_NOTIFICATION_BANNER,
+                        "notification", notification,
+                        "width-request", BANNER_MIN_WIDTH,
+                        "valign", GTK_ALIGN_CENTER,
+                        /* layer surface */
+                        "layer-shell", phosh_wayland_get_zwlr_layer_shell_v1 (wl),
+                        "wl-output", monitor ? monitor->wl_output : NULL,
+-                       "anchor", ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP,
++                       "anchor", anchor,
+                        "width", MIN (width, 450),
+                        /* Initial height to not take up the whole screen */
+                        "height", 100,
+@@ -280,6 +299,10 @@
+                        "exclusive-zone", 0,
+                        "namespace", "phosh notification",
+                        NULL);
++  self->margin_right = margin_right;
++  phosh_layer_surface_set_margins (PHOSH_LAYER_SURFACE (self), 0, margin_right, 0, 0);
++
++  return GTK_WIDGET (self);
+ }
+ 
+ /**
