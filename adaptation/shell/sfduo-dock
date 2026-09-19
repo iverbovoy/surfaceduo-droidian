@@ -942,6 +942,11 @@ class Dock(Gtk.Window):
             for app_id in sorted(running):
                 if app_id in favourites_ or self.placed.get(app_id, "right") != slab.side:
                     continue
+                # a window opened by another app to follow it (Follow) is
+                # part of that app while it runs: GNOME Settings under the
+                # port's Settings was a second gear beside the first
+                if getattr(self, "follow", {}).get(app_id) in running:
+                    continue
                 info = self._info_for(app_id)
                 if info is None:
                     continue

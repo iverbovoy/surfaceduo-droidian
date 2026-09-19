@@ -20,6 +20,15 @@
 # program runs untouched. The session already sets G_RESOURCE_OVERLAYS
 # (Droidian's gmobile display panel), so this one is added to it.
 #
+# Neither program's own list of pages is the way in any more: the port's
+# Settings is (sfduo-settings), and it opens their pages over itself, on its
+# panel. So the list's column holds one button instead, "Settings", that
+# closes the window and leaves the port's Settings showing under it: the back
+# arrow on a page leads there. The list is still in the file, hidden - the
+# program's code holds on to it - and the search and menu buttons above it
+# are hidden with it. Should the file not have the shape this expects, only
+# the width is changed.
+#
 # Mobile Settings also draws nothing at all with GTK's default renderer on
 # this device - an empty grey window - and draws with GSK_RENDERER=gl, so
 # that is set for it unless the user has set a renderer of their own.
@@ -42,7 +51,7 @@ phosh-mobile-settings)
     ;;
 esac
 REAL=/usr/bin/$name
-TO='<condition>max-width: 900sp</condition>'
+TO='max-width: 900sp'
 DIR="${XDG_RUNTIME_DIR:-/tmp}/sfduo-one-column/$name"
 UI="$DIR/window.ui"
 
@@ -52,7 +61,70 @@ if [ "$(cat "$DIR/stamp" 2>/dev/null)" != "$stamp" ]; then
     rm -f "$UI" "$DIR/stamp"
     if gresource extract "$REAL" "$RESOURCE" > "$UI.new" 2>/dev/null \
        && grep -qF "$FROM" "$UI.new"; then
-        sed "s|$FROM|$TO|" "$UI.new" > "$UI"
+        python3 - "$UI.new" "$UI" "$TO" <<'PY' || rm -f "$UI"
+import sys
+import xml.etree.ElementTree as ET
+
+src, dst, width = sys.argv[1:4]
+tree = ET.parse(src)
+root = tree.getroot()
+
+for cond in root.iter("condition"):
+    cond.text = width
+
+
+def prop(obj, name):
+    return next((p for p in obj.findall("property") if p.get("name") == name), None)
+
+
+def hide(obj):
+    el = ET.SubElement(obj, "property", name="visible")
+    el.text = "False"
+
+
+def button():
+    """One button over the whole column: back to the port's Settings."""
+    btn = ET.Element("object", {"class": "GtkButton"})
+    for name, value in (("action-name", "window.close"), ("hexpand", "True"),
+                        ("vexpand", "True"), ("tooltip-text", "Back to Settings")):
+        ET.SubElement(btn, "property", name=name).text = value
+    ET.SubElement(ET.SubElement(btn, "style"), "class", name="flat")
+    box = ET.SubElement(ET.SubElement(btn, "property", name="child"),
+                        "object", {"class": "GtkBox"})
+    for name, value in (("spacing", "12"), ("halign", "center"), ("valign", "center")):
+        ET.SubElement(box, "property", name=name).text = value
+    icon = ET.SubElement(ET.SubElement(box, "child"), "object", {"class": "GtkImage"})
+    ET.SubElement(icon, "property", name="icon-name").text = "go-previous-symbolic"
+    ET.SubElement(icon, "property", name="pixel-size").text = "24"
+    label = ET.SubElement(ET.SubElement(box, "child"), "object", {"class": "GtkLabel"})
+    ET.SubElement(label, "property", name="label").text = "Settings"
+    ET.SubElement(ET.SubElement(label, "style"), "class", name="title-2")
+    return btn
+
+
+try:
+    split = next(o for o in root.iter("object") if o.get("class") == "AdwNavigationSplitView")
+    page = prop(split, "sidebar").find("object")
+    toolbar = prop(page, "child").find("object")
+    content = prop(toolbar, "content")
+    listing = content.find("object")
+    # the header's buttons: search and the menu, nothing to search here
+    for top in toolbar.findall("child"):
+        header = top.find("object")
+        if header is not None and header.get("class") == "AdwHeaderBar":
+            for c in header.findall("child"):
+                hide(c.find("object"))
+    content.remove(listing)
+    hide(listing)
+    column = ET.SubElement(content, "object", {"class": "GtkBox"})
+    ET.SubElement(column, "property", name="orientation").text = "vertical"
+    ET.SubElement(column, "child").append(button())
+    ET.SubElement(column, "child").append(listing)
+except (StopIteration, AttributeError) as err:
+    print(f"sfduo-one-column: the list stays: {err!r}", file=sys.stderr)
+
+tree.write(dst, encoding="unicode", xml_declaration=True)
+PY
     fi
     rm -f "$UI.new"
     echo "$stamp" > "$DIR/stamp"

@@ -238,6 +238,18 @@ line is not in the file any more. A session bus that started before the
 service directory existed needs `org.freedesktop.DBus.ReloadConfig` or a new
 login.
 
+Their own lists are not the way in any more, Settings is, so the list's
+column in each holds one button instead - "‹ Settings", `window.close` -
+and the back arrow on a page leads to it: one tap and the window is gone,
+Settings underneath where it was. The list is still in the `.ui`, hidden
+(the programs' code holds on to it), with the search and menu buttons above
+it. The same launch-time rewrite does it, with Python's XML parser rather
+than sed; a file of an unexpected shape gets the width change only.
+
+While Settings runs, the dock shows no button of its own for a window that
+follows it: GNOME Settings over Settings was a second gear beside the
+first.
+
 ## The hinge angle
 
 `sudo sfduo-sensorfw-install`, once after the package: the hinge-angle
