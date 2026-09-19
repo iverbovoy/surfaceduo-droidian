@@ -247,6 +247,22 @@ are left out by app id - Alt+Left is a word back there. The strips take
 touches only where the bottom band does: a busy panel, no shade, no grid,
 not locked.
 
+### Minimize, which phoc did not have
+
+phoc 0.47 dropped every minimize request: xdg_toplevel's `set_minimized`,
+and wlr-foreign-toplevel's, which is what `wlrctl toplevel minimize` and so
+the dock's short swipe along a busy panel's band send - that swipe had
+never minimized anything. `phoc-patches/0005` gives a view a minimized
+state: not drawn, no input, the focus handed on, the window fading away as
+a closed one does; activating it brings it back. The dock reads it as a
+free panel (`Busy`), so the bar moves across (#79).
+
+Back at the first page of the port's Settings minimizes it, as back from an
+app's first screen does on a phone: its navigation view takes Alt+Left
+while it can pop, and what it lets through at the list minimizes the
+window. Other apps say nothing about being at their first page, so a swipe
+there still does nothing.
+
 ### A shade folds from anywhere
 
 phosh lets an open shade be folded only by its handle: `update_drag_handle`

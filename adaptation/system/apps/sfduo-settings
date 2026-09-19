@@ -202,6 +202,23 @@ class Window(Adw.ApplicationWindow):
         self.nav.add(Adw.NavigationPage(title="Settings", child=view))
         self.set_content(self.nav)
         self.connect("notify::is-active", self._on_active)
+        # Back at the list, the first page, goes nowhere in the navigation -
+        # so it leaves: the window is minimized, as back from an app's first
+        # screen does on a phone. The navigation view takes Alt+Left while
+        # it can pop; only what it lets through reaches this, in the bubble
+        # phase. Alt+Left is what the dock's swipe from the edge sends (#80).
+        shortcuts = Gtk.ShortcutController()
+        shortcuts.set_propagation_phase(Gtk.PropagationPhase.BUBBLE)
+        shortcuts.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("<Alt>Left"),
+            Gtk.CallbackAction.new(self._back_at_root)))
+        self.add_controller(shortcuts)
+
+    def _back_at_root(self, *_args):
+        if self.nav.get_previous_page(self.nav.get_visible_page()) is not None:
+            return False                # not the first page: the view's to handle
+        self.minimize()
+        return True
 
     def _row(self, name, subtitle, icon, target):
         row = Adw.ActionRow(title=name, activatable=True)
