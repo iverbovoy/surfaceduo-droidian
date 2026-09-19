@@ -1,0 +1,424 @@
+From 0357c9a20137726c094c2e9438cceac5a09195a7 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Sat, 19 Sep 2026 21:55:30 +0300
+Subject: [PATCH 3/4] view: a closed window fades and shrinks away rather than
+ vanishing in a frame
+
+At the unmap the view's last buffer - the client's, already a texture in
+the renderer - is kept and drawn where the window was for 200 ms, alpha
+1 -> 0 and scale 1 -> 0.92 about its centre, easing out, then let go.
+Opening already fades a view in; closing did nothing. Whatever closed the
+window goes the same way.
+---
+ src/meson.build  |   1 +
+ src/render.c     |   3 +
+ src/view-ghost.c | 309 +++++++++++++++++++++++++++++++++++++++++++++++
+ src/view-ghost.h |  23 ++++
+ src/view.c       |   5 +
+ 5 files changed, 341 insertions(+)
+ create mode 100644 src/view-ghost.c
+ create mode 100644 src/view-ghost.h
+
+diff --git a/src/meson.build b/src/meson.build
+index 3b413ff..5cc26e9 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -112,6 +112,7 @@ sources = files(
+   'utils.c',
+   'utils.h',
+   'view.c',
++  'view-ghost.c',
+   'view.h',
+   'view-child.c',
+   'view-child-private.h',
+diff --git a/src/render.c b/src/render.c
+index 9c4a2e9..64b0a39 100644
+--- a/src/render.c
++++ b/src/render.c
+@@ -13,6 +13,7 @@
+ 
+ #include "phoc-config.h"
+ #include "bling.h"
++#include "view-ghost.h"
+ #include "cursor.h"
+ #include "input.h"
+ #include "layer-shell.h"
+@@ -589,6 +590,8 @@ phoc_renderer_render_output (PhocRenderer *self, PhocOutput *output, PhocRenderC
+       if (phoc_desktop_view_check_visibility (desktop, view))
+         render_view (output, view, ctx);
+     }
++    /* closed windows on their way out, over what was under them */
++    phoc_view_ghosts_render (output, ctx);
+     /* Render top layer above views */
+     render_layer (ZWLR_LAYER_SHELL_V1_LAYER_TOP, ctx);
+   }
+diff --git a/src/view-ghost.c b/src/view-ghost.c
+new file mode 100644
+index 0000000..d17d991
+--- /dev/null
++++ b/src/view-ghost.c
+@@ -0,0 +1,309 @@
++/*
++ * Copyright (C) 2026 The Surface Duo port
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++
++#define G_LOG_DOMAIN "phoc-view-ghost"
++
++#include "phoc-config.h"
++
++#include "anim/property-easer.h"
++#include "anim/timed-animation.h"
++#include "desktop.h"
++#include "output.h"
++#include "server.h"
++#include "utils.h"
++#include "view-ghost.h"
++
++#include <wlr/types/wlr_buffer.h>
++#include <wlr/types/wlr_compositor.h>
++#include <wlr/types/wlr_output.h>
++#include <wlr/util/transform.h>
++
++#define PHOC_ANIM_DURATION_WINDOW_CLOSE 200
++#define PHOC_VIEW_GHOST_END_SCALE 0.92
++
++/**
++ * PhocViewGhost:
++ *
++ * What is left of a window for a moment after it is gone.
++ *
++ * A window closes by its client unmapping the surface, and the view leaves
++ * the scene at once: one frame it is there, the next it is not, while
++ * opening fades it in. So at the unmap the view's last buffer is kept -
++ * the client's buffer, which is a texture in the renderer already - and
++ * drawn where the window was, fading and shrinking towards its centre,
++ * until the animation is done and the buffer is let go. Whatever closed
++ * the window, its own button, a close from the shell, a crash, it goes
++ * the same way.
++ *
++ * Drawn above the views and below the shell's top layer, on the output
++ * the view was on.
++ */
++
++enum {
++  PROP_0,
++  PROP_ALPHA,
++  PROP_SCALE,
++  PROP_LAST_PROP
++};
++static GParamSpec *props[PROP_LAST_PROP];
++
++struct _PhocViewGhost {
++  GObject                   parent;
++
++  PhocOutput               *output;
++  struct wlr_client_buffer *buffer;     /* locked while the ghost lives */
++  struct wlr_fbox           src_box;
++  struct wlr_box            box;        /* layout coordinates, full size */
++  enum wl_output_transform  transform;
++  float                     alpha;
++  float                     scale;
++};
++
++G_DEFINE_TYPE (PhocViewGhost, phoc_view_ghost, G_TYPE_OBJECT)
++
++static GList *ghosts;
++
++static void on_output_destroyed (gpointer data, GObject *where_the_object_was);
++
++
++static void
++damage (PhocViewGhost *self)
++{
++  struct wlr_box box = self->box;
++
++  if (self->output == NULL || self->output->wlr_output == NULL)
++    return;
++
++  /* the full box: the ghost only ever shrinks inside it */
++  box.x -= self->output->lx;
++  box.y -= self->output->ly;
++  phoc_utils_scale_box (&box, self->output->wlr_output->scale);
++  if (wlr_damage_ring_add_box (&self->output->damage_ring, &box))
++    wlr_output_schedule_frame (self->output->wlr_output);
++}
++
++
++static void
++phoc_view_ghost_set_property (GObject      *object,
++                              guint         property_id,
++                              const GValue *value,
++                              GParamSpec   *pspec)
++{
++  PhocViewGhost *self = PHOC_VIEW_GHOST (object);
++
++  switch (property_id) {
++  case PROP_ALPHA:
++    self->alpha = g_value_get_float (value);
++    damage (self);
++    break;
++  case PROP_SCALE:
++    self->scale = g_value_get_float (value);
++    damage (self);
++    break;
++  default:
++    G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
++    break;
++  }
++}
++
++
++static void
++phoc_view_ghost_get_property (GObject    *object,
++                              guint       property_id,
++                              GValue     *value,
++                              GParamSpec *pspec)
++{
++  PhocViewGhost *self = PHOC_VIEW_GHOST (object);
++
++  switch (property_id) {
++  case PROP_ALPHA:
++    g_value_set_float (value, self->alpha);
++    break;
++  case PROP_SCALE:
++    g_value_set_float (value, self->scale);
++    break;
++  default:
++    G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
++    break;
++  }
++}
++
++
++static void
++phoc_view_ghost_finalize (GObject *object)
++{
++  PhocViewGhost *self = PHOC_VIEW_GHOST (object);
++
++  if (self->output)
++    g_object_weak_unref (G_OBJECT (self->output), on_output_destroyed, self);
++  if (self->buffer)
++    wlr_buffer_unlock (&self->buffer->base);
++  self->buffer = NULL;
++
++  G_OBJECT_CLASS (phoc_view_ghost_parent_class)->finalize (object);
++}
++
++
++static void
++phoc_view_ghost_class_init (PhocViewGhostClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++
++  object_class->set_property = phoc_view_ghost_set_property;
++  object_class->get_property = phoc_view_ghost_get_property;
++  object_class->finalize = phoc_view_ghost_finalize;
++
++  props[PROP_ALPHA] = g_param_spec_float ("alpha", "", "", 0.0, 1.0, 1.0,
++                                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
++  props[PROP_SCALE] = g_param_spec_float ("scale", "", "", 0.0, 1.0, 1.0,
++                                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
++  g_object_class_install_properties (object_class, PROP_LAST_PROP, props);
++}
++
++
++static void
++phoc_view_ghost_init (PhocViewGhost *self)
++{
++  self->alpha = 1.0;
++  self->scale = 1.0;
++}
++
++
++static void
++on_animation_done (PhocViewGhost *self)
++{
++  damage (self);
++  ghosts = g_list_remove (ghosts, self);
++  g_object_unref (self);
++}
++
++
++static void
++on_output_destroyed (gpointer data, GObject *where_the_object_was)
++{
++  PhocViewGhost *self = PHOC_VIEW_GHOST (data);
++
++  self->output = NULL;
++}
++
++
++/**
++ * phoc_view_ghost_leave:
++ * @view: A view that is about to be unmapped
++ *
++ * Leave a ghost of @view behind that fades and shrinks away. Call it
++ * while the view is still mapped and its surface still has its buffer.
++ */
++void
++phoc_view_ghost_leave (PhocView *view)
++{
++  PhocDesktop *desktop = phoc_server_get_desktop (phoc_server_get_default ());
++  g_autoptr (PhocTimedAnimation) anim = NULL;
++  g_autoptr (PhocPropertyEaser) easer = NULL;
++  struct wlr_surface *surface = view->wlr_surface;
++  PhocViewGhost *self;
++  PhocOutput *output;
++  float scale;
++
++  if (!phoc_desktop_get_enable_animations (desktop) || view->parent != NULL)
++    return;
++  if (phoc_view_is_fullscreen (view))
++    return;
++  if (surface == NULL || surface->buffer == NULL || surface->buffer->texture == NULL)
++    return;
++  output = phoc_view_get_output (view);
++  if (output == NULL)
++    return;
++
++  self = g_object_new (PHOC_TYPE_VIEW_GHOST, NULL);
++  self->output = output;
++  g_object_weak_ref (G_OBJECT (output), on_output_destroyed, self);
++  self->buffer = surface->buffer;
++  wlr_buffer_lock (&self->buffer->base);
++  wlr_surface_get_buffer_source_box (surface, &self->src_box);
++  self->transform = surface->current.transform;
++
++  scale = phoc_view_get_scale (view);
++  self->box = (struct wlr_box) {
++    .x = view->box.x,
++    .y = view->box.y,
++    .width = surface->current.width * scale,
++    .height = surface->current.height * scale,
++  };
++  ghosts = g_list_prepend (ghosts, self);
++
++  easer = g_object_new (PHOC_TYPE_PROPERTY_EASER,
++                        "target", self,
++                        "easing", PHOC_EASING_EASE_OUT_CUBIC,
++                        NULL);
++  phoc_property_easer_set_props (easer,
++                                 "alpha", 1.0, 0.0,
++                                 "scale", 1.0, PHOC_VIEW_GHOST_END_SCALE,
++                                 NULL);
++  anim = g_object_new (PHOC_TYPE_TIMED_ANIMATION,
++                       "animatable", output,
++                       "duration", PHOC_ANIM_DURATION_WINDOW_CLOSE,
++                       "property-easer", easer,
++                       "dispose-on-done", TRUE,
++                       NULL);
++  g_signal_connect_swapped (anim, "done", G_CALLBACK (on_animation_done), self);
++  phoc_timed_animation_play (anim);
++}
++
++
++/**
++ * phoc_view_ghosts_render:
++ * @output: The output being rendered
++ * @ctx: The render context
++ *
++ * Draw the ghosts that are on @output.
++ */
++void
++phoc_view_ghosts_render (PhocOutput *output, PhocRenderContext *ctx)
++{
++  for (GList *l = ghosts; l; l = l->next) {
++    PhocViewGhost *self = PHOC_VIEW_GHOST (l->data);
++    struct wlr_output *wlr_output = output->wlr_output;
++    struct wlr_box dst, clip;
++    pixman_region32_t region;
++    enum wl_output_transform transform;
++    float alpha = self->alpha;
++    int width, height;
++
++    if (self->output != output || alpha <= 0.0 || self->buffer->texture == NULL)
++      continue;
++
++    width = self->box.width * self->scale;
++    height = self->box.height * self->scale;
++    dst = (struct wlr_box) {
++      .x = self->box.x - output->lx + (self->box.width - width) / 2,
++      .y = self->box.y - output->ly + (self->box.height - height) / 2,
++      .width = width,
++      .height = height,
++    };
++    phoc_utils_scale_box (&dst, wlr_output->scale);
++    clip = dst;
++
++    if (!phoc_utils_is_damaged (&dst, ctx->damage, &clip, &region)) {
++      pixman_region32_fini (&region);
++      continue;
++    }
++    phoc_output_transform_box (output, &dst);
++    phoc_output_transform_damage (output, &region);
++    transform = wlr_output_transform_compose (self->transform, wlr_output->transform);
++
++    wlr_render_pass_add_texture (ctx->render_pass, &(struct wlr_render_texture_options) {
++        .texture = self->buffer->texture,
++        .src_box = self->src_box,
++        .dst_box = dst,
++        .transform = transform,
++        .alpha = &alpha,
++        .clip = &region,
++        .filter_mode = phoc_output_get_texture_filter_mode (output),
++      });
++    pixman_region32_fini (&region);
++  }
++}
+diff --git a/src/view-ghost.h b/src/view-ghost.h
+new file mode 100644
+index 0000000..228066e
+--- /dev/null
++++ b/src/view-ghost.h
+@@ -0,0 +1,23 @@
++/*
++ * Copyright (C) 2026 The Surface Duo port
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++
++#pragma once
++
++#include "render.h"
++#include "view.h"
++
++#include <glib-object.h>
++
++G_BEGIN_DECLS
++
++#define PHOC_TYPE_VIEW_GHOST (phoc_view_ghost_get_type ())
++
++G_DECLARE_FINAL_TYPE (PhocViewGhost, phoc_view_ghost, PHOC, VIEW_GHOST, GObject)
++
++void   phoc_view_ghost_leave      (PhocView *view);
++void   phoc_view_ghosts_render    (PhocOutput *output, PhocRenderContext *ctx);
++
++G_END_DECLS
+diff --git a/src/view.c b/src/view.c
+index 022d02f..e9b81ff 100644
+--- a/src/view.c
++++ b/src/view.c
+@@ -22,6 +22,7 @@
+ #include "subsurface.h"
+ #include "utils.h"
+ #include "timed-animation.h"
++#include "view-ghost.h"
+ #include "view-child-private.h"
+ #include "view-private.h"
+ 
+@@ -1397,6 +1398,10 @@ phoc_view_unmap (PhocView *view)
+ 
+   bool was_visible = phoc_desktop_view_check_visibility (desktop, view);
+ 
++  /* the window fades and shrinks away rather than vanishing in a frame */
++  if (was_visible)
++    phoc_view_ghost_leave (view);
++
+   phoc_view_damage_whole (view);
+ 
+   wl_list_remove (&priv->surface_new_subsurface.link);
+-- 
+2.43.0
+
