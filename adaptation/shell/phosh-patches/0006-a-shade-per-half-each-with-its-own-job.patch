@@ -1,0 +1,156 @@
+--- a/src/settings.h
++++ b/src/settings.h
+@@ -13,6 +13,19 @@
+ 
+ G_DECLARE_FINAL_TYPE (PhoshSettings, phosh_settings, PHOSH, SETTINGS, GtkBin)
+ 
++/**
++ * PhoshSettingsHalf:
++ * @PHOSH_SETTINGS_HALF_WHOLE: the display has one shade, which shows everything
++ * @PHOSH_SETTINGS_HALF_NEAR: the near half of a display with a seam: the settings
++ * @PHOSH_SETTINGS_HALF_FAR: the far half: the media player and the notifications
++ */
++typedef enum {
++  PHOSH_SETTINGS_HALF_WHOLE,
++  PHOSH_SETTINGS_HALF_NEAR,
++  PHOSH_SETTINGS_HALF_FAR,
++} PhoshSettingsHalf;
++
+ GtkWidget * phosh_settings_new (void);
+ gint        phosh_settings_get_drag_handle_offset (PhoshSettings *self);
+ void        phosh_settings_hide_details (PhoshSettings *self);
++void        phosh_settings_set_half (PhoshSettings *self, PhoshSettingsHalf half);
+--- a/src/settings.c
++++ b/src/settings.c
+@@ -52,6 +52,7 @@
+   GtkBin     parent;
+ 
+   gboolean   on_lockscreen;
++  PhoshSettingsHalf half;
+   gint       drag_handle_offset;
+   guint      debounce_handle;
+ 
+@@ -79,6 +80,36 @@
+ 
+ G_DEFINE_TYPE (PhoshSettings, phosh_settings, GTK_TYPE_BIN)
+ 
++static void update_drag_handle_offset (PhoshSettings *self);
++
++
++/*
++ * On a display with a seam each half has a shade of its own, and each does
++ * one job: the near one the settings - the sliders, the quick settings, the
++ * torch - and the far one what is going on - the media player and the
++ * notifications. The lock screen keeps both whole: phosh shows no player
++ * and no notifications in a shade there, and a far half that hid the rest
++ * would open onto nothing.
++ */
++static void
++apply_half (PhoshSettings *self)
++{
++  gboolean settings, bottom;
++
++  if (self->half == PHOSH_SETTINGS_HALF_WHOLE)
++    return;
++
++  settings = self->half == PHOSH_SETTINGS_HALF_NEAR || self->on_lockscreen;
++  bottom = self->half == PHOSH_SETTINGS_HALF_FAR && !self->on_lockscreen;
++
++  gtk_widget_set_visible (self->box_sliders, settings);
++  gtk_widget_set_visible (self->quick_settings, settings);
++  /* the revealer's own visibility is bound to the torch; its child is not */
++  gtk_widget_set_visible (gtk_bin_get_child (GTK_BIN (self->revealer)), settings);
++  gtk_widget_set_visible (self->box_bottom_half, bottom);
++  update_drag_handle_offset (self);
++}
++
+ 
+ static void
+ set_on_lockscreen (PhoshSettings *self, gboolean on_lockscreen)
+@@ -577,6 +608,12 @@
+                           G_BINDING_SYNC_CREATE | G_BINDING_INVERT_BOOLEAN);
+ 
+   g_signal_connect (self, "size-allocate", G_CALLBACK (on_size_allocate), NULL);
++  /* The .ui binds the bottom half's visibility to on-lockscreen, and a
++   * notify is held back until g_object_set returns: calling this from the
++   * setter ran it before the binding, which then showed the bottom half on
++   * the near half again. Connected after the template's bindings, it runs
++   * after them. */
++  g_signal_connect (self, "notify::on-lockscreen", G_CALLBACK (apply_half), NULL);
+   /* where the notification list is decides what a swipe up does */
+   g_signal_connect_swapped (gtk_scrolled_window_get_vadjustment (GTK_SCROLLED_WINDOW (self->scrolled_window)),
+                             "value-changed", G_CALLBACK (update_drag_handle_offset), self);
+@@ -616,3 +653,21 @@
+   phosh_audio_settings_hide_details (self->audio_settings);
+   phosh_quick_settings_hide_status (PHOSH_QUICK_SETTINGS (self->quick_settings));
+ }
++
++
++/**
++ * phosh_settings_set_half:
++ * @self: The settings
++ * @half: Which half of the display this shade is on
++ *
++ * Deal the shade's contents out between the halves of a display with a
++ * seam. See `apply_half`.
++ */
++void
++phosh_settings_set_half (PhoshSettings *self, PhoshSettingsHalf half)
++{
++  g_return_if_fail (PHOSH_IS_SETTINGS (self));
++
++  self->half = half;
++  apply_half (self);
++}
+--- a/src/top-panel.h
++++ b/src/top-panel.h
+@@ -7,6 +7,7 @@
+ #pragma once
+ 
+ #include "drag-surface.h"
++#include "settings.h"
+ #include "top-panel-bg.h"
+ 
+ #define PHOSH_TYPE_TOP_PANEL            (phosh_top_panel_get_type ())
+@@ -43,3 +44,4 @@
+ PhoshTopPanelState phosh_top_panel_get_state (PhoshTopPanel *self);
+ void               phosh_top_panel_set_layer (PhoshTopPanel *self, guint32 layer);
+ void               phosh_top_panel_set_bar_transparent (PhoshTopPanel *self, gboolean transparent);
++void               phosh_top_panel_set_half (PhoshTopPanel *self, PhoshSettingsHalf half);
+--- a/src/top-panel.c
++++ b/src/top-panel.c
+@@ -1025,3 +1025,23 @@
+ 
+   phosh_util_toggle_style_class (GTK_WIDGET (self->top_bar_bin), "p-solid", !transparent);
+ }
++
++
++/**
++ * phosh_top_panel_set_half:
++ * @self: The top panel
++ * @half: Which half of the display the panel is on
++ *
++ * The shade shows that half's share of the settings menu, and lock and
++ * power are the settings' - the far half keeps their places, so its clock
++ * stays centred, and draws and takes nothing there.
++ */
++void
++phosh_top_panel_set_half (PhoshTopPanel *self, PhoshSettingsHalf half)
++{
++  g_return_if_fail (PHOSH_IS_TOP_PANEL (self));
++
++  phosh_settings_set_half (PHOSH_SETTINGS (self->settings), half);
++  gtk_widget_set_child_visible (self->btn_lock, half != PHOSH_SETTINGS_HALF_FAR);
++  gtk_widget_set_child_visible (self->btn_power, half != PHOSH_SETTINGS_HALF_FAR);
++}
+--- a/src/shell.c
++++ b/src/shell.c
+@@ -621,6 +621,8 @@
+      * hides this one's contents and keeps it as a handle for its own shade. */
+     gtk_style_context_add_class (gtk_widget_get_style_context (GTK_WIDGET (priv->top_panel_right)),
+                                  "phosh-far-half");
++    phosh_top_panel_set_half (PHOSH_TOP_PANEL (priv->top_panel), PHOSH_SETTINGS_HALF_NEAR);
++    phosh_top_panel_set_half (PHOSH_TOP_PANEL (priv->top_panel_right), PHOSH_SETTINGS_HALF_FAR);
+     gtk_widget_set_visible (GTK_WIDGET (priv->top_panel_right), TRUE);
+   } else {
+     priv->top_panel = PHOSH_DRAG_SURFACE (phosh_top_panel_new (

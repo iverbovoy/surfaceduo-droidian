@@ -144,6 +144,32 @@ did nothing. It was first put down to phosh; stopping the dock gave the
 strip back to the shade at once. The dock now queues a frame whenever it
 changes a region.
 
+### Each shade has its own job
+
+Two shades showing the same things are one shade drawn twice.
+`phosh-patches/0006` deals the settings menu out between them, the way
+Android's split shade does on a large screen: the near half keeps the
+settings - brightness, volume, the quick settings, the torch, lock and
+power - and the far half keeps what is going on - the media player and the
+notifications. Each still opens on its own swipe.
+
+The widgets are hidden, not made transparent: GTK3's CSS can take a widget's
+opacity away and nothing else, and an invisible widget keeps its space and
+its touches. Lock and power on the far half are the exception: they keep
+their places with nothing drawn and nothing taken, because the clock between
+them is centred by them.
+
+On the lock screen both halves stay whole. phosh shows neither the player
+nor the notifications in a shade there, so a far half that hid the rest
+would open onto nothing.
+
+One ordering trap, for the next patch in this file: the .ui binds the
+bottom half's visibility to `on-lockscreen`, and `g_object_set` holds a
+notify back until it returns. Dealing the halves out from the property's
+setter ran before that binding, and the binding put the notifications back
+on the near half after every unlock. It runs from a `notify::on-lockscreen`
+handler connected after the template, which runs after the binding.
+
 ### A shade folds from anywhere
 
 phosh lets an open shade be folded only by its handle: `update_drag_handle`
@@ -460,7 +486,7 @@ both, because which comes first depends on how long the shell took to start
 start that is still most of a minute after the lock screen is drawn, so the
 dock also treats "nobody owns `org.gnome.ScreenSaver` yet" as locked.
 
-The package carries the patched binary (0001-0005) and
+The package carries the patched binary (0001-0006) and
 `sudo sfduo-phosh-install` puts it in place at install time - but only beside
 exactly the phosh version it was built for; on any other it says so and
 leaves the packaged shell alone. `sudo sfduo-phosh-install --restore` puts the

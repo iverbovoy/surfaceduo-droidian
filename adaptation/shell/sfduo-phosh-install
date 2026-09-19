@@ -3,11 +3,12 @@
 # one - or, with --restore, put the packaged one back and keep it there.
 #
 # The patched binary is phosh 0.49.0 at Droidian's cf38ab5 plus the patches
-# 0001-0005 in adaptation/shell/phosh-patches of the port's repository: it
+# 0001-0006 in adaptation/shell/phosh-patches of the port's repository: it
 # tells logind it came up locked, it says LTE rather than 4G, its home
 # overview lets go of the keyboard when a window opens, so windows can take
 # the focus and be tiled, it gives a display with a seam down it a top
-# bar and a shade per half, and a shade folds from anywhere on it. It is built against exactly that package's
+# bar and a shade per half - settings on the near one, notifications and
+# the player on the far one - that folds from anywhere on it. It is built against exactly that package's
 # libraries and resources, so it is installed only beside exactly that
 # version. A phosh upgrade overwrites it with the new stock binary, which is
 # the safe way for this to stop applying.
