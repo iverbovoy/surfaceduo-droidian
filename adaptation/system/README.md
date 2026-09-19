@@ -238,10 +238,13 @@ line is not in the file any more. A session bus that started before the
 service directory existed needs `org.freedesktop.DBus.ReloadConfig` or a new
 login.
 
-Their own lists are not the way in any more, Settings is, so the list's
-column in each holds one button instead - "‹ Settings", `window.close` -
-and the back arrow on a page leads to it: one tap and the window is gone,
-Settings underneath where it was. The list is still in the `.ui`, hidden
+Their own lists are not the way in any more, Settings is. Going back to
+the list closes the window outright, and Settings is underneath where it
+was: the rewritten `.ui` connects the list page's `shown` signal to
+`gtk_window_close`, which GtkBuilder finds by name in the loaded libraries
+when the window's class has no callback of that name. The list's column
+also holds a single "‹ Settings" button (`window.close`), for the moment
+the page is on screen and in case the signal never comes. The list is still in the `.ui`, hidden
 (the programs' code holds on to it), with the search and menu buttons above
 it. The same launch-time rewrite does it, with Python's XML parser rather
 than sed; a file of an unexpected shape gets the width change only.

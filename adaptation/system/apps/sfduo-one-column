@@ -116,6 +116,15 @@ try:
                 hide(c.find("object"))
     content.remove(listing)
     hide(listing)
+    # Back to the root closes the window outright: the sidebar page being
+    # shown is the moment, and GtkBuilder finds gtk_window_close by name in
+    # the loaded libraries when the class has no such callback. The button
+    # stays for the moment the page shows, and in case the signal never
+    # comes.
+    template = root.find("template")
+    if template is not None:
+        ET.SubElement(page, "signal", name="shown", handler="gtk_window_close",
+                      object=template.get("class"), swapped="yes")
     column = ET.SubElement(content, "object", {"class": "GtkBox"})
     ET.SubElement(column, "property", name="orientation").text = "vertical"
     ET.SubElement(column, "child").append(button())

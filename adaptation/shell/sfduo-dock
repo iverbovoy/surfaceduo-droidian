@@ -998,7 +998,12 @@ class Dock(Gtk.Window):
         # shown it cannot place windows, in which case there is nothing to
         # hide and the curtain would only be a black screen.
         if self.shell_places is not False:
-            GLib.idle_add(lambda: self._raise_curtain() or False)
+            # a window that follows another goes to that one's panel, and
+            # only that panel is covered: the other stays what it was
+            follow = getattr(self, "follow", {})
+            sides = {self.placed.get(follow.get(a)) for a in strangers}
+            side = sides.pop() if len(sides) == 1 and None not in sides else None
+            GLib.idle_add(lambda: self._raise_curtain(side=side) or False)
         try:
             self._adopt(strangers)
         finally:
