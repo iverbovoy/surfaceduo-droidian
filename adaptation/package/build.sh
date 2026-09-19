@@ -773,7 +773,7 @@ install -m755 "$SHELLDIR/sfduo-dock"       "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-brightness" "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-shell-setup" "$PKG/usr/local/sbin/"
 install -m755 "$SHELLDIR/sfduo-phosh-install" "$PKG/usr/local/sbin/"
-# The patched phosh (../shell/phosh-patches 0001-0011), built per
+# The patched phosh (../shell/phosh-patches 0001-0012), built per
 # ../shell/README.md. Version-locked: see sfduo-phosh-install.
 PHOSH_BIN="$ROOT/out/phosh/phosh-0.49.0-cf38ab5-sfduo"
 if [ -f "$PHOSH_BIN" ]; then
@@ -793,11 +793,11 @@ if [ -f "$PHOSH_BIN" ]; then
 else
     echo "NOTE: $PHOSH_BIN not found - building without the patched phosh"
 fi
-# The patched phoc (../shell/phoc-patches/0001-0005): tiled windows stop
+# The patched phoc (../shell/phoc-patches/0001-0006): tiled windows stop
 # short of the hinge named by `tiling-seam` in phoc.ini, a new window opens
-# on the panel touched last, a closed one fades away, a bar giving up its
-# reservation gives it up at once, and windows can be minimized. Version-
-# locked like phosh:
+# on the panel touched last, a closed one fades away and a minimized one
+# drops to the bottom edge, a bar giving up its reservation gives it up at
+# once, and windows can be minimized at all. Version-locked like phosh:
 # see sfduo-phoc-install. Built per ../shell/README.md.
 install -m755 "$SHELLDIR/sfduo-phoc-install" "$PKG/usr/local/sbin/"
 PHOC_BIN="$ROOT/out/phoc/phoc-0.47.0-98211ea-sfduo"

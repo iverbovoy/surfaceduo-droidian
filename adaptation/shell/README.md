@@ -263,6 +263,22 @@ while it can pop, and what it lets through at the list minimizes the
 window. Other apps say nothing about being at their first page, so a swipe
 there still does nothing.
 
+### Closing and minimizing look different, and the dock follows at once
+
+A closed window fades and shrinks a little in place (200 ms); a minimized
+one shrinks to a third and drops to the bottom edge of its panel, where the
+dock is, fading late so the eye follows it there (280 ms) - phoc-patches/0006,
+one "ghost" with two kinds.
+
+The dock used to learn of windows by asking every half second, so it
+crossed onto a freed panel up to half a second after the window had gone.
+phosh now says it at once on `org.sfduo.Shade`: `WindowsChanged("opened" |
+"changed" | "closed")` (phosh-patches/0012; a minimize arrives as a
+"changed"). The dock looks again half-way through the window's motion -
+100 ms after a close, 140 ms after a change - and measured, it starts to
+move about 200 ms after the command. The half-second beat stays, for a
+shell that says nothing.
+
 ### A shade folds from anywhere
 
 phosh lets an open shade be folded only by its handle: `update_drag_handle`
@@ -579,7 +595,7 @@ both, because which comes first depends on how long the shell took to start
 start that is still most of a minute after the lock screen is drawn, so the
 dock also treats "nobody owns `org.gnome.ScreenSaver` yet" as locked.
 
-The package carries the patched binary (0001-0011) and
+The package carries the patched binary (0001-0012) and
 `sudo sfduo-phosh-install` puts it in place at install time - but only beside
 exactly the phosh version it was built for; on any other it says so and
 leaves the packaged shell alone. `sudo sfduo-phosh-install --restore` puts the

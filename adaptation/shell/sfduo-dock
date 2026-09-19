@@ -117,7 +117,11 @@ BACK_TOP = 48             # the strip starts below the bar, clear of the shade's
 # back" to a shell: a swipe over these does nothing.
 TERMINALS = {"cool-retro-term", "org.gnome.Console", "kgx", "org.gnome.Terminal",
              "foot", "Alacritty", "org.wezfurlong.wezterm", "xterm"}
-WATCH_MS = 500            # how often to ask which windows are open
+WATCH_MS = 500            # how often to ask which windows are open, unless told sooner
+# Told by the shell (WindowsChanged) that a window came or went, the dock
+# looks again this long after: half of phoc's close and minimize motions, so
+# that its own move onto a freed panel follows on from the window's.
+WINDOW_GONE_MS = {"closed": 100, "changed": 140, "opened": 0}
 WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
 FOCUS_TIMEOUT = 4         # seconds a mapped window gets to take the focus
 CURTAIN_ICON = 96         # the app's icon on the launch curtain
@@ -785,6 +789,8 @@ class Dock(Gtk.Window):
         self._follow_keyboard()
         self._follow_shade()
         self._publish_placement()
+        self.watch_wake = threading.Event()
+        self._follow_windows()
         threading.Thread(target=self._watch_windows, daemon=True).start()
 
         # The finger drives the grid. In the capture phase, so that the
@@ -988,7 +994,8 @@ class Dock(Gtk.Window):
                 GLib.idle_add(self._busy_changed)
             except Exception as err:      # noqa: BLE001 - keep the beat going
                 print(f"sfduo-dock: windows: {err}", file=sys.stderr)
-            time.sleep(WATCH_MS / 1000)
+            self.watch_wake.wait(WATCH_MS / 1000)
+            self.watch_wake.clear()
 
     def _adopt_strangers(self, ids):
         """Put a window the dock did not launch on the free panel - the right
@@ -1742,6 +1749,17 @@ class Dock(Gtk.Window):
 
     SHADE_NAME = "org.sfduo.Shade"
     SHADE_PATH = "/org/sfduo/Shade"
+
+    def _follow_windows(self):
+        """Look at the windows as soon as the shell says one came or went,
+        rather than at the next half-second beat (#75). The port's phosh says
+        so on org.sfduo.Shade: WindowsChanged("opened", "changed" or
+        "closed"). On a stock phosh nothing comes, and the beat is all."""
+        self.session_bus.signal_subscribe(
+            None, self.SHADE_NAME, "WindowsChanged", self.SHADE_PATH, None,
+            Gio.DBusSignalFlags.NONE,
+            lambda _c, _s, _p, _i, _sig, params: GLib.timeout_add(
+                WINDOW_GONE_MS.get(params[0], 0), lambda: self.watch_wake.set() or False))
 
     def _follow_shade(self):
         """Know which half has its shade pulled down.

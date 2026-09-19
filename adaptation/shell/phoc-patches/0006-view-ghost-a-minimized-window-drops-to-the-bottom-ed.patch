@@ -1,0 +1,270 @@
+From ad429b00e491d8fe1e4790f38a4579aafc97adca Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Sat, 19 Sep 2026 23:26:33 +0300
+Subject: [PATCH] view-ghost: a minimized window drops to the bottom edge, a
+ closed one fades in place
+
+Closing and minimizing used the same motion, so there was no telling
+whether an app had gone or was waiting. A ghost has a kind now: a closed
+window still fades and shrinks a little in place, 200 ms easing out; a
+minimized one shrinks to a third and drops to just above the bottom edge
+of where it was - where a dock is - fading late, 280 ms easing in and out.
+---
+ src/view-ghost.c | 108 +++++++++++++++++++++++++++++------------------
+ src/view-ghost.h |  13 +++++-
+ src/view.c       |   4 +-
+ 3 files changed, 81 insertions(+), 44 deletions(-)
+
+diff --git a/src/view-ghost.c b/src/view-ghost.c
+index d17d991..fa91b32 100644
+--- a/src/view-ghost.c
++++ b/src/view-ghost.c
+@@ -22,7 +22,10 @@
+ #include <wlr/util/transform.h>
+ 
+ #define PHOC_ANIM_DURATION_WINDOW_CLOSE 200
+-#define PHOC_VIEW_GHOST_END_SCALE 0.92
++#define PHOC_ANIM_DURATION_WINDOW_MINIMIZE 280
++#define PHOC_VIEW_GHOST_CLOSE_SCALE 0.92      /* a closed window shrinks a little */
++#define PHOC_VIEW_GHOST_MINIMIZE_SCALE 0.3    /* a minimized one goes down small */
++#define PHOC_VIEW_GHOST_MINIMIZE_GAP 12       /* ... and stops this far above the edge */
+ 
+ /**
+  * PhocViewGhost:
+@@ -44,8 +47,7 @@
+ 
+ enum {
+   PROP_0,
+-  PROP_ALPHA,
+-  PROP_SCALE,
++  PROP_PROGRESS,
+   PROP_LAST_PROP
+ };
+ static GParamSpec *props[PROP_LAST_PROP];
+@@ -58,8 +60,8 @@ struct _PhocViewGhost {
+   struct wlr_fbox           src_box;
+   struct wlr_box            box;        /* layout coordinates, full size */
+   enum wl_output_transform  transform;
+-  float                     alpha;
+-  float                     scale;
++  PhocViewGhostKind         kind;
++  float                     progress;   /* 0 as the window was .. 1 gone */
+ };
+ 
+ G_DEFINE_TYPE (PhocViewGhost, phoc_view_ghost, G_TYPE_OBJECT)
+@@ -77,7 +79,7 @@ damage (PhocViewGhost *self)
+   if (self->output == NULL || self->output->wlr_output == NULL)
+     return;
+ 
+-  /* the full box: the ghost only ever shrinks inside it */
++  /* the full box: the ghost only ever shrinks and moves inside it */
+   box.x -= self->output->lx;
+   box.y -= self->output->ly;
+   phoc_utils_scale_box (&box, self->output->wlr_output->scale);
+@@ -95,12 +97,8 @@ phoc_view_ghost_set_property (GObject      *object,
+   PhocViewGhost *self = PHOC_VIEW_GHOST (object);
+ 
+   switch (property_id) {
+-  case PROP_ALPHA:
+-    self->alpha = g_value_get_float (value);
+-    damage (self);
+-    break;
+-  case PROP_SCALE:
+-    self->scale = g_value_get_float (value);
++  case PROP_PROGRESS:
++    self->progress = g_value_get_float (value);
+     damage (self);
+     break;
+   default:
+@@ -119,11 +117,8 @@ phoc_view_ghost_get_property (GObject    *object,
+   PhocViewGhost *self = PHOC_VIEW_GHOST (object);
+ 
+   switch (property_id) {
+-  case PROP_ALPHA:
+-    g_value_set_float (value, self->alpha);
+-    break;
+-  case PROP_SCALE:
+-    g_value_set_float (value, self->scale);
++  case PROP_PROGRESS:
++    g_value_set_float (value, self->progress);
+     break;
+   default:
+     G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
+@@ -156,10 +151,8 @@ phoc_view_ghost_class_init (PhocViewGhostClass *klass)
+   object_class->get_property = phoc_view_ghost_get_property;
+   object_class->finalize = phoc_view_ghost_finalize;
+ 
+-  props[PROP_ALPHA] = g_param_spec_float ("alpha", "", "", 0.0, 1.0, 1.0,
+-                                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+-  props[PROP_SCALE] = g_param_spec_float ("scale", "", "", 0.0, 1.0, 1.0,
+-                                          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
++  props[PROP_PROGRESS] = g_param_spec_float ("progress", "", "", 0.0, 1.0, 0.0,
++                                             G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+   g_object_class_install_properties (object_class, PROP_LAST_PROP, props);
+ }
+ 
+@@ -167,8 +160,42 @@ phoc_view_ghost_class_init (PhocViewGhostClass *klass)
+ static void
+ phoc_view_ghost_init (PhocViewGhost *self)
+ {
+-  self->alpha = 1.0;
+-  self->scale = 1.0;
++  self->progress = 0.0;
++}
++
++
++/*
++ * Where the ghost is at its progress, in layout coordinates, and how
++ * opaque. Closing: in place, a little smaller, fading throughout.
++ * Minimizing: down to a third of its size, its bottom edge travelling to
++ * just above the bottom of where the window was - the panel's bottom edge,
++ * where the dock is - and fading late, so the eye can follow it there.
++ */
++static void
++place (PhocViewGhost *self, struct wlr_box *out, float *alpha)
++{
++  float p = self->progress, scale, cx, cy;
++
++  cx = self->box.x + self->box.width / 2.0;
++  cy = self->box.y + self->box.height / 2.0;
++
++  if (self->kind == PHOC_VIEW_GHOST_MINIMIZE) {
++    float end_cy;
++
++    scale = 1.0 - (1.0 - PHOC_VIEW_GHOST_MINIMIZE_SCALE) * p;
++    end_cy = self->box.y + self->box.height - PHOC_VIEW_GHOST_MINIMIZE_GAP -
++      self->box.height * PHOC_VIEW_GHOST_MINIMIZE_SCALE / 2.0;
++    cy += (end_cy - cy) * p;
++    *alpha = 1.0 - p * p;
++  } else {
++    scale = 1.0 - (1.0 - PHOC_VIEW_GHOST_CLOSE_SCALE) * p;
++    *alpha = 1.0 - p;
++  }
++
++  out->width = self->box.width * scale;
++  out->height = self->box.height * scale;
++  out->x = cx - out->width / 2.0;
++  out->y = cy - out->height / 2.0;
+ }
+ 
+ 
+@@ -198,7 +225,7 @@ on_output_destroyed (gpointer data, GObject *where_the_object_was)
+  * while the view is still mapped and its surface still has its buffer.
+  */
+ void
+-phoc_view_ghost_leave (PhocView *view)
++phoc_view_ghost_leave (PhocView *view, PhocViewGhostKind kind)
+ {
+   PhocDesktop *desktop = phoc_server_get_desktop (phoc_server_get_default ());
+   g_autoptr (PhocTimedAnimation) anim = NULL;
+@@ -219,6 +246,7 @@ phoc_view_ghost_leave (PhocView *view)
+     return;
+ 
+   self = g_object_new (PHOC_TYPE_VIEW_GHOST, NULL);
++  self->kind = kind;
+   self->output = output;
+   g_object_weak_ref (G_OBJECT (output), on_output_destroyed, self);
+   self->buffer = surface->buffer;
+@@ -235,17 +263,19 @@ phoc_view_ghost_leave (PhocView *view)
+   };
+   ghosts = g_list_prepend (ghosts, self);
+ 
++  /* closing eases out, it is over quickly; minimizing eases in and out,
++   * a movement that starts and lands */
+   easer = g_object_new (PHOC_TYPE_PROPERTY_EASER,
+                         "target", self,
+-                        "easing", PHOC_EASING_EASE_OUT_CUBIC,
++                        "easing", kind == PHOC_VIEW_GHOST_MINIMIZE ?
++                                  PHOC_EASING_EASE_IN_OUT_CUBIC : PHOC_EASING_EASE_OUT_CUBIC,
+                         NULL);
+-  phoc_property_easer_set_props (easer,
+-                                 "alpha", 1.0, 0.0,
+-                                 "scale", 1.0, PHOC_VIEW_GHOST_END_SCALE,
+-                                 NULL);
++  phoc_property_easer_set_props (easer, "progress", 0.0, 1.0, NULL);
+   anim = g_object_new (PHOC_TYPE_TIMED_ANIMATION,
+                        "animatable", output,
+-                       "duration", PHOC_ANIM_DURATION_WINDOW_CLOSE,
++                       "duration", kind == PHOC_VIEW_GHOST_MINIMIZE ?
++                                   PHOC_ANIM_DURATION_WINDOW_MINIMIZE :
++                                   PHOC_ANIM_DURATION_WINDOW_CLOSE,
+                        "property-easer", easer,
+                        "dispose-on-done", TRUE,
+                        NULL);
+@@ -270,20 +300,16 @@ phoc_view_ghosts_render (PhocOutput *output, PhocRenderContext *ctx)
+     struct wlr_box dst, clip;
+     pixman_region32_t region;
+     enum wl_output_transform transform;
+-    float alpha = self->alpha;
+-    int width, height;
++    float alpha;
+ 
+-    if (self->output != output || alpha <= 0.0 || self->buffer->texture == NULL)
++    if (self->output != output || self->buffer->texture == NULL)
+       continue;
+ 
+-    width = self->box.width * self->scale;
+-    height = self->box.height * self->scale;
+-    dst = (struct wlr_box) {
+-      .x = self->box.x - output->lx + (self->box.width - width) / 2,
+-      .y = self->box.y - output->ly + (self->box.height - height) / 2,
+-      .width = width,
+-      .height = height,
+-    };
++    place (self, &dst, &alpha);
++    if (alpha <= 0.0)
++      continue;
++    dst.x -= output->lx;
++    dst.y -= output->ly;
+     phoc_utils_scale_box (&dst, wlr_output->scale);
+     clip = dst;
+ 
+diff --git a/src/view-ghost.h b/src/view-ghost.h
+index 228066e..de93bfa 100644
+--- a/src/view-ghost.h
++++ b/src/view-ghost.h
+@@ -17,7 +17,18 @@ G_BEGIN_DECLS
+ 
+ G_DECLARE_FINAL_TYPE (PhocViewGhost, phoc_view_ghost, PHOC, VIEW_GHOST, GObject)
+ 
+-void   phoc_view_ghost_leave      (PhocView *view);
++/**
++ * PhocViewGhostKind:
++ * @PHOC_VIEW_GHOST_CLOSE: the window is gone: it fades and shrinks a little, in place
++ * @PHOC_VIEW_GHOST_MINIMIZE: the window is put away: it shrinks and drops to the
++ *   bottom edge, where a dock is, fading as it gets there
++ */
++typedef enum {
++  PHOC_VIEW_GHOST_CLOSE,
++  PHOC_VIEW_GHOST_MINIMIZE,
++} PhocViewGhostKind;
++
++void   phoc_view_ghost_leave      (PhocView *view, PhocViewGhostKind kind);
+ void   phoc_view_ghosts_render    (PhocOutput *output, PhocRenderContext *ctx);
+ 
+ G_END_DECLS
+diff --git a/src/view.c b/src/view.c
+index 8cedfe5..9c447dd 100644
+--- a/src/view.c
++++ b/src/view.c
+@@ -1418,7 +1418,7 @@ phoc_view_unmap (PhocView *view)
+ 
+   /* the window fades and shrinks away rather than vanishing in a frame */
+   if (was_visible)
+-    phoc_view_ghost_leave (view);
++    phoc_view_ghost_leave (view, PHOC_VIEW_GHOST_CLOSE);
+ 
+   phoc_view_damage_whole (view);
+ 
+@@ -2584,7 +2584,7 @@ phoc_view_set_minimized (PhocView *view, gboolean minimized)
+     return;
+ 
+   if (minimized && phoc_desktop_view_check_visibility (desktop, view))
+-    phoc_view_ghost_leave (view);
++    phoc_view_ghost_leave (view, PHOC_VIEW_GHOST_MINIMIZE);
+   phoc_view_damage_whole (view);
+   priv->minimized = minimized;
+   if (priv->toplevel_handle)
+-- 
+2.43.0
+

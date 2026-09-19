@@ -1,0 +1,83 @@
+--- a/src/shell.c
++++ b/src/shell.c
+@@ -309,6 +309,7 @@
+   "<node>"
+   "  <interface name='org.sfduo.Shade'>"
+   "    <property name='Open' type='s' access='read'/>"
++  "    <signal name='WindowsChanged'><arg name='what' type='s'/></signal>"
+   "  </interface>"
+   "</node>";
+ 
+@@ -386,6 +387,64 @@
+ }
+ 
+ 
++/*
++ * Windows coming, changing and going, said at once: WindowsChanged("opened",
++ * "changed" or "closed") on the same object. The port's dock watched the
++ * windows by asking every half second, so it moved onto a panel a window
++ * had just left up to half a second after the window had faded - two
++ * motions that did not belong together. phosh hears of each at once: a new
++ * toplevel, every batch of state (minimized included - it arrives as a
++ * "done", which PhoshToplevel reports as notify::configured), and the end.
++ */
++static void
++windows_say (PhoshShell *self, const char *what)
++{
++  PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
++
++  if (priv->shade_bus == NULL)
++    return;
++  g_dbus_connection_emit_signal (priv->shade_bus, NULL, SHADE_OBJECT_PATH, SHADE_IFACE,
++                                 "WindowsChanged", g_variant_new ("(s)", what), NULL);
++}
++
++
++static void
++on_window_changed (PhoshShell *self)
++{
++  windows_say (self, "changed");
++}
++
++
++static void
++on_window_closed (PhoshShell *self)
++{
++  windows_say (self, "closed");
++}
++
++
++static void
++on_window_added (PhoshShell *self, PhoshToplevel *toplevel)
++{
++  g_signal_connect_object (toplevel, "notify::configured", G_CALLBACK (on_window_changed),
++                           self, G_CONNECT_SWAPPED);
++  g_signal_connect_object (toplevel, "closed", G_CALLBACK (on_window_closed),
++                           self, G_CONNECT_SWAPPED);
++  windows_say (self, "opened");
++}
++
++
++static void
++windows_watch_start (PhoshShell *self)
++{
++  PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
++
++  for (guint i = 0; i < phosh_toplevel_manager_get_num_toplevels (priv->toplevel_manager); i++)
++    on_window_added (self, phosh_toplevel_manager_get_toplevel (priv->toplevel_manager, i));
++  g_signal_connect_object (priv->toplevel_manager, "toplevel-added",
++                           G_CALLBACK (on_window_added), self, G_CONNECT_SWAPPED);
++}
++
++
+ static void
+ shade_service_start (PhoshShell *self)
+ {
+@@ -420,6 +479,7 @@
+   g_bus_own_name_on_connection (priv->shade_bus, SHADE_BUS_NAME,
+                                 G_BUS_NAME_OWNER_FLAGS_NONE, NULL, NULL, NULL, NULL);
+   priv->shade_open = "none";
++  windows_watch_start (self);
+ }
+ 
+ /* }}} */

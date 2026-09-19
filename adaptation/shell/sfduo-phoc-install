@@ -3,11 +3,11 @@
 # one - or, with --restore, put the packaged one back and keep it there.
 #
 # The patched binary is phoc 0.47.0 at Droidian's 98211ea plus
-# adaptation/shell/phoc-patches/0001-0005: with a `tiling-seam` in phoc.ini,
+# adaptation/shell/phoc-patches/0001-0006: with a `tiling-seam` in phoc.ini,
 # tiled windows stop short of the hinge instead of each reaching half way
 # into it; a new window opens on the panel touched last; a closed window
-# fades and shrinks away; a new exclusive height takes effect at once;
-# windows can be minimized.
+# fades and shrinks away and a minimized one drops to the bottom edge; a new
+# exclusive height takes effect at once; windows can be minimized.
 # Built against exactly that package's wlroots and libraries, so it is
 # installed only beside exactly that version; a phoc upgrade overwrites it
 # with the new stock binary, which is the safe way for this to stop applying.
