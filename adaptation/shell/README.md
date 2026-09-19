@@ -96,6 +96,23 @@ its shade down and watching it stop:
   properties and GObject applies those after `constructed()` has run, so
   asking for them there returns zero, which is exactly the bug in a quieter
   form.
+- **One pixel of exclusive zone.** The near panel reserves the bar's height
+  and the far one, whose bar is the same bar, must reserve almost nothing,
+  since the zones of surfaces anchored to the same edge are added up. Almost,
+  not exactly: phoc keeps a dragged surface's zone at its reservation less
+  the margin it is folded by, so a panel that reserved nothing reached zero
+  the moment its shade was fully unfolded - and phoc draws every surface
+  whose zone is zero or less underneath every surface whose zone is positive.
+  The far shade opened *behind its own dimming surface*: it was there,
+  drawing its buttons, and the half was black. Both screenshots were black to
+  the byte, because a black dimmer over a black wallpaper is the same
+  picture.
+
+  One pixel keeps that panel on the near one's side of the line. It costs a
+  logical pixel of the display's top and leaves the two halves of the bar two
+  physical pixels out of line, both measured. Splitting the reservation in
+  half instead is arithmetically neater and looks wrong: two positive zones
+  on one edge stack, so the second half's bar sat sixteen pixels lower.
 
 Taking the bar off the lock screen entirely was tried first, on the grounds
 that that screen has a clock of its own. It only moved the question: the
