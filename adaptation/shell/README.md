@@ -298,6 +298,23 @@ windows. Measured: 24-37 ms from the tap to both moving; the dock's
 crossing 16.2 ms a frame. New windows it adopts are tiled the same way. On
 a stock phoc the old way still works.
 
+### A panel is what maximized means, and what a window is fitted into
+
+On an output with a seam, maximizing put a window across the hinge.
+`phoc-patches/0008` makes maximized the panel the window is on - as the
+Duo's own Android does - and fits a window that cannot be that narrow into
+its panel: GNOME's first-run wizard asks for about 1024 px where a panel is
+675, and stood across the hinge whatever tiled it. Such a window is scaled
+down (the compositor's own scale-to-fit, applied to the panel instead of the
+output) and centred on the panel rather than resized - asked for the panel's
+size it answers with its own, and phoc then placed it by the difference,
+hundreds of pixels down.
+
+The wizard itself does not run on this port any more: the package marks it
+done, as finishing it would (`gnome-initial-setup-done`). Fitted, it was
+small in a field of black; its pages - language, keyboard, time zone,
+privacy - are all in Settings.
+
 ### A shade folds from anywhere
 
 phosh lets an open shade be folded only by its handle: `update_drag_handle`

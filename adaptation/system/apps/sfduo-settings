@@ -31,9 +31,18 @@ import sys
 
 import gi
 
-gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+# GNOME Settings has left the grid for this, so this must always open
+# something: should GTK4 or libadwaita for Python be missing (a Droidian
+# image ships both today; `sudo sfduo-shell-setup` installs them too), it
+# opens GNOME Settings instead - the way to Wi-Fi, and so to getting online.
+try:
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+except (ValueError, ImportError) as err:
+    print(f"sfduo-settings: {err} - opening GNOME Settings; "
+          "`sudo sfduo-shell-setup` once online brings this one", file=sys.stderr)
+    os.execvp("gnome-control-center", ["gnome-control-center"])
 
 APP_ID = "org.sfduo.Settings"
 GNOME = "gnome-control-center"

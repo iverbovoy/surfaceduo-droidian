@@ -29,6 +29,7 @@ wait_for() {        # wait_for <seconds> <command...>
 has_modem()    { ofono org.ofono.Modem GetProperties >/dev/null; }
 is_online()    { ofono org.ofono.Modem GetProperties | grep -q '"Online" b true'; }
 has_settings() { ofono org.ofono.RadioSettings GetProperties >/dev/null; }
+nm_running()   { nmcli -t -f RUNNING general 2>/dev/null | grep -qx running; }
 
 wait_for 120 has_modem || { echo "sfduo-modem: no $MODEM in ofono"; exit 0; }
 
@@ -53,5 +54,22 @@ state=$(timeout 10 mmcli -m any 2>/dev/null) || state=failed
 if echo "$state" | grep -Eq 'state:.*failed|^failed$'; then
     echo "sfduo-modem: restarting ModemManager"
     systemctl restart ModemManager.service
+fi
+
+# Mobile data from the first boot. A fresh image has no mobile connection at
+# all: the modem registers on LTE and nothing uses it until someone finds the
+# Mobile Network page. NetworkManager (1.52) picks the APN for the SIM from
+# mobile-broadband-provider-info when a gsm connection asks it to
+# (gsm.auto-config), so the port need not know any operator. Only when there
+# is no gsm connection at all - one the user made is theirs - and not while
+# roaming (gsm.home-only), which could cost money abroad.
+# NetworkManager has to be up to be asked (the unit is ordered after it; the
+# wait is for a NetworkManager still starting when this is reached).
+command -v nmcli >/dev/null 2>&1 && wait_for 60 nm_running
+if command -v nmcli >/dev/null 2>&1 && nm_running && \
+   ! nmcli -t -f TYPE connection show 2>/dev/null | grep -qx gsm; then
+    nmcli connection add type gsm ifname '*' con-name "Mobile data" \
+        gsm.auto-config yes gsm.home-only yes connection.autoconnect yes >/dev/null &&
+        echo "sfduo-modem: made a mobile data connection (APN chosen for the SIM)"
 fi
 exit 0

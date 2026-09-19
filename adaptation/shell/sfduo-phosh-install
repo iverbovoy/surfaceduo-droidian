@@ -46,8 +46,21 @@ PANELS=/usr/lib/sfduo/phosh/display-panels
 # where G_RESOURCE_OVERLAYS in Droidian's phosh.service already points
 PANELS_LIVE=/var/lib/droidian/phosh-notch
 
+dock_can_run() {
+    command -v wlrctl >/dev/null 2>&1 && command -v wtype >/dev/null 2>&1 &&
+        python3 -c 'import gi; gi.require_version("GtkLayerShell", "0.1")' 2>/dev/null
+}
+
 tiling_lock() {
     # on: windows tile, off: phosh maximizes them (its own default)
+    # Tiling is the dock's: with auto-maximize off and no dock to put windows
+    # on a panel, every window stayed at its own size, floating over the
+    # others - what a fresh image showed before `sfduo-shell-setup` had run.
+    if [ "$1" = on ] && ! dock_can_run; then
+        echo "sfduo-phosh: the dock cannot run yet - phosh maximizes windows until"
+        echo "sfduo-phosh: \`sudo sfduo-shell-setup\` has installed what it needs"
+        set -- off
+    fi
     if [ "$1" = on ]; then
         [ -f "$LOCK" ] && return 0
         mkdir -p "$(dirname "$LOCK")"

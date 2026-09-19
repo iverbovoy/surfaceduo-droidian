@@ -18,6 +18,7 @@
 # needs a privilege this has no business holding, and logind's SetBrightness
 # refuses anything that is not the seat's own session.
 
+import os
 import sys
 
 import gi
@@ -29,6 +30,11 @@ SCREEN = "org.gnome.SettingsDaemon.Power.Screen"
 PANELS = ("panel0-backlight", "panel1-backlight")
 SYSFS = "/sys/class/backlight/%s/%s"
 POLL_MS = 1000
+# The level a new user starts at. Left alone it came out of whatever
+# systemd-backlight saved at the first-boot reboot - 2 of 255 on one clean
+# install, the screen all but dark - and differed from install to install.
+DEFAULT_PERCENT = 40
+DEFAULT_DONE = os.path.expanduser("~/.local/state/sfduo/brightness-default")
 
 
 def read(panel, attr):
@@ -49,6 +55,26 @@ class Keeper:
             "org.freedesktop.DBus.Properties", None)
 
         GLib.timeout_add(POLL_MS, self.check)
+        self.default_tries = 30
+        if not os.path.exists(DEFAULT_DONE):
+            GLib.timeout_add_seconds(2, self.first_default)
+
+    def first_default(self):
+        """Once per user: start at DEFAULT_PERCENT. Tried until the settings
+        daemon answers, then never again - the level is the user's."""
+        try:
+            self.props.call_sync(
+                "Set",
+                GLib.Variant("(ssv)", (SCREEN, "Brightness",
+                                       GLib.Variant("i", DEFAULT_PERCENT))),
+                Gio.DBusCallFlags.NONE, 2000, None)
+        except GLib.Error:
+            self.default_tries -= 1
+            return self.default_tries > 0      # the daemon is still starting
+        os.makedirs(os.path.dirname(DEFAULT_DONE), exist_ok=True)
+        with open(DEFAULT_DONE, "w") as fp:
+            fp.write(f"{DEFAULT_PERCENT}\n")
+        return False
 
     def wanted(self):
         """The level the shell believes it is at, as a percentage."""

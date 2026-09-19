@@ -793,12 +793,13 @@ if [ -f "$PHOSH_BIN" ]; then
 else
     echo "NOTE: $PHOSH_BIN not found - building without the patched phosh"
 fi
-# The patched phoc (../shell/phoc-patches/0001-0007): tiled windows stop
+# The patched phoc (../shell/phoc-patches/0001-0008): tiled windows stop
 # short of the hinge named by `tiling-seam` in phoc.ini, a new window opens
 # on the panel touched last, a closed one fades away and a minimized one
 # drops to the bottom edge, a bar giving up its reservation gives it up at
-# once, windows can be minimized at all, and org.sfduo.Phoc.Tile puts
-# windows on a half directly, sliding. Version-locked like phosh:
+# once, windows can be minimized at all, org.sfduo.Phoc.Tile puts windows on
+# a half directly and sliding, maximized means one panel, and a window too
+# wide for a panel is fitted into it. Version-locked like phosh:
 # see sfduo-phoc-install. Built per ../shell/README.md.
 install -m755 "$SHELLDIR/sfduo-phoc-install" "$PKG/usr/local/sbin/"
 PHOC_BIN="$ROOT/out/phoc/phoc-0.47.0-98211ea-sfduo"
@@ -864,7 +865,7 @@ Architecture: arm64
 Maintainer: Ivan Verbovoy <ivanverbovoy@gmail.com>
 Section: misc
 Priority: optional
-Recommends: python3-gi, python3-gi-cairo, python3-cairo, gir1.2-gtk-3.0, gir1.2-gtklayershell-0.1, wlrctl, wtype, dconf-cli
+Recommends: python3-gi, python3-gi-cairo, python3-cairo, gir1.2-gtk-3.0, gir1.2-gtklayershell-0.1, wlrctl, wtype, dconf-cli, gir1.2-gtk-4.0, gir1.2-adw-1
 Description: Surface Duo 1 adaptation for Droidian (sfduo)
  USB RNDIS gadget access (172.16.42.1, telnet fallback) and, as bring-up
  progresses, touch / wifi / sensor plumbing for the Microsoft Surface Duo 1.
@@ -993,6 +994,25 @@ if id droidian >/dev/null 2>&1; then
        ! grep -q org.sfduo.Settings.desktop "$H/.config/sfduo/dock.json"; then
         sed -i 's/"org\.gnome\.Settings\.desktop"/"org.sfduo.Settings.desktop"/' \
             "$H/.config/sfduo/dock.json"
+    fi
+    # GNOME's first-run wizard wants about 1024 px and a panel of this
+    # display is 675: across the hinge, or fitted into a panel and small in
+    # a field of black. It asks for the language, the keyboard, the time
+    # zone and the privacy settings, and Settings has all of them, so it is
+    # marked done before it ever runs - which is what it does itself when
+    # someone finishes it (its autostart is `unless-exists
+    # gnome-initial-setup-done`).
+    if [ ! -e "$H/.config/gnome-initial-setup-done" ]; then
+        echo yes > "$H/.config/gnome-initial-setup-done"
+        chown droidian:droidian "$H/.config/gnome-initial-setup-done"
+    fi
+    # sfduo-brightness starts a new user at 40 %, once. Someone upgrading
+    # already has a level of their own: leave it.
+    if [ "$1" = configure ] && [ -n "$2" ] && \
+       [ ! -e "$H/.local/state/sfduo/brightness-default" ]; then
+        install -d -o droidian -g droidian "$H/.local" "$H/.local/state" "$H/.local/state/sfduo"
+        echo kept > "$H/.local/state/sfduo/brightness-default"
+        chown droidian:droidian "$H/.local/state/sfduo/brightness-default"
     fi
     # D-Bus service files the package adds (the settings wrappers) are seen
     # by a session bus that is already running only once it reloads.

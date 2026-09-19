@@ -2,7 +2,7 @@
 Description=Surface Duo modem — put it online and on LTE
 # ofono starts once the radio HAL is on binder; ModemManager probes it right
 # after, which is too early here - the script restarts it if it gave up.
-After=ofono.service ModemManager.service
+After=ofono.service ModemManager.service NetworkManager.service
 Wants=ofono.service
 
 [Service]

@@ -7,7 +7,11 @@ set -e
 [ "$(id -u)" = 0 ] || { echo "run as root: sudo $0" >&2; exit 1; }
 apt-get update
 apt-get install -y wlrctl wtype gir1.2-gtklayershell-0.1 python3-gi python3-gi-cairo \
-    python3-cairo gir1.2-gtk-3.0 dconf-cli
-# compile the lock that keeps windows from opening across both panels
+    python3-cairo gir1.2-gtk-3.0 dconf-cli \
+    gir1.2-gtk-4.0 gir1.2-adw-1
+# now that the dock can run, windows tile to a panel: the lock that holds
+# phosh's auto-maximize off goes in with the patched phosh (sfduo-phosh-install
+# leaves it out while the dock's dependencies are missing)
+[ -x /usr/local/sbin/sfduo-phosh-install ] && /usr/local/sbin/sfduo-phosh-install || true
 dconf update
 echo "done - restart the shell (systemctl restart phosh) or reboot"

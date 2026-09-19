@@ -1,0 +1,174 @@
+From 8640b108e1d3494029139528e4f4ffdb89db717f Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Sun, 20 Sep 2026 01:25:32 +0300
+Subject: [PATCH] view: a window on a panel is fitted into it, and maximized
+ means one panel
+
+On an output with a tiling-seam, maximizing put a window across the hinge:
+maximized is the panel the window is on now. And a window whose minimum
+size is wider than a panel - GNOME's first-run wizard wants about 1024 px
+where a panel is 675 - stood across the hinge whatever tiled it: such a
+window is scaled down to fit its panel, as scale-to-fit does for a window
+larger than the output, and centred in it rather than resized, since asked
+for the panel's size it answers with its own and was then placed by the
+difference.
+---
+ src/view.c | 92 ++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 89 insertions(+), 3 deletions(-)
+
+diff --git a/src/view.c b/src/view.c
+index 9c447dd..1c31d40 100644
+--- a/src/view.c
++++ b/src/view.c
+@@ -254,6 +254,10 @@ toggle_decoration (PhocView *self)
+   }
+ }
+ 
++static void view_update_scale (PhocView *view);
++static gboolean view_seam_side (PhocView *self, PhocOutput *output, PhocViewTileDirection *dir);
++static gboolean view_place_fitted (PhocView *self, const struct wlr_box *box);
++
+ /* {{{ Foreign toplevel requests  */
+ 
+ static void
+@@ -710,6 +714,13 @@ phoc_view_get_maximized_box (PhocView *self, PhocOutput *output, struct wlr_box
+   if (!output)
+     return FALSE;
+ 
++  /* On an output made of two panels, maximized is the whole of one panel -
++   * the one the window is on - as on the Duo's own Android: a window across
++   * the hinge is never what maximizing meant. */
++  PhocViewTileDirection side;
++  if (view_seam_side (self, output, &side))
++    return phoc_view_get_tiled_box (self, side, output, box);
++
+   struct wlr_box output_box;
+   wlr_output_layout_get_box (desktop->layout, output->wlr_output, &output_box);
+   struct wlr_box usable_area = output->usable_area;
+@@ -736,6 +747,8 @@ view_arrange_maximized (PhocView *self, PhocOutput *output)
+ 
+   if (!phoc_view_get_maximized_box (self, output, &box))
+     return;
++  if (view_place_fitted (self, &box))
++    return;
+ 
+   phoc_view_get_geometry (self, &geom);
+   box.x -= geom.x / priv->scale;
+@@ -835,6 +848,8 @@ view_arrange_tiled (PhocView *self, PhocOutput *output)
+ 
+   if (!phoc_view_get_tiled_box (self, priv->tile_direction, output, &box))
+     return;
++  if (view_place_fitted (self, &box))
++    return;
+ 
+   phoc_view_get_geometry (self, &geom);
+   box.x -= geom.x / priv->scale;
+@@ -926,6 +941,7 @@ phoc_view_restore (PhocView *self)
+ 
+   PHOC_VIEW_GET_CLASS (self)->set_maximized (self, false);
+   PHOC_VIEW_GET_CLASS (self)->set_tiled (self, false);
++  view_update_scale (self);             /* no tile to fit into any more */
+ }
+ 
+ /**
+@@ -1141,6 +1157,9 @@ phoc_view_tile (PhocView *self, PhocViewTileDirection direction, PhocOutput *out
+     wlr_foreign_toplevel_handle_v1_set_maximized (priv->toplevel_handle, false);
+ 
+   view_arrange_tiled (self, output);
++  /* a window that cannot shrink into the tile is fitted into it; it will
++   * not commit a new size, so the fitting is not left to a size change */
++  view_update_scale (self);
+ }
+ 
+ 
+@@ -1275,6 +1294,56 @@ munge_app_id (const gchar *app_id)
+   return id;
+ }
+ 
++/*
++ * A window scaled down to fit its panel (view_update_scale) keeps its own
++ * size: asked to take the panel's, divided by the scale, it answered with
++ * its own and was then put where the difference said - hundreds of pixels
++ * down. It is centred on the panel instead, and nothing is asked of it.
++ * @box is the panel, divided by the view's scale, as the tiled and the
++ * maximized boxes come.
++ */
++static gboolean
++view_place_fitted (PhocView *self, const struct wlr_box *box)
++{
++  PhocViewPrivate *priv = phoc_view_get_instance_private (self);
++  struct wlr_box geom;
++  double s = priv->scale, x, y;
++
++  if (s >= 1.0f)
++    return FALSE;
++
++  phoc_view_get_geometry (self, &geom);
++  x = box->x * s + (box->width * s - geom.width * s) / 2.0 - geom.x * s;
++  y = box->y * s + (box->height * s - geom.height * s) / 2.0 - geom.y * s;
++  phoc_view_move (self, x / s, y / s);
++  return TRUE;
++}
++
++
++/*
++ * On an output with a `tiling-seam` in landscape - two panels and a hinge -
++ * which panel the view is on: the one its centre is over.
++ */
++static gboolean
++view_seam_side (PhocView *self, PhocOutput *output, PhocViewTileDirection *dir)
++{
++  PhocDesktop *desktop = phoc_server_get_desktop (phoc_server_get_default ());
++  PhocViewPrivate *priv = phoc_view_get_instance_private (self);
++  PhocOutputConfig *oc;
++  struct wlr_box output_box;
++  double centre;
++
++  oc = phoc_config_get_output (phoc_server_get_config (phoc_server_get_default ()), output);
++  if (!oc || oc->seam <= 0 || output->usable_area.width <= output->usable_area.height)
++    return FALSE;
++
++  wlr_output_layout_get_box (desktop->layout, output->wlr_output, &output_box);
++  centre = self->box.x + self->box.width * priv->scale / 2.0;
++  *dir = centre < output_box.x + output_box.width / 2.0 ? PHOC_VIEW_TILE_LEFT : PHOC_VIEW_TILE_RIGHT;
++  return TRUE;
++}
++
++
+ static void
+ view_update_scale (PhocView *view)
+ {
+@@ -1292,10 +1361,27 @@ view_update_scale (PhocView *view)
+     return;
+ 
+   float scalex = 1.0f, scaley = 1.0f, oldscale = priv->scale;
++  struct wlr_box area = output->usable_area, tile;
++  PhocViewTileDirection side = priv->tile_direction;
++  /* A window on one panel - tiled, or maximized on an output with a seam,
++   * which is a panel too - is fitted into it, always: one whose minimum
++   * size is wider than the panel - GNOME's first-run wizard wants about
++   * 1024 px, a panel of the Surface Duo at scale 2 is 675 - otherwise
++   * stands across the hinge whatever put it there. It is scaled down to
++   * fit, as scale-to-fit does for a window larger than the output. */
++  gboolean fit_tile = (phoc_view_is_tiled (view) ||
++                       (phoc_view_is_maximized (view) && view_seam_side (view, output, &side))) &&
++    phoc_view_get_tiled_box (view, side, output, &tile);
++
++  if (fit_tile) {
++    /* the box comes divided by the view's scale; the panel is what it is */
++    area.width = tile.width * priv->scale;
++    area.height = tile.height * priv->scale;
++  }
+ 
+-  if (priv->scale_to_fit || phoc_desktop_get_scale_to_fit (desktop)) {
+-    scalex = output->usable_area.width / (float)view->box.width;
+-    scaley = output->usable_area.height / (float)view->box.height;
++  if (fit_tile || priv->scale_to_fit || phoc_desktop_get_scale_to_fit (desktop)) {
++    scalex = area.width / (float)view->box.width;
++    scaley = area.height / (float)view->box.height;
+     if (scaley < scalex)
+       priv->scale = scaley;
+     else
+-- 
+2.43.0
+
