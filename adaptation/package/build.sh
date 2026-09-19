@@ -727,6 +727,13 @@ install -Dm644 "$SYSTEM/dconf/53-sfduo-apps"       "$PKG/etc/dconf/db/local.d/53
 install -m755  "$SYSTEM/sfduo-apps"       "$PKG/usr/local/sbin/"
 install -Dm644 "$SYSTEM/apps/hidden.list"           "$PKG/usr/lib/sfduo/apps/hidden.list"
 install -Dm644 "$SYSTEM/apps/cool-retro-term.json"  "$PKG/usr/lib/sfduo/apps/cool-retro-term.json"
+# Settings one step at a time on a single panel (#77): a wrapper first in
+# PATH and in the session bus's service directories, which serves Settings'
+# window with its split view collapsing below 900sp instead of 550sp - see the
+# script. A session bus started before the directory existed learns of it at
+# the next login (or at org.freedesktop.DBus.ReloadConfig).
+install -Dm755 "$SYSTEM/apps/gnome-control-center"       "$PKG/usr/local/bin/gnome-control-center"
+install -Dm644 "$SYSTEM/apps/org.gnome.Settings.service" "$PKG/usr/local/share/dbus-1/services/org.gnome.Settings.service"
 mkdir -p "$PKG/usr/local/share/applications"
 sed 's/#.*//' "$SYSTEM/apps/hidden.list" | awk 'NF' | while read -r id; do
     printf '[Desktop Entry]\nType=Application\nName=%s\nNoDisplay=true\nHidden=true\n# hidden by adaptation-droidian-surfaceduo - see /usr/lib/sfduo/apps/hidden.list\n' "${id%.desktop}" \
