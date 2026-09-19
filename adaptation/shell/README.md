@@ -63,17 +63,29 @@ reaching only as far as the seam. Either half can be pulled down on its own,
 neither is cut in two by the bezel, and each centres its own clock, so the
 CSS that used to nudge the clock out of the bezel is gone.
 
-Both bars carried the same clock and the same indicators, which side by side
-reads as one bar drawn twice rather than as two halves - it showed on the
-lock screen first, where the bar is only indicators. The far half's bar is
-emptied by `gtk.css` and kept as the handle its own shade is pulled by.
+At first both bars drew all of it - the same clock, the same signal, the
+same battery, a hinge apart - which side by side reads as one bar drawn
+twice rather than as two halves. It showed on the lock screen first, where
+the bar is only indicators.
 
-On the lock screen there is no bar at all. That screen has a clock of its
-own, big and on the right panel, and a row of indicators above it on the
-left panel only said the same thing twice - on one half of a device whose
-halves are meant to match. The patch puts a `phosh-locked` class on each
-panel and `gtk.css` does the rest: the bar goes out with the screen and
-fades back in over a quarter of a second at the unlock.
+So `gtk.css` deals the contents out instead. phosh's bar is a box with three
+children: the network group at the start, the clock as the centre child, the
+indicators at the end. Each half keeps the children that belong at its own
+outer edge and lets go of the rest - signal and clock on the near half,
+battery and the rest of the indicators on the far half, nothing in the
+middle where the bezel is. Read across the open device it is still one bar,
+and nothing in it is said twice.
+
+Let go of, not removed: an invisible child keeps its place in the box, which
+is what holds the clock centred on its own half rather than letting it slide
+over once the indicators beside it stop drawing. The strips themselves stay
+whole - each is what the finger pulls its own shade by.
+
+Taking the bar off the lock screen entirely was tried first, on the grounds
+that that screen has a clock of its own. It only moved the question: the
+halves are uneven everywhere, not only there. Split honestly and there is
+nothing left to hide, so the lock screen gets the same bar as everything
+else.
 
 So the file **is** installed, by `sfduo-phosh-install`, in step with the
 patched binary and never without it: `--restore` takes it away again. On a

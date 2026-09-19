@@ -42,31 +42,41 @@
    clock goes back to the middle of the bezel - a rescue path, not a mode
    anyone lives in. */
 
-/* One status bar, not two. Each half has a bar of its own, and both carried
-   the same clock, the same signal and the same battery: side by side that
-   reads as one bar drawn twice, not as two halves. It showed on the lock
-   screen first, where the bar is only indicators and the pair of them sat a
-   hinge apart.
+/* One bar's worth of content, dealt out over two halves.
 
-   So the far half's bar is emptied and kept. Emptied, not removed: the strip
-   is what the finger pulls, and the shade behind it is the whole point of
-   splitting the panel. It is transparent rather than hidden so the strip
-   keeps its height and stays where the drag starts. Only the folded bar goes
-   - the unfolded shade is a different page of the same stack and draws in
-   full on both halves. */
-.phosh-far-half #top-bar { opacity: 0; }
+   Each half has a bar of its own, and at first both drew all of it: the same
+   clock, the same signal, the same battery, a hinge apart. Side by side that
+   reads as one bar drawn twice rather than as two halves.
 
-/* No bar at all on the lock screen. That screen has a clock of its own, big
-   and on the right panel, and a row of indicators above it on the left panel
-   only said the same thing twice - and said it on one half of a device whose
-   halves are meant to match.
+   phosh's bar is a box with three children - the network group at the start,
+   the clock as the centre child, the indicators at the end. So each half
+   keeps the children that belong at its own outer edge and lets go of the
+   rest: signal and clock on the near half, battery and the rest of the
+   indicators on the far half, nothing at all in the middle where the bezel
+   is. Read across the open device it is still one bar, and nothing in it is
+   said twice.
 
-   It goes out with the screen and comes back with the unlock, over a quarter
-   of a second: the transition belongs to the style being moved *to*, so the
-   locked rule turns it off on the way in and the rule above brings it in
-   gently on the way out. phosh-patches/0004 puts the class on the panel. */
-#top-bar { transition: opacity 250ms ease-out; }
-.phosh-locked #top-bar { opacity: 0; transition: none; }
+   Let go of, not removed: an invisible child still takes its place in the
+   box, which is what keeps the clock centred on its own half rather than
+   sliding over once the indicators beside it stop drawing.
+
+   The strips themselves stay whole - they are what the finger pulls, and the
+   shade behind each is the point of splitting the panel at all. The unfolded
+   shade is a different page of the same stack and draws in full on both. */
+
+/* Near half: signal and clock, no indicators. */
+#top-bar > :last-child { opacity: 0; }
+
+/* Far half: the indicators, and nothing else. */
+.phosh-far-half #top-bar > :first-child,
+.phosh-far-half #top-bar > label { opacity: 0; }
+.phosh-far-half #top-bar > :last-child { opacity: 1; }
+
+/* The lock screen gets the same split and nothing special. Taking the bar
+   off it entirely was tried first, on the grounds that the screen has a
+   clock of its own: it only moved the question, since the halves are uneven
+   everywhere, not just there. Split honestly and there is nothing left to
+   hide. */
 
 /* ---- lock screen ------------------------------------------------------ */
 
