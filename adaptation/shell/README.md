@@ -81,6 +81,22 @@ is what holds the clock centred on its own half rather than letting it slide
 over once the indicators beside it stop drawing. The strips themselves stay
 whole - each is what the finger pulls its own shade by.
 
+Two things the far half did not inherit on its own, both found by pulling
+its shade down and watching it stop:
+
+- **Its height.** The shell sets the top panel's surface to the display's
+  usable height whenever the monitor is configured, and did it for the first
+  panel only. A shade is as tall as the surface it unfolds inside, so the far
+  one opened a finger's width and stopped there, arrow and all.
+- **Its background.** Each panel makes a second layer surface behind itself,
+  anchored to all four edges, which is what dims the screen under an open
+  shade. Two of them, each the full width, meant either shade dimmed both
+  halves. The background now carries its panel's margins - set when the panel
+  is mapped, not where the background is made: margins are ordinary
+  properties and GObject applies those after `constructed()` has run, so
+  asking for them there returns zero, which is exactly the bug in a quieter
+  form.
+
 Taking the bar off the lock screen entirely was tried first, on the grounds
 that that screen has a clock of its own. It only moved the question: the
 halves are uneven everywhere, not only there. Split honestly and there is

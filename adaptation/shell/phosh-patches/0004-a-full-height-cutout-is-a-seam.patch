@@ -106,10 +106,12 @@
    PhoshDragSurface *home;
    gboolean          overview_visible;
    GPtrArray *faders;              /* for final fade out */
-@@ -224,8 +228,10 @@
+@@ -222,10 +226,10 @@
+ on_top_panel_activated (PhoshShell    *self,
+                         PhoshTopPanel *window)
  {
-   PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
- 
+-  PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
+-
 -  g_return_if_fail (PHOSH_IS_TOP_PANEL (priv->top_panel));
 -  phosh_top_panel_toggle_fold (PHOSH_TOP_PANEL(priv->top_panel));
 +  /* The panel that was touched, not the first one: with a panel per half
@@ -119,7 +121,7 @@
  }
  
  
-@@ -262,6 +268,8 @@
+@@ -262,6 +266,8 @@
  
    g_debug ("Moving top-panel to %s layer", use_top_layer ? "top" : "overlay");
    phosh_top_panel_set_layer (PHOSH_TOP_PANEL (priv->top_panel), layer);
@@ -128,7 +130,7 @@
  }
  
  
-@@ -290,9 +298,34 @@
+@@ -290,9 +296,34 @@
    priv = phosh_shell_get_instance_private (self);
  
    state = phosh_top_panel_get_state (PHOSH_TOP_PANEL (priv->top_panel));
@@ -163,7 +165,7 @@
  static void
  update_top_bar_transparency (PhoshShell *self)
  {
-@@ -304,12 +337,18 @@
+@@ -304,12 +335,18 @@
  
    if (priv->locked) {
      phosh_top_panel_set_bar_transparent (PHOSH_TOP_PANEL (priv->top_panel), TRUE);
@@ -182,7 +184,19 @@
  }
  
  
-@@ -394,12 +433,55 @@
+@@ -356,6 +393,11 @@
+ 
+   phosh_shell_get_area (self, NULL, &height);
+   phosh_layer_surface_set_size (PHOSH_LAYER_SURFACE (priv->top_panel), -1, height);
++  /* The far half is a panel like any other and needs the same height. A
++   * shade is as tall as the surface it unfolds inside; left at the bar's own
++   * height, that one opened a finger's width and stopped there. */
++  if (priv->top_panel_right)
++    phosh_layer_surface_set_size (PHOSH_LAYER_SURFACE (priv->top_panel_right), -1, height);
+ }
+ 
+ 
+@@ -394,12 +436,55 @@
  
    top_layer = priv->locked ? ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY : ZWLR_LAYER_SHELL_V1_LAYER_TOP;
  
@@ -244,7 +258,7 @@
    gtk_widget_set_visible (GTK_WIDGET (priv->top_panel), TRUE);
  
    /* Home is created after the top-panel so it honors its exclusive zone */
-@@ -418,6 +500,17 @@
+@@ -418,6 +503,17 @@
                              G_CALLBACK (on_top_panel_state_changed),
                              self);
  
@@ -262,7 +276,7 @@
    g_signal_connect_swapped (priv->home,
                              "notify::state",
                              G_CALLBACK (on_home_state_changed),
-@@ -437,6 +530,7 @@
+@@ -437,6 +533,7 @@
  {
    PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
  
@@ -270,7 +284,7 @@
    g_clear_pointer (&priv->top_panel, phosh_cp_widget_destroy);
    g_clear_pointer (&priv->home, phosh_cp_widget_destroy);
  }
-@@ -458,6 +552,8 @@
+@@ -458,6 +555,8 @@
       unblanking the screen which can be confusing */
    if (priv->top_panel)
      phosh_top_panel_fold (PHOSH_TOP_PANEL (priv->top_panel));
@@ -279,7 +293,7 @@
  
    update_top_level_layer (self);
    update_top_bar_transparency (self);
-@@ -654,7 +750,7 @@
+@@ -654,7 +753,7 @@
    /* Clear existing banner */
    g_clear_pointer (&priv->notification_banner, phosh_cp_widget_destroy);
    if (phosh_notify_manager_get_show_notification_banner (manager, notification) &&
@@ -288,7 +302,7 @@
        !priv->locked) {
      priv->notification_banner = phosh_notification_banner_new (notification);
      g_signal_connect (priv->notification_banner,
-@@ -686,6 +782,8 @@
+@@ -686,6 +785,8 @@
    priv = phosh_shell_get_instance_private (self);
  
    phosh_top_panel_fold (PHOSH_TOP_PANEL (priv->top_panel));
@@ -299,16 +313,33 @@
  
 --- a/src/top-panel.c
 +++ b/src/top-panel.c
-@@ -912,13 +912,23 @@
+@@ -504,6 +504,15 @@
+ phosh_top_panel_map (GtkWidget *widget)
+ {
+   PhoshTopPanel *self = PHOSH_TOP_PANEL (widget);
++  int margin_left, margin_right;
++
++  /* The background reaches exactly as far as the panel it belongs to, or it
++   * dims the other half of a split display along with its own. Here and not
++   * where the background is made: the margins are ordinary properties and
++   * GObject applies those after constructed() has run, so asking for them
++   * there returns zero. */
++  g_object_get (self, "margin-left", &margin_left, "margin-right", &margin_right, NULL);
++  g_object_set (self->background, "margin-left", margin_left, "margin-right", margin_right, NULL);
+ 
+   GTK_WIDGET_CLASS (phosh_top_panel_parent_class)->map (widget);
+ 
+@@ -912,13 +921,23 @@
  phosh_top_panel_new (struct zwlr_layer_shell_v1          *layer_shell,
                       struct zphoc_layer_shell_effects_v1 *layer_shell_effects,
                       PhoshMonitor                        *monitor,
 -                     guint32                              layer)
+-{
 +                     guint32                              layer,
 +                     int                                  margin_left,
 +                     int                                  margin_right,
 +                     int                                  exclusive)
- {
++{
 +  /* Anchored to three edges, always: phoc refuses to make a layer surface
 +   * draggable otherwise ("Surface not anchored to three edges"), and the
 +   * shade is a dragged surface. A panel that covers half the display gets
@@ -324,7 +355,7 @@
                         "anchor", ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
                                   ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
                                   ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT,
-@@ -927,7 +937,7 @@
+@@ -927,7 +946,7 @@
                         "namespace", "phosh top-panel",
                         /* drag-surface */
                         "layer-shell-effects", layer_shell_effects,
