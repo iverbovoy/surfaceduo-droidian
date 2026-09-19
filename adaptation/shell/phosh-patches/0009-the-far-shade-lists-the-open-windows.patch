@@ -1,0 +1,414 @@
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -402,6 +402,7 @@
+   'screenshot-manager.c',
+   'sensor-proxy-manager.c',
+   'session-manager.c',
++  'running-apps.c',
+   'session-presence.c',
+   'shell.c',
+   'system-prompt.c',
+--- a/src/settings.c
++++ b/src/settings.c
+@@ -18,6 +18,7 @@
+ #include "quick-settings.h"
+ #include "settings/audio-settings.h"
+ #include "settings/brightness.h"
++#include "running-apps.h"
+ #include "torch-manager.h"
+ #include "notifications/notify-manager.h"
+ #include "notifications/notification-frame.h"
+@@ -53,6 +54,7 @@
+ 
+   gboolean   on_lockscreen;
+   PhoshSettingsHalf half;
++  GtkWidget *running_apps;
+   gint       drag_handle_offset;
+   guint      debounce_handle;
+ 
+@@ -669,5 +671,15 @@
+   g_return_if_fail (PHOSH_IS_SETTINGS (self));
+ 
+   self->half = half;
++
++  /* the far half holds what is going on, and the open windows are that */
++  if (half == PHOSH_SETTINGS_HALF_FAR && self->running_apps == NULL) {
++    self->running_apps = phosh_running_apps_new ();
++    gtk_box_pack_start (GTK_BOX (self->box_bottom_half), self->running_apps, FALSE, FALSE, 0);
++    /* under the player, above the notifications */
++    gtk_box_reorder_child (GTK_BOX (self->box_bottom_half), self->running_apps, 1);
++    g_signal_connect_swapped (self->running_apps, "done", G_CALLBACK (close_settings_menu), self);
++  }
++
+   apply_half (self);
+ }
+--- /dev/null
++++ b/src/running-apps.h
+@@ -0,0 +1,19 @@
++/*
++ * Copyright (C) 2026 The Surface Duo port
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++
++#pragma once
++
++#include <gtk/gtk.h>
++
++G_BEGIN_DECLS
++
++#define PHOSH_TYPE_RUNNING_APPS (phosh_running_apps_get_type ())
++
++G_DECLARE_FINAL_TYPE (PhoshRunningApps, phosh_running_apps, PHOSH, RUNNING_APPS, GtkBox)
++
++GtkWidget *phosh_running_apps_new (void);
++
++G_END_DECLS
+--- /dev/null
++++ b/src/running-apps.c
+@@ -0,0 +1,345 @@
++/*
++ * Copyright (C) 2026 The Surface Duo port
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++
++#define G_LOG_DOMAIN "phosh-running-apps"
++
++#include "phosh-config.h"
++
++#include "phosh-wayland.h"
++#include "running-apps.h"
++#include "shell-priv.h"
++#include "toplevel-manager.h"
++#include "toplevel.h"
++#include "util.h"
++
++#include <gio/gdesktopappinfo.h>
++#include <glib/gi18n.h>
++
++/**
++ * PhoshRunningApps:
++ *
++ * The windows that are open, one row each: the application's icon and
++ * name, which panel it is on and a button that closes it. A tap on a row
++ * brings the window forward.
++ *
++ * Made for the far half's shade on a display with a seam, where the shade
++ * holds what is going on. Which panel a window is on is known only to the
++ * port's dock, which places them; it says so on the session bus
++ * (org.sfduo.Dock, a{ss} Placed: app id -> "left" or "right"). Without the
++ * dock the rows just say nothing about it.
++ */
++
++#define DOCK_NAME  "org.sfduo.Dock"
++#define DOCK_PATH  "/org/sfduo/Dock"
++#define ICON_SIZE  32
++
++enum {
++  DONE,
++  N_SIGNALS
++};
++static guint signals[N_SIGNALS];
++
++struct _PhoshRunningApps {
++  GtkBox        parent;
++
++  GtkWidget    *list;
++  GDBusProxy   *dock;
++  GCancellable *cancel;
++};
++
++G_DEFINE_TYPE (PhoshRunningApps, phosh_running_apps, GTK_TYPE_BOX)
++
++
++static const char *
++panel_of (PhoshRunningApps *self, const char *app_id)
++{
++  g_autoptr (GVariant) placed = NULL;
++  const char *panel = NULL;
++
++  if (self->dock == NULL || app_id == NULL)
++    return NULL;
++
++  placed = g_dbus_proxy_get_cached_property (self->dock, "Placed");
++  if (placed == NULL || !g_variant_is_of_type (placed, G_VARIANT_TYPE ("a{ss}")))
++    return NULL;
++
++  if (!g_variant_lookup (placed, app_id, "&s", &panel))
++    return NULL;
++
++  if (g_strcmp0 (panel, "left") == 0)
++    return _("Left panel");
++  if (g_strcmp0 (panel, "right") == 0)
++    return _("Right panel");
++  return NULL;
++}
++
++
++static void
++update_row (PhoshRunningApps *self, GtkListBoxRow *row)
++{
++  PhoshToplevel *toplevel = g_object_get_data (G_OBJECT (row), "toplevel");
++  GtkLabel *name = g_object_get_data (G_OBJECT (row), "name");
++  GtkLabel *detail = g_object_get_data (G_OBJECT (row), "detail");
++  GtkImage *icon = g_object_get_data (G_OBJECT (row), "icon");
++  const char *app_id = phosh_toplevel_get_app_id (toplevel);
++  const char *title = phosh_toplevel_get_title (toplevel);
++  g_autoptr (GDesktopAppInfo) info = NULL;
++  g_autofree char *text = NULL;
++  const char *app_name = NULL, *panel;
++  GIcon *gicon = NULL;
++
++  if (app_id)
++    info = phosh_get_desktop_app_info_for_app_id (app_id);
++  if (info) {
++    app_name = g_app_info_get_display_name (G_APP_INFO (info));
++    gicon = g_app_info_get_icon (G_APP_INFO (info));
++  }
++  if (app_name == NULL)
++    app_name = (title && *title) ? title : app_id;
++
++  gtk_label_set_label (name, app_name ?: "");
++  if (gicon)
++    gtk_image_set_from_gicon (icon, gicon, GTK_ICON_SIZE_DND);
++  else
++    gtk_image_set_from_icon_name (icon, "application-x-executable", GTK_ICON_SIZE_DND);
++  gtk_image_set_pixel_size (icon, ICON_SIZE);
++
++  panel = panel_of (self, app_id);
++  if (title && *title && g_strcmp0 (title, app_name) != 0)
++    text = panel ? g_strdup_printf ("%s · %s", panel, title) : g_strdup (title);
++  else
++    text = g_strdup (panel ?: "");
++
++  gtk_label_set_label (detail, text);
++  gtk_widget_set_visible (GTK_WIDGET (detail), *text != '\0');
++}
++
++
++static void
++update_visibility (PhoshRunningApps *self)
++{
++  g_autoptr (GList) rows = gtk_container_get_children (GTK_CONTAINER (self->list));
++
++  gtk_widget_set_visible (GTK_WIDGET (self), rows != NULL);
++}
++
++
++static GtkListBoxRow *
++find_row (PhoshRunningApps *self, PhoshToplevel *toplevel)
++{
++  g_autoptr (GList) rows = gtk_container_get_children (GTK_CONTAINER (self->list));
++
++  for (GList *l = rows; l; l = l->next) {
++    if (g_object_get_data (G_OBJECT (l->data), "toplevel") == toplevel)
++      return GTK_LIST_BOX_ROW (l->data);
++  }
++  return NULL;
++}
++
++
++static void
++on_close_clicked (GtkButton *button, PhoshToplevel *toplevel)
++{
++  phosh_toplevel_close (toplevel);
++}
++
++
++static void
++on_toplevel_closed (PhoshRunningApps *self, PhoshToplevel *toplevel)
++{
++  GtkListBoxRow *row = find_row (self, toplevel);
++
++  if (row)
++    gtk_widget_destroy (GTK_WIDGET (row));
++  update_visibility (self);
++}
++
++
++static void
++add_toplevel (PhoshRunningApps *self, PhoshToplevel *toplevel)
++{
++  GtkWidget *row, *box, *icon, *labels, *name, *detail, *close;
++
++  /* dialogs go with their window */
++  if (phosh_toplevel_get_parent_handle (toplevel) != NULL)
++    return;
++  if (find_row (self, toplevel))
++    return;
++
++  row = gtk_list_box_row_new ();
++  box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
++  g_object_set (box, "margin-start", 12, "margin-end", 6, "margin-top", 6, "margin-bottom", 6, NULL);
++
++  icon = gtk_image_new ();
++  gtk_box_pack_start (GTK_BOX (box), icon, FALSE, FALSE, 0);
++
++  labels = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
++  gtk_widget_set_valign (labels, GTK_ALIGN_CENTER);
++  name = gtk_label_new (NULL);
++  gtk_label_set_xalign (GTK_LABEL (name), 0.0);
++  gtk_label_set_ellipsize (GTK_LABEL (name), PANGO_ELLIPSIZE_END);
++  gtk_style_context_add_class (gtk_widget_get_style_context (name), "heading");
++  detail = gtk_label_new (NULL);
++  gtk_label_set_xalign (GTK_LABEL (detail), 0.0);
++  gtk_label_set_ellipsize (GTK_LABEL (detail), PANGO_ELLIPSIZE_END);
++  gtk_style_context_add_class (gtk_widget_get_style_context (detail), "dim-label");
++  gtk_box_pack_start (GTK_BOX (labels), name, FALSE, FALSE, 0);
++  gtk_box_pack_start (GTK_BOX (labels), detail, FALSE, FALSE, 0);
++  gtk_box_pack_start (GTK_BOX (box), labels, TRUE, TRUE, 0);
++
++  close = gtk_button_new_from_icon_name ("window-close-symbolic", GTK_ICON_SIZE_BUTTON);
++  gtk_widget_set_valign (close, GTK_ALIGN_CENTER);
++  gtk_widget_set_focus_on_click (close, FALSE);
++  gtk_style_context_add_class (gtk_widget_get_style_context (close), "circular");
++  gtk_style_context_add_class (gtk_widget_get_style_context (close), "flat");
++  g_signal_connect_object (close, "clicked", G_CALLBACK (on_close_clicked), toplevel, 0);
++  gtk_box_pack_end (GTK_BOX (box), close, FALSE, FALSE, 0);
++
++  gtk_container_add (GTK_CONTAINER (row), box);
++  g_object_set_data_full (G_OBJECT (row), "toplevel", g_object_ref (toplevel), g_object_unref);
++  g_object_set_data (G_OBJECT (row), "icon", icon);
++  g_object_set_data (G_OBJECT (row), "name", name);
++  g_object_set_data (G_OBJECT (row), "detail", detail);
++  gtk_widget_show_all (row);
++
++  gtk_container_add (GTK_CONTAINER (self->list), row);
++  update_row (self, GTK_LIST_BOX_ROW (row));
++
++  g_signal_connect_object (toplevel, "closed", G_CALLBACK (on_toplevel_closed), self, G_CONNECT_SWAPPED);
++  update_visibility (self);
++}
++
++
++static void
++on_toplevel_changed (PhoshRunningApps *self, PhoshToplevel *toplevel)
++{
++  GtkListBoxRow *row = find_row (self, toplevel);
++
++  if (row)
++    update_row (self, row);
++}
++
++
++static void
++update_all_rows (PhoshRunningApps *self)
++{
++  g_autoptr (GList) rows = gtk_container_get_children (GTK_CONTAINER (self->list));
++
++  for (GList *l = rows; l; l = l->next)
++    update_row (self, GTK_LIST_BOX_ROW (l->data));
++}
++
++
++static void
++on_row_activated (PhoshRunningApps *self, GtkListBoxRow *row)
++{
++  PhoshToplevel *toplevel = g_object_get_data (G_OBJECT (row), "toplevel");
++
++  phosh_toplevel_activate (toplevel, phosh_wayland_get_wl_seat (phosh_wayland_get_default ()));
++  g_signal_emit (self, signals[DONE], 0);
++}
++
++
++static void
++on_dock_proxy_ready (GObject *source, GAsyncResult *res, gpointer data)
++{
++  g_autoptr (GError) err = NULL;
++  GDBusProxy *proxy = g_dbus_proxy_new_for_bus_finish (res, &err);
++  PhoshRunningApps *self;
++
++  if (proxy == NULL) {
++    phosh_async_error_warn (err, "No dock proxy");
++    return;
++  }
++  self = PHOSH_RUNNING_APPS (data);
++  self->dock = proxy;
++  g_signal_connect_object (proxy, "g-properties-changed", G_CALLBACK (update_all_rows), self,
++                           G_CONNECT_SWAPPED);
++  /* the dock coming or going changes what is known */
++  g_signal_connect_object (proxy, "notify::g-name-owner", G_CALLBACK (update_all_rows), self,
++                           G_CONNECT_SWAPPED);
++  update_all_rows (self);
++}
++
++
++static void
++phosh_running_apps_dispose (GObject *object)
++{
++  PhoshRunningApps *self = PHOSH_RUNNING_APPS (object);
++
++  g_cancellable_cancel (self->cancel);
++  g_clear_object (&self->cancel);
++  g_clear_object (&self->dock);
++
++  G_OBJECT_CLASS (phosh_running_apps_parent_class)->dispose (object);
++}
++
++
++static void
++phosh_running_apps_class_init (PhoshRunningAppsClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++
++  object_class->dispose = phosh_running_apps_dispose;
++
++  /**
++   * PhoshRunningApps::done:
++   *
++   * A window was brought forward; whatever shows the list can go.
++   */
++  signals[DONE] = g_signal_new ("done",
++                                G_TYPE_FROM_CLASS (klass),
++                                G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
++                                G_TYPE_NONE, 0);
++}
++
++
++static void
++phosh_running_apps_init (PhoshRunningApps *self)
++{
++  PhoshToplevelManager *manager = phosh_shell_get_toplevel_manager (phosh_shell_get_default ());
++  GtkWidget *header, *tray;
++
++  gtk_orientable_set_orientation (GTK_ORIENTABLE (self), GTK_ORIENTATION_VERTICAL);
++  g_object_set (self, "margin-top", 12, NULL);
++
++  header = gtk_label_new (_("Running"));
++  gtk_label_set_xalign (GTK_LABEL (header), 0.0);
++  gtk_style_context_add_class (gtk_widget_get_style_context (header), "heading");
++  gtk_style_context_add_class (gtk_widget_get_style_context (header), "phosh-notifications-header");
++  g_object_set (header, "margin-bottom", 6, NULL);
++  gtk_box_pack_start (GTK_BOX (self), header, FALSE, FALSE, 0);
++
++  tray = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
++  gtk_style_context_add_class (gtk_widget_get_style_context (tray), "phosh-notification-tray");
++  self->list = gtk_list_box_new ();
++  gtk_list_box_set_selection_mode (GTK_LIST_BOX (self->list), GTK_SELECTION_NONE);
++  g_signal_connect_swapped (self->list, "row-activated", G_CALLBACK (on_row_activated), self);
++  gtk_box_pack_start (GTK_BOX (tray), self->list, FALSE, FALSE, 0);
++  gtk_box_pack_start (GTK_BOX (self), tray, FALSE, FALSE, 0);
++  gtk_widget_show_all (GTK_WIDGET (self));
++
++  for (guint i = 0; i < phosh_toplevel_manager_get_num_toplevels (manager); i++)
++    add_toplevel (self, phosh_toplevel_manager_get_toplevel (manager, i));
++  g_signal_connect_object (manager, "toplevel-added", G_CALLBACK (add_toplevel), self,
++                           G_CONNECT_SWAPPED);
++  g_signal_connect_object (manager, "toplevel-changed", G_CALLBACK (on_toplevel_changed), self,
++                           G_CONNECT_SWAPPED);
++
++  self->cancel = g_cancellable_new ();
++  g_dbus_proxy_new_for_bus (G_BUS_TYPE_SESSION,
++                            G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
++                            NULL, DOCK_NAME, DOCK_PATH, DOCK_NAME,
++                            self->cancel, on_dock_proxy_ready, self);
++  update_visibility (self);
++}
++
++
++GtkWidget *
++phosh_running_apps_new (void)
++{
++  return g_object_new (PHOSH_TYPE_RUNNING_APPS, NULL);
++}

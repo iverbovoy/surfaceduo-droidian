@@ -642,6 +642,7 @@ class Dock(Gtk.Window):
         self._follow_lockscreen()
         self._follow_keyboard()
         self._follow_shade()
+        self._publish_placement()
         threading.Thread(target=self._watch_windows, daemon=True).start()
 
         # The finger drives the grid. In the capture phase, so that the
@@ -693,6 +694,47 @@ class Dock(Gtk.Window):
                 json.dump(self.placed, fp)
         except OSError as err:
             print(f"sfduo-dock: {PLACED}: {err}", file=sys.stderr)
+        # the window watcher saves from its own thread; the bus is the loop's
+        GLib.idle_add(self._placement_changed)
+
+    # ---- which panel each window is on, said on the bus --------------------
+
+    DOCK_NAME = "org.sfduo.Dock"
+    DOCK_PATH = "/org/sfduo/Dock"
+    DOCK_XML = """
+    <node>
+      <interface name="org.sfduo.Dock">
+        <property name="Placed" type="a{ss}" access="read"/>
+      </interface>
+    </node>"""
+
+    def _publish_placement(self):
+        """Say which panel each window was put on: org.sfduo.Dock, one
+        property, Placed - app id to "left" or "right".
+
+        The dock is the only one that knows. The compositor tiles a window
+        when asked and keeps no record of the half, and the foreign-toplevel
+        protocol carries no geometry. The port's shell lists the open windows
+        in the far half's shade and says where each one is from this
+        (phosh-patches/0009)."""
+        node = Gio.DBusNodeInfo.new_for_xml(self.DOCK_XML)
+        self.session_bus.register_object(
+            self.DOCK_PATH, node.interfaces[0], None,
+            lambda *_a: self._placed_variant(), None)
+        Gio.bus_own_name_on_connection(self.session_bus, self.DOCK_NAME,
+                                       Gio.BusNameOwnerFlags.NONE, None, None)
+
+    def _placed_variant(self):
+        return GLib.Variant("a{ss}", {k: v for k, v in self.placed.items()
+                                      if v in ("left", "right")})
+
+    def _placement_changed(self):
+        self.session_bus.emit_signal(
+            None, self.DOCK_PATH, "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            GLib.Variant("(sa{sv}as)", ("org.sfduo.Dock",
+                                        {"Placed": self._placed_variant()}, [])))
+        return False
 
     # ---- where the dock is ------------------------------------------------
 
