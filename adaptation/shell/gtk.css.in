@@ -56,6 +56,18 @@
    full on both halves. */
 .phosh-far-half #top-bar { opacity: 0; }
 
+/* No bar at all on the lock screen. That screen has a clock of its own, big
+   and on the right panel, and a row of indicators above it on the left panel
+   only said the same thing twice - and said it on one half of a device whose
+   halves are meant to match.
+
+   It goes out with the screen and comes back with the unlock, over a quarter
+   of a second: the transition belongs to the style being moved *to*, so the
+   locked rule turns it off on the way in and the rule above brings it in
+   gently on the way out. phosh-patches/0004 puts the class on the panel. */
+#top-bar { transition: opacity 250ms ease-out; }
+.phosh-locked #top-bar { opacity: 0; transition: none; }
+
 /* ---- lock screen ------------------------------------------------------ */
 
 /* The clock, the date and the notifications share one box, and GTK places a

@@ -68,6 +68,13 @@ reads as one bar drawn twice rather than as two halves - it showed on the
 lock screen first, where the bar is only indicators. The far half's bar is
 emptied by `gtk.css` and kept as the handle its own shade is pulled by.
 
+On the lock screen there is no bar at all. That screen has a clock of its
+own, big and on the right panel, and a row of indicators above it on the
+left panel only said the same thing twice - on one half of a device whose
+halves are meant to match. The patch puts a `phosh-locked` class on each
+panel and `gtk.css` does the rest: the bar goes out with the screen and
+fades back in over a quarter of a second at the unlock.
+
 So the file **is** installed, by `sfduo-phosh-install`, in step with the
 patched binary and never without it: `--restore` takes it away again. On a
 stock phosh the shade would be unreachable, which is a worse phone than one

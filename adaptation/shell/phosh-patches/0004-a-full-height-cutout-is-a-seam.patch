@@ -163,8 +163,18 @@
  static void
  update_top_bar_transparency (PhoshShell *self)
  {
-@@ -304,12 +337,18 @@
+@@ -302,14 +335,28 @@
+   if (!priv->top_panel)
+     return;
  
++  /* Say whether the phone is locked, so a stylesheet can decide what the bar
++   * does about it. The lock screen has a clock of its own and its own idea of
++   * where things belong; a shell that puts a second clock above it is saying
++   * the same thing twice. */
++  phosh_util_toggle_style_class (GTK_WIDGET (priv->top_panel), "phosh-locked", priv->locked);
++  if (priv->top_panel_right)
++    phosh_util_toggle_style_class (GTK_WIDGET (priv->top_panel_right), "phosh-locked", priv->locked);
++
    if (priv->locked) {
      phosh_top_panel_set_bar_transparent (PHOSH_TOP_PANEL (priv->top_panel), TRUE);
 +    if (priv->top_panel_right)
@@ -182,7 +192,7 @@
  }
  
  
-@@ -394,12 +433,55 @@
+@@ -394,12 +441,55 @@
  
    top_layer = priv->locked ? ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY : ZWLR_LAYER_SHELL_V1_LAYER_TOP;
  
@@ -244,7 +254,7 @@
    gtk_widget_set_visible (GTK_WIDGET (priv->top_panel), TRUE);
  
    /* Home is created after the top-panel so it honors its exclusive zone */
-@@ -418,6 +500,17 @@
+@@ -418,6 +508,17 @@
                              G_CALLBACK (on_top_panel_state_changed),
                              self);
  
@@ -262,7 +272,7 @@
    g_signal_connect_swapped (priv->home,
                              "notify::state",
                              G_CALLBACK (on_home_state_changed),
-@@ -437,6 +530,7 @@
+@@ -437,6 +538,7 @@
  {
    PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
  
@@ -270,7 +280,7 @@
    g_clear_pointer (&priv->top_panel, phosh_cp_widget_destroy);
    g_clear_pointer (&priv->home, phosh_cp_widget_destroy);
  }
-@@ -458,6 +552,8 @@
+@@ -458,6 +560,8 @@
       unblanking the screen which can be confusing */
    if (priv->top_panel)
      phosh_top_panel_fold (PHOSH_TOP_PANEL (priv->top_panel));
@@ -279,7 +289,7 @@
  
    update_top_level_layer (self);
    update_top_bar_transparency (self);
-@@ -654,7 +750,7 @@
+@@ -654,7 +758,7 @@
    /* Clear existing banner */
    g_clear_pointer (&priv->notification_banner, phosh_cp_widget_destroy);
    if (phosh_notify_manager_get_show_notification_banner (manager, notification) &&
@@ -288,7 +298,7 @@
        !priv->locked) {
      priv->notification_banner = phosh_notification_banner_new (notification);
      g_signal_connect (priv->notification_banner,
-@@ -686,6 +782,8 @@
+@@ -686,6 +790,8 @@
    priv = phosh_shell_get_instance_private (self);
  
    phosh_top_panel_fold (PHOSH_TOP_PANEL (priv->top_panel));
