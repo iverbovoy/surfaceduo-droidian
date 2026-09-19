@@ -1,0 +1,83 @@
+From 534ae4e4707deae4da34bde82eb8a57b52920a82 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Sat, 19 Sep 2026 21:55:30 +0300
+Subject: [PATCH 4/4] layer-shell-effects: a new exclusive height on a
+ draggable surface takes effect at once
+
+The zone of a draggable layer surface was worked out from its exclusive
+height only while it was dragged or sliding. A height set on a surface at
+rest was stored and left unused until the next drag, so a shell giving up
+its reservation left the windows where they were. Work the zone out at the
+commit that sets it, and rearrange the output.
+---
+ src/layer-shell-effects.c | 40 +++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 38 insertions(+), 2 deletions(-)
+
+diff --git a/src/layer-shell-effects.c b/src/layer-shell-effects.c
+index 10676fe..b146dc1 100644
+--- a/src/layer-shell-effects.c
++++ b/src/layer-shell-effects.c
+@@ -634,7 +634,7 @@ draggable_layer_surface_handle_commit (struct wl_listener *listener, void *data)
+   PhocDraggableLayerSurface *drag_surface =
+     wl_container_of(listener, drag_surface, surface_handle_commit);
+   PhocLayerSurface *layer_surface = drag_surface->layer_surface;
+-  gboolean changed = FALSE;
++  gboolean changed = FALSE, exclusive_changed = FALSE;
+ 
+   if (layer_surface == NULL)
+     return;
+@@ -644,7 +644,16 @@ draggable_layer_surface_handle_commit (struct wl_listener *listener, void *data)
+     changed = TRUE;
+   }
+   drag_surface->current.unfolded = drag_surface->pending.unfolded;
+-  drag_surface->current.exclusive = drag_surface->pending.exclusive;
++  if (drag_surface->current.exclusive != drag_surface->pending.exclusive) {
++    drag_surface->current.exclusive = drag_surface->pending.exclusive;
++    /* The zone is worked out from the exclusive height only when the
++     * surface is dragged or slides (apply_margin): a new height on a
++     * surface at rest was taken and went unused until the next drag. So a
++     * shell that gives up its reservation - a bar folding away with one
++     * window left on the screen - left the windows below it where they
++     * were. Work it out now, and let the output rearrange. */
++    exclusive_changed = TRUE;
++  }
+   drag_surface->current.threshold = drag_surface->pending.threshold;
+   drag_surface->current.drag_mode = drag_surface->pending.drag_mode;
+   drag_surface->current.drag_handle = drag_surface->pending.drag_handle;
+@@ -655,6 +664,33 @@ draggable_layer_surface_handle_commit (struct wl_listener *listener, void *data)
+     phoc_draggable_layer_surface_slide (drag_surface, ANIM_DIR_IN);
+   }
+ 
++  if (exclusive_changed && drag_surface->state != PHOC_DRAGGABLE_SURFACE_STATE_DRAGGING &&
++      drag_surface->state != PHOC_DRAGGABLE_SURFACE_STATE_ANIMATING) {
++    struct wlr_layer_surface_v1 *wlr_layer_surface = layer_surface->layer_surface;
++    int32_t margin;
++
++    switch (wlr_layer_surface->current.anchor) {
++    case PHOC_LAYER_SHELL_EFFECT_DRAG_FROM_TOP:
++      margin = wlr_layer_surface->current.margin.top;
++      break;
++    case PHOC_LAYER_SHELL_EFFECT_DRAG_FROM_BOTTOM:
++      margin = wlr_layer_surface->current.margin.bottom;
++      break;
++    case PHOC_LAYER_SHELL_EFFECT_DRAG_FROM_LEFT:
++      margin = wlr_layer_surface->current.margin.left;
++      break;
++    case PHOC_LAYER_SHELL_EFFECT_DRAG_FROM_RIGHT:
++      margin = wlr_layer_surface->current.margin.right;
++      break;
++    default:
++      margin = 0;
++      break;
++    }
++    wlr_layer_surface->current.exclusive_zone = -margin + drag_surface->current.exclusive;
++    wlr_layer_surface->pending.exclusive_zone = wlr_layer_surface->current.exclusive_zone;
++    phoc_layer_shell_arrange (phoc_layer_surface_get_output (layer_surface));
++  }
++
+   /* TODO: cancel related gestures on drag mode changes */
+ 
+   /* Keep in sync with layer surface geometry changes */
+-- 
+2.43.0
+

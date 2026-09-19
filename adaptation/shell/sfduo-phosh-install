@@ -3,7 +3,7 @@
 # one - or, with --restore, put the packaged one back and keep it there.
 #
 # The patched binary is phosh 0.49.0 at Droidian's cf38ab5 plus the patches
-# 0001-0010 in adaptation/shell/phosh-patches of the port's repository: it
+# 0001-0011 in adaptation/shell/phosh-patches of the port's repository: it
 # tells logind it came up locked, it says LTE rather than 4G, its home
 # overview lets go of the keyboard when a window opens, so windows can take
 # the focus and be tiled, it gives a display with a seam down it a top

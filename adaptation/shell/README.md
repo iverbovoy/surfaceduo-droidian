@@ -209,6 +209,29 @@ halves come in from the sides at the same moment (#72). Measured with
 `sfduo-perfcheck` against the build without it: launches 0.9 s and 1.0 s,
 every animation 16.1-17.4 ms a frame - no cost.
 
+### One window, the whole panel
+
+The near half's bar reserves its height at the top of the output, and one
+output is both panels: every window lost those 32 px, on either side. With
+one panel taken and the other free, the free half's bar can say it all.
+`phosh-patches/0011` does that: the taken half's bar folds up out of sight
+but for a 4 px handle its shade is still pulled by, the free half's bar
+shows signal, clock and indicators (`phosh-bar-all` / `phosh-bar-none` in
+gtk.css, the contents fading across), and the reservation drops to a pixel:
+the window runs to the top of its panel. With both panels taken, or none,
+and on the lock screen, the bars are as before.
+
+Which panels are taken is the dock's to say: `org.sfduo.Dock` has a `Busy`
+property - none, left, right or both, windows only, the app grid not
+counting - and phosh follows its PropertiesChanged. Without a dock nothing
+changes.
+
+It took a fix in phoc (`phoc-patches/0004`): a draggable surface's zone was
+worked out from its exclusive height only while it was being dragged, so a
+new height on a bar at rest was stored and ignored, and the window stayed
+32 px down. Now the commit that sets it applies it and the output
+rearranges, which re-tiles the tiled windows too.
+
 ### A shade folds from anywhere
 
 phosh lets an open shade be folded only by its handle: `update_drag_handle`
@@ -525,7 +548,7 @@ both, because which comes first depends on how long the shell took to start
 start that is still most of a minute after the lock screen is drawn, so the
 dock also treats "nobody owns `org.gnome.ScreenSaver` yet" as locked.
 
-The package carries the patched binary (0001-0010) and
+The package carries the patched binary (0001-0011) and
 `sudo sfduo-phosh-install` puts it in place at install time - but only beside
 exactly the phosh version it was built for; on any other it says so and
 leaves the packaged shell alone. `sudo sfduo-phosh-install --restore` puts the

@@ -1,0 +1,247 @@
+--- a/src/top-panel.h
++++ b/src/top-panel.h
+@@ -45,3 +45,17 @@
+ void               phosh_top_panel_set_layer (PhoshTopPanel *self, guint32 layer);
+ void               phosh_top_panel_set_bar_transparent (PhoshTopPanel *self, gboolean transparent);
+ void               phosh_top_panel_set_half (PhoshTopPanel *self, PhoshSettingsHalf half);
++
++/**
++ * PhoshTopBarMode:
++ * @PHOSH_TOP_BAR_MODE_HALF: this half's share of the bar (see gtk.css)
++ * @PHOSH_TOP_BAR_MODE_ALL: the whole bar, the other half's share too
++ * @PHOSH_TOP_BAR_MODE_NONE: folded out of sight but for a handle to pull the shade by
++ */
++typedef enum {
++  PHOSH_TOP_BAR_MODE_HALF,
++  PHOSH_TOP_BAR_MODE_ALL,
++  PHOSH_TOP_BAR_MODE_NONE,
++} PhoshTopBarMode;
++
++void               phosh_top_panel_set_bar_mode (PhoshTopPanel *self, PhoshTopBarMode mode);
+--- a/src/top-panel.c
++++ b/src/top-panel.c
+@@ -37,6 +37,8 @@
+ #define KEYBINDING_KEY_TOGGLE_MESSAGE_TRAY "toggle-message-tray"
+ 
+ #define PHOSH_TOP_PANEL_DRAG_THRESHOLD 0.3
++/* What is left of a bar folded out of sight: enough to pull the shade by */
++#define PHOSH_TOP_BAR_HANDLE 4
+ 
+ /**
+  * PhoshTopPanel:
+@@ -102,6 +104,8 @@
+ 
+   PhoshTopPanelBg *background;
+   GtkCssProvider  *cutout_css_provider;
++
++  PhoshTopBarMode  bar_mode;
+ } PhoshTopPanel;
+ 
+ G_DEFINE_TYPE (PhoshTopPanel, phosh_top_panel, PHOSH_TYPE_DRAG_SURFACE)
+@@ -694,9 +698,11 @@
+ 
+ 
+ static int
+-get_margin (gint height)
++get_margin (PhoshTopPanel *self, gint height)
+ {
+-  return (-1 * height) + PHOSH_TOP_BAR_HEIGHT;
++  int shown = self->bar_mode == PHOSH_TOP_BAR_MODE_NONE ? PHOSH_TOP_BAR_HANDLE : PHOSH_TOP_BAR_HEIGHT;
++
++  return (-1 * height) + shown;
+ }
+ 
+ 
+@@ -705,7 +711,7 @@
+ {
+   guint margin;
+ 
+-  margin = get_margin (event->height);
++  margin = get_margin (self, event->height);
+ 
+   /* ignore popovers like the power menu */
+   if (gtk_widget_get_window (GTK_WIDGET (self)) != event->window)
+@@ -1045,3 +1051,39 @@
+   gtk_widget_set_child_visible (self->btn_lock, half != PHOSH_SETTINGS_HALF_FAR);
+   gtk_widget_set_child_visible (self->btn_power, half != PHOSH_SETTINGS_HALF_FAR);
+ }
++
++
++/**
++ * phosh_top_panel_set_bar_mode:
++ * @self: The top panel
++ * @mode: What the folded bar shows
++ *
++ * On a display with a seam and one window on one half, the bar of that half
++ * folds up out of sight, but for a handle its shade can still be pulled by,
++ * and the other half's bar shows all of it: the window gets the height of
++ * its panel. The bar's contents follow a style class each mode sets
++ * (phosh-bar-all, phosh-bar-none); the fold is a change of the folded
++ * margin, which the compositor slides the surface to.
++ */
++void
++phosh_top_panel_set_bar_mode (PhoshTopPanel *self, PhoshTopBarMode mode)
++{
++  int height;
++
++  g_return_if_fail (PHOSH_IS_TOP_PANEL (self));
++
++  if (self->bar_mode == mode)
++    return;
++  self->bar_mode = mode;
++
++  phosh_util_toggle_style_class (GTK_WIDGET (self), "phosh-bar-all", mode == PHOSH_TOP_BAR_MODE_ALL);
++  phosh_util_toggle_style_class (GTK_WIDGET (self), "phosh-bar-none", mode == PHOSH_TOP_BAR_MODE_NONE);
++
++  height = phosh_layer_surface_get_configured_height (PHOSH_LAYER_SURFACE (self));
++  if (height <= 0)
++    return;                     /* the first configure sets the margin */
++
++  phosh_drag_surface_set_margin (PHOSH_DRAG_SURFACE (self), get_margin (self, height), 0);
++  update_drag_handle (self, FALSE);
++  phosh_layer_surface_wl_surface_commit (PHOSH_LAYER_SURFACE (self));
++}
+--- a/src/shell.c
++++ b/src/shell.c
+@@ -146,6 +146,9 @@
+    * anything drawing over the shell can keep out of the way. */
+   GDBusConnection *shade_bus;
+   const char *shade_open;
++  /* The dock, which knows which panel each window is on (org.sfduo.Dock) */
++  GDBusProxy *dock_proxy;
++  guint       bar_exclusive;    /* what the near half's bar reserves now */
+   PhoshDragSurface *home;
+   gboolean          overview_visible;
+   GPtrArray *faders;              /* for final fade out */
+@@ -559,6 +562,9 @@
+ }
+ 
+ 
++static void update_bar_modes (PhoshShell *self);
++static void dock_watch_start (PhoshShell *self);
++
+ static void
+ panels_create (PhoshShell *self)
+ {
+@@ -621,6 +627,7 @@
+      * hides this one's contents and keeps it as a handle for its own shade. */
+     gtk_style_context_add_class (gtk_widget_get_style_context (GTK_WIDGET (priv->top_panel_right)),
+                                  "phosh-far-half");
++    priv->bar_exclusive = PHOSH_TOP_BAR_HEIGHT;
+     phosh_top_panel_set_half (PHOSH_TOP_PANEL (priv->top_panel), PHOSH_SETTINGS_HALF_NEAR);
+     phosh_top_panel_set_half (PHOSH_TOP_PANEL (priv->top_panel_right), PHOSH_SETTINGS_HALF_FAR);
+     gtk_widget_set_visible (GTK_WIDGET (priv->top_panel_right), TRUE);
+@@ -636,6 +643,8 @@
+   }
+   gtk_widget_set_visible (GTK_WIDGET (priv->top_panel), TRUE);
+   shade_service_start (self);
++  dock_watch_start (self);
++  update_bar_modes (self);
+ 
+   /* Home is created after the top-panel so it honors its exclusive zone */
+   priv->home = PHOSH_DRAG_SURFACE (phosh_home_new (phosh_wayland_get_zwlr_layer_shell_v1 (wl),
+@@ -689,6 +698,96 @@
+ }
+ 
+ 
++/* {{{ One window, the whole panel */
++/*
++ * The near half's bar reserves its height at the top of the output, and one
++ * output is both panels: every window loses those pixels, on either side.
++ * With one panel taken and the other free there is no need - the free half's
++ * bar can say it all - so the taken half's bar folds away, the other shows
++ * everything, and the reservation drops to a pixel. Which panels are taken
++ * is the dock's to say (org.sfduo.Dock "Busy": none, left, right or both);
++ * without a dock, and on the lock screen, the bars stay as they are.
++ */
++static void
++update_bar_modes (PhoshShell *self)
++{
++  PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
++  PhoshTopBarMode near = PHOSH_TOP_BAR_MODE_HALF, far = PHOSH_TOP_BAR_MODE_HALF;
++  g_autoptr (GVariant) value = NULL;
++  g_autofree char *owner = NULL;
++  const char *busy = "none";
++  guint exclusive = PHOSH_TOP_BAR_HEIGHT;
++
++  if (priv->top_panel == NULL || priv->top_panel_right == NULL)
++    return;
++
++  if (priv->dock_proxy && !priv->locked) {
++    owner = g_dbus_proxy_get_name_owner (priv->dock_proxy);
++    value = owner ? g_dbus_proxy_get_cached_property (priv->dock_proxy, "Busy") : NULL;
++    if (value && g_variant_is_of_type (value, G_VARIANT_TYPE_STRING))
++      busy = g_variant_get_string (value, NULL);
++  }
++
++  if (g_strcmp0 (busy, "left") == 0) {
++    near = PHOSH_TOP_BAR_MODE_NONE;
++    far = PHOSH_TOP_BAR_MODE_ALL;
++    exclusive = 1;
++  } else if (g_strcmp0 (busy, "right") == 0) {
++    near = PHOSH_TOP_BAR_MODE_ALL;
++    far = PHOSH_TOP_BAR_MODE_NONE;
++    exclusive = 1;
++  }
++  g_debug ("Busy: %s", busy);
++
++  phosh_top_panel_set_bar_mode (PHOSH_TOP_PANEL (priv->top_panel), near);
++  phosh_top_panel_set_bar_mode (PHOSH_TOP_PANEL (priv->top_panel_right), far);
++  if (priv->bar_exclusive != exclusive) {
++    priv->bar_exclusive = exclusive;
++    phosh_drag_surface_set_exclusive (priv->top_panel, exclusive);
++    phosh_layer_surface_wl_surface_commit (PHOSH_LAYER_SURFACE (priv->top_panel));
++  }
++}
++
++
++static void
++on_dock_proxy_ready (GObject *source, GAsyncResult *res, gpointer data)
++{
++  g_autoptr (GError) err = NULL;
++  GDBusProxy *proxy = g_dbus_proxy_new_for_bus_finish (res, &err);
++  PhoshShell *self;
++  PhoshShellPrivate *priv;
++
++  if (proxy == NULL) {
++    g_debug ("No dock proxy: %s", err->message);
++    return;
++  }
++  self = PHOSH_SHELL (data);
++  priv = phosh_shell_get_instance_private (self);
++  priv->dock_proxy = proxy;
++  g_signal_connect_object (proxy, "g-properties-changed", G_CALLBACK (update_bar_modes), self,
++                           G_CONNECT_SWAPPED);
++  g_signal_connect_object (proxy, "notify::g-name-owner", G_CALLBACK (update_bar_modes), self,
++                           G_CONNECT_SWAPPED);
++  update_bar_modes (self);
++}
++
++
++static void
++dock_watch_start (PhoshShell *self)
++{
++  PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
++  static gboolean started;
++
++  if (started || priv->top_panel_right == NULL)
++    return;
++  started = TRUE;
++  g_dbus_proxy_new_for_bus (G_BUS_TYPE_SESSION, G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START, NULL,
++                            "org.sfduo.Dock", "/org/sfduo/Dock", "org.sfduo.Dock",
++                            NULL, on_dock_proxy_ready, self);
++}
++/* }}} */
++
++
+ static void
+ set_locked (PhoshShell *self, gboolean locked)
+ {
+@@ -710,6 +809,7 @@
+ 
+   update_top_level_layer (self);
+   update_top_bar_transparency (self);
++  update_bar_modes (self);
+ }
+ 
+ 

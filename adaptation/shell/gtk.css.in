@@ -72,6 +72,21 @@
 .phosh-far-half #top-bar > label { opacity: 0; }
 .phosh-far-half #top-bar > :last-child { opacity: 1; }
 
+/* One window on one panel (#79, phosh-patches/0011): that half's bar folds
+   away to a handle and the free half's bar says all of it - signal, clock,
+   indicators - so the window has its panel's whole height. The contents
+   cross by fading, out on one half and in on the other; the fold itself is
+   the compositor sliding the surface. The handle left on the taken half is
+   transparent, not a black line over the window's edge. */
+#top-bar > * { transition: opacity 250ms ease-out; }
+.phosh-bar-all #top-bar > :first-child,
+.phosh-bar-all #top-bar > label,
+.phosh-bar-all #top-bar > :last-child { opacity: 1; }
+.phosh-bar-none #top-bar > :first-child,
+.phosh-bar-none #top-bar > label,
+.phosh-bar-none #top-bar > :last-child { opacity: 0; }
+.phosh-bar-none #top-bar-bin { background-color: transparent; }
+
 /* The lock screen gets the same split and nothing special. Taking the bar
    off it entirely was tried first, on the grounds that the screen has a
    clock of its own: it only moved the question, since the halves are uneven

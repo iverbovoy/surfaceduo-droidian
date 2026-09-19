@@ -706,6 +706,7 @@ class Dock(Gtk.Window):
     <node>
       <interface name="org.sfduo.Dock">
         <property name="Placed" type="a{ss}" access="read"/>
+        <property name="Busy" type="s" access="read"/>
         <method name="Follow">
           <arg name="app_id" type="s" direction="in"/>
           <arg name="leader" type="s" direction="in"/>
@@ -726,7 +727,7 @@ class Dock(Gtk.Window):
         self.follow = {}          # app_id -> the app whose panel it goes to
         self.session_bus.register_object(
             self.DOCK_PATH, node.interfaces[0], self._on_dock_method,
-            lambda *_a: self._placed_variant(), None)
+            self._on_dock_property, None)
         Gio.bus_own_name_on_connection(self.session_bus, self.DOCK_NAME,
                                        Gio.BusNameOwnerFlags.NONE, None, None)
 
@@ -760,6 +761,36 @@ class Dock(Gtk.Window):
                           check=False).returncode == 0:
             self.placed[app_id] = side
             self._save_placed()
+
+    def _on_dock_property(self, _conn, _sender, _path, _iface, name):
+        if name == "Busy":
+            return GLib.Variant("s", self._busy())
+        return self._placed_variant()
+
+    def _busy(self):
+        """Which panels have a window on them: "none", "left", "right" or
+        "both". Windows only - the app grid does not count - so the shell can
+        give a lone window the whole height of its panel and put the bar on
+        the free one (phosh-patches/0011)."""
+        busy = getattr(self, "window_busy", set())
+        if "both" in busy or {"left", "right"} <= busy:
+            return "both"
+        if busy:
+            return next(iter(busy))
+        return "none"
+
+    def _busy_changed(self):
+        busy = self._busy()
+        if busy == getattr(self, "busy_said", None):
+            return False
+        self.busy_said = busy
+        debug(f"busy: {busy}")
+        self.session_bus.emit_signal(
+            None, self.DOCK_PATH, "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            GLib.Variant("(sa{sv}as)", ("org.sfduo.Dock",
+                                        {"Busy": GLib.Variant("s", busy)}, [])))
+        return False
 
     def _placed_variant(self):
         return GLib.Variant("a{ss}", {k: v for k, v in self.placed.items()
@@ -813,6 +844,7 @@ class Dock(Gtk.Window):
                 GLib.idle_add(self._set_running, running)
                 self.window_busy = busy
                 GLib.idle_add(self._apply_mode)
+                GLib.idle_add(self._busy_changed)
             except Exception as err:      # noqa: BLE001 - keep the beat going
                 print(f"sfduo-dock: windows: {err}", file=sys.stderr)
             time.sleep(WATCH_MS / 1000)
