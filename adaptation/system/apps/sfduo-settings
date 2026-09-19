@@ -20,8 +20,10 @@
 # with this device's boot chain. The programs stay installed and can still
 # be opened directly.
 #
-# On the Duo the page a row opens is a window the dock puts on the other
-# panel: the list on one side of the hinge, the page on the other.
+# On the Duo everything stays on the panel Settings was opened on: before a
+# row opens its page the dock is asked to put that program's window where
+# this one is (org.sfduo.Dock.Follow), so the page comes up over the list
+# and the other panel is left as it was.
 
 import os
 import subprocess
@@ -36,6 +38,7 @@ from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 APP_ID = "org.sfduo.Settings"
 GNOME = "gnome-control-center"
 MOBILE = "phosh-mobile-settings"
+APP_IDS = {GNOME: "org.gnome.Settings", MOBILE: "mobi.phosh.MobileSettings"}
 
 # (title, subtitle, icon, what it opens)
 #   ("gnome", panel, subpage...)  a GNOME Settings page
@@ -92,8 +95,21 @@ BLOCKS = [
 ]
 
 
+def follow_me(program):
+    """Ask the dock to open the program's window on this one's panel."""
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        bus.call_sync("org.sfduo.Dock", "/org/sfduo/Dock", "org.sfduo.Dock", "Follow",
+                      GLib.Variant("(ss)", (APP_IDS[program], APP_ID)),
+                      None, Gio.DBusCallFlags.NO_AUTO_START, 1000, None)
+    except GLib.Error:
+        pass            # no dock, or an older one: the page goes where it goes
+
+
 def run(argv):
     """Start a program and forget it: the pages are windows of their own."""
+    if argv[0] in APP_IDS:
+        follow_me(argv[0])
     try:
         subprocess.Popen(argv, start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

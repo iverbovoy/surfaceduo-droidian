@@ -201,9 +201,12 @@ this device: Connections, Screen, Sound and Notifications, Surface Duo,
 Security, Apps and Accounts, System, For Developers. Each row opens its page
 in whichever program has it (`gnome-control-center wifi`,
 `phosh-mobile-settings osk`, `gnome-control-center system datetime`) or a
-page of its own. On the Duo the page is a window the dock puts on the other
-panel, so the list and the page sit on either side of the hinge. The
-Surface Duo page says what is installed; its switches are #20.
+page of its own. Everything stays on the panel Settings was opened on: before
+a row opens its page, Settings asks the dock to put that program's window on
+its own panel (`org.sfduo.Dock.Follow(app_id, leader)`), so the page comes
+up over the list and the other panel is left as it was; a window of that
+program already open on the other panel is moved across. The Surface Duo
+page says what is installed; its switches are #20.
 
 Left out, on purpose, and why:
 

@@ -706,6 +706,10 @@ class Dock(Gtk.Window):
     <node>
       <interface name="org.sfduo.Dock">
         <property name="Placed" type="a{ss}" access="read"/>
+        <method name="Follow">
+          <arg name="app_id" type="s" direction="in"/>
+          <arg name="leader" type="s" direction="in"/>
+        </method>
       </interface>
     </node>"""
 
@@ -719,11 +723,43 @@ class Dock(Gtk.Window):
         in the far half's shade and says where each one is from this
         (phosh-patches/0009)."""
         node = Gio.DBusNodeInfo.new_for_xml(self.DOCK_XML)
+        self.follow = {}          # app_id -> the app whose panel it goes to
         self.session_bus.register_object(
-            self.DOCK_PATH, node.interfaces[0], None,
+            self.DOCK_PATH, node.interfaces[0], self._on_dock_method,
             lambda *_a: self._placed_variant(), None)
         Gio.bus_own_name_on_connection(self.session_bus, self.DOCK_NAME,
                                        Gio.BusNameOwnerFlags.NONE, None, None)
+
+    def _on_dock_method(self, _conn, _sender, _path, _iface, method, params, invocation):
+        """Follow(app_id, leader): the windows of app_id go on the panel the
+        leader's window is on, not on the free one.
+
+        For an app that opens another's pages - the port's Settings opens
+        GNOME Settings and Mobile Settings - and wants them where it is
+        itself: on one panel, the page over the list, nothing on the other.
+        A window of app_id already open on the other panel is moved at once;
+        one that is yet to open is placed so when it does (see _adopt)."""
+        if method != "Follow":
+            invocation.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method)
+            return
+        app_id, leader = params.unpack()
+        self.follow[app_id] = leader
+        invocation.return_value(None)
+        side = self.placed.get(leader)
+        debug(f"{app_id} follows {leader} ({side})")
+        if side in ("left", "right") and app_id in getattr(self, "last_ids", []) \
+                and self.placed.get(app_id) != side:
+            threading.Thread(target=self._move_to, args=(app_id, side), daemon=True).start()
+
+    def _move_to(self, app_id, side):
+        """Put an open window on a panel: focus it, then the tiling chord."""
+        if not self._take_focus(app_id):
+            return
+        key = "Left" if side == "left" else "Right"
+        if subprocess.run(["wtype", "-M", "logo", "-k", key, "-m", "logo"],
+                          check=False).returncode == 0:
+            self.placed[app_id] = side
+            self._save_placed()
 
     def _placed_variant(self):
         return GLib.Variant("a{ss}", {k: v for k, v in self.placed.items()
@@ -813,6 +849,9 @@ class Dock(Gtk.Window):
             self.adopted.add(app_id)
             taken = set(self.placed.values())
             side = "left" if taken == {"right"} else "right"
+            leader_side = self.placed.get(getattr(self, "follow", {}).get(app_id))
+            if leader_side in ("left", "right"):
+                side = leader_side                      # see _on_dock_method
             debug(f"adopting {app_id} onto the {side} panel")
             if not self._take_focus(app_id):
                 continue
