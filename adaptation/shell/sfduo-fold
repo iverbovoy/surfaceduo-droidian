@@ -73,7 +73,10 @@ def num(name, default):
 
 
 # ---- what the effect looks like ------------------------------------------------
-BOOK_ANGLE = num("BOOK", 90.0)         # flat and sharp from here up; the effect ends
+# 150, not 90: at 90 the sheet is already sharp while the hand is still
+# opening, and the last third of the movement has nothing to look at. The
+# whole polish - the stagger, the release, the blur curve - was tuned here.
+BOOK_ANGLE = num("BOOK", 150.0)        # flat and sharp from here up; the effect ends
 LOCK_ANGLE = num("LOCK", 45.0)         # folding shut past this while in use: lock, and start
 REST_ANGLE = num("REST", 25.0)         # a hinge resting above this gets the screen back
 SEPARATION = num("SEPARATION", 66.0)   # how far the sheet is turned away, fully folded

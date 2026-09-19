@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Surface Duo fold
+Comment=Turns the lit pieces of the screen as the device is opened, and brings them back to flat
+Exec=/usr/local/bin/sfduo-fold
+Icon=view-dual-symbolic
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-Phase=Applications

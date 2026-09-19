@@ -532,6 +532,30 @@ chosen for the whole display, and 50 px rows came out a fifth lower than at
 43ef51f, `meson setup _build --prefix=/usr --libdir=lib/aarch64-linux-gnu`,
 `ninja -C _build`; the binary goes to `out/osk/`.
 
+## The hinge, and the fold effect
+
+`sfduo-posture` holds the one session with sensorfw and publishes what it
+reads as `org.sfduo.Posture` on the session bus: the angle sixty times a
+second, the raw reading, the posture, whether the hinge is turning and how
+fast. Readings arrive ten times a second, in whole degrees, fifteen apart
+during a brisk fold; the daemon glides between them at a constant speed
+rather than springing, which is the difference between a smooth picture and
+a shivering one. Everything that wants the hinge reads this instead of
+talking to sensorfw itself.
+
+`sfduo-fold` is what the hinge drives. Opening the device turns the lit
+pieces of the last frame away from the eye and brings them back to flat as
+the hand finishes the movement - the pieces travel out of step with each
+other and arrive together, and the sheet is blurred and dimmed towards its
+outer edge. It ends at `FOLD_BOOK` degrees, 150 by default: at 90 the sheet
+is sharp while the hand is still opening and the last third of the movement
+has nothing to look at. Every number is an environment variable, listed at
+the top of the script.
+
+Both autostart with the session. The effect reads the hinge only through
+`org.sfduo.Posture`, so without the posture daemon it starts, says so and
+does nothing.
+
 ## Brightness
 
 The screen came back at 100% every time the device was opened, and there were

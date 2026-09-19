@@ -803,6 +803,11 @@ install -Dm644 "$SHELLDIR/sfduo-dock.desktop"       "$PKG/etc/xdg/autostart/sfdu
 # session bus - the smoothed angle, the posture, whether it is moving (#55)
 install -m755  "$SHELLDIR/sfduo-posture"            "$PKG/usr/local/bin/"
 install -Dm644 "$SHELLDIR/sfduo-posture.desktop"    "$PKG/etc/xdg/autostart/sfduo-posture.desktop"
+# The fold effect: the lit pieces of the screen turn as the device is opened
+# and come back to flat, driven by the angle above (#36). It reads the hinge
+# only through org.sfduo.Posture, so it is inert if that daemon is missing.
+install -m755  "$SHELLDIR/sfduo-fold"               "$PKG/usr/local/bin/"
+install -Dm644 "$SHELLDIR/sfduo-fold.desktop"       "$PKG/etc/xdg/autostart/sfduo-fold.desktop"
 install -Dm644 "$SHELLDIR/sfduo-brightness.desktop" "$PKG/etc/xdg/autostart/sfduo-brightness.desktop"
 install -Dm644 "$SHELLDIR/dock.json" "$PKG/usr/share/sfduo/dock.json.example"
 # The output scale (2026-09-18): Droidian's generic phoc.ini says 3, which
