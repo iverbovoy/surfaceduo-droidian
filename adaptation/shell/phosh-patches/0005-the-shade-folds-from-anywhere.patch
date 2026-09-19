@@ -1,0 +1,85 @@
+--- a/src/settings.c
++++ b/src/settings.c
+@@ -136,37 +136,32 @@
+ calc_drag_handle_offset (PhoshSettings *self)
+ {
+   int h = 0;
+-  int box_height, sw_height, qs_height = 0;
+-  int qs_y = 0;
+-  gboolean success;
++  int box_height, sw_height;
++  GtkAdjustment *adj;
+ 
++  /* The whole surface folds the shade: on the lock screen, and wherever
++   * nothing else wants a finger going up. The quick settings' sliders keep
++   * their drags - the compositor hands a gesture that goes sideways first
++   * back to the surface. */
+   h = gtk_widget_get_allocated_height (GTK_WIDGET (self));
+-  /* On the lock screen the whole surface is fine */
+   if (self->on_lockscreen)
+     goto out;
+ 
++  /* A notification list that can still scroll takes the finger going up,
++   * and only the handle folds the shade. At its end there is nothing left
++   * for that finger to do there, and the whole surface folds it again. */
+   box_height = gtk_widget_get_allocated_height (self->box_settings);
+   sw_height = gtk_widget_get_allocated_height (self->scrolled_window);
+-  if (box_height > sw_height) {
+-    h = 0; /* Don't enlarge drag handle if box needs scrolling */
++  if (box_height <= sw_height)
+     goto out;
+-  }
+-
+-  g_debug ("Calculating drag offset: on quick-settings");
+-
+-  success = gtk_widget_translate_coordinates (self->quick_settings, GTK_WIDGET (self),
+-                                              0, 0, NULL, &qs_y);
+-
+-  if (!success) {
+-    g_warning ("Calculating drag offset: Unable to get quick-setting's y coordinate");
+-    goto out;
+-  }
+ 
+-  qs_height = gtk_widget_get_allocated_height (self->quick_settings);
+-  h = qs_y + qs_height;
++  adj = gtk_scrolled_window_get_vadjustment (GTK_SCROLLED_WINDOW (self->scrolled_window));
++  if (gtk_adjustment_get_value (adj) <
++      gtk_adjustment_get_upper (adj) - gtk_adjustment_get_page_size (adj) - 1)
++    h = 0;
+ 
+-  g_debug ("Calculating drag offset: QS_y = %d, QS_height = %d, height = %d",
+-           qs_y, qs_height, h);
++  g_debug ("Calculating drag offset: list scrolls, at %.0f of %.0f, height = %d",
++           gtk_adjustment_get_value (adj), gtk_adjustment_get_upper (adj), h);
+ 
+  out:
+   if (self->drag_handle_offset == h)
+@@ -582,6 +577,9 @@
+                           G_BINDING_SYNC_CREATE | G_BINDING_INVERT_BOOLEAN);
+ 
+   g_signal_connect (self, "size-allocate", G_CALLBACK (on_size_allocate), NULL);
++  /* where the notification list is decides what a swipe up does */
++  g_signal_connect_swapped (gtk_scrolled_window_get_vadjustment (GTK_SCROLLED_WINDOW (self->scrolled_window)),
++                            "value-changed", G_CALLBACK (update_drag_handle_offset), self);
+ }
+ 
+ 
+--- a/src/top-panel.c
++++ b/src/top-panel.c
+@@ -160,9 +160,14 @@
+   offset = phosh_settings_get_drag_handle_offset (PHOSH_SETTINGS (self->settings));
+   handle -= offset;
+ 
+-  g_debug ("Drag Handle: %d", handle);
+-  if (handle < 0)
++  /* Settings asking for more than the surface has left means all of it.
++   * Returning here instead kept whatever handle was set last, and the
++   * shade stayed draggable by its bottom edge alone. Before the first
++   * configure there is no height to speak of. */
++  if (phosh_layer_surface_get_configured_height (PHOSH_LAYER_SURFACE (self)) <= 0)
+     return;
++  handle = MAX (handle, 0);
++  g_debug ("Drag Handle: %d", handle);
+ 
+   phosh_drag_surface_set_drag_mode (PHOSH_DRAG_SURFACE (self),
+                                     PHOSH_DRAG_SURFACE_DRAG_MODE_HANDLE);

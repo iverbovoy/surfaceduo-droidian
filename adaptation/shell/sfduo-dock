@@ -95,7 +95,8 @@ def output_size():
 
 SCREEN_WIDTH, SCREEN_HEIGHT = output_size()
 STAGE_HEIGHT = SCREEN_HEIGHT - PANEL_HEIGHT   # everything below the top bar
-EDGE = 22                 # the gesture band along the bottom of a busy panel
+EDGE = 36                 # the gesture band along the bottom of a busy panel: 4.5 mm,
+                          # taken from the app beneath - 22 was missed by the thumb
 EDGE_MARGIN = 10          # a half's distance from its panel's outer edge when apart
 CLOSE_PX = 220            # a swipe this long over an app closes it, not just hides it
 GRID_ICON = ICON_SIZE     # the app grid's icons: the dock's size, not phosh's 64
@@ -528,6 +529,7 @@ class PaneWindow(Gtk.Window):
         else:
             region = cairo.Region(cairo.RectangleInt(0, 0, max(1, self.width), DOCK_HEIGHT))
         win.input_shape_combine_region(region, 0, 0)
+        self.queue_draw()          # the region travels with a commit - see Dock._shape
 
     @property
     def width(self):
@@ -1135,6 +1137,10 @@ class Dock(Gtk.Window):
                 for pane in self.panes.values():
                     region.subtract(cairo.RectangleInt(pane.x, 0, pane.width, DOCK_HEIGHT))
         win.input_shape_combine_region(region, 0, 0)
+        # GTK hands the region to the compositor with the next commit, and
+        # this window draws nothing to commit: without a frame the strip kept
+        # its old region, and an open shade lost its bottom 84 px to it.
+        self.queue_draw()
         for pane in self.panes.values():
             pane.passthrough(self._shade_over(self._panel_of_pane(pane)))
 

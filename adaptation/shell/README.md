@@ -137,10 +137,32 @@ shade underneath rather than being swallowed by a dock that does nothing with
 it. Closing the shade is a swipe up on the shade itself, which is what the
 hand was aiming at.
 
-The bottom hundred logical pixels of an open shade are phosh's own: the panel
-is draggable down to y=800 of 900 and no further (measured), so a swipe that
-starts right on the bottom edge still does nothing. It no longer does the
-wrong thing, which is what was asked for.
+That region only reaches the compositor with a commit, and the dock's strip
+draws nothing, so nothing was committed: the strip kept its old region, and
+the bottom 84 px of an open shade (the dock's height) stayed the dock's and
+did nothing. It was first put down to phosh; stopping the dock gave the
+strip back to the shade at once. The dock now queues a frame whenever it
+changes a region.
+
+### A shade folds from anywhere
+
+phosh lets an open shade be folded only by its handle: `update_drag_handle`
+puts it in phoc's `HANDLE` drag mode, and the handle is worked out from the
+bottom of the quick settings, which left a finger only the lower part of
+the shade (measured: from y=650 of 900 down). `phosh-patches/0005` makes
+the whole surface the handle, as phosh already does on the lock screen,
+except while the notification list can still scroll further: then a swipe
+up scrolls it, and once it is at its end the next one folds the shade.
+
+Nothing is lost to it. phoc holds a drag as pending until it has gone 16 px
+along its axis and gives it back to the surface if it goes 24 px across
+first, and while the shade is unfolded it takes only a drag towards folding:
+the brightness slider still moves, a swipe down still scrolls the list, a tap
+is still a tap (all checked on the device).
+
+What remains is phoc's own threshold: a fold needs 30 % of the travel, about
+260 px, and phoc does not look at the speed. A swipe that starts high on the
+shade has no room for that and springs back.
 
 So the file **is** installed, by `sfduo-phosh-install`, in step with the
 patched binary and never without it: `--restore` takes it away again. On a
@@ -438,7 +460,7 @@ both, because which comes first depends on how long the shell took to start
 start that is still most of a minute after the lock screen is drawn, so the
 dock also treats "nobody owns `org.gnome.ScreenSaver` yet" as locked.
 
-The package carries the patched binary (0001-0004) and
+The package carries the patched binary (0001-0005) and
 `sudo sfduo-phosh-install` puts it in place at install time - but only beside
 exactly the phosh version it was built for; on any other it says so and
 leaves the packaged shell alone. `sudo sfduo-phosh-install --restore` puts the
