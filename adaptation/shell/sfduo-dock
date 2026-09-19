@@ -512,6 +512,23 @@ class PaneWindow(Gtk.Window):
         self.drag.connect("drag-end", dock._on_drag_end)
         self.drag.connect("cancel", dock._on_drag_cancel)
 
+    def passthrough(self, on):
+        """Take no touches at all, or take them across the whole half.
+
+        A shade pulled down over this panel owns it, and the dock is a layer
+        above the shade: without this the dock's buttons and its swipe sit in
+        front of an open shade, and the swipe that should close the shade
+        raised the grid instead. An empty input region lets the finger
+        through to the shade, which is what it was aimed at."""
+        win = self.get_window()
+        if win is None:
+            return
+        if on:
+            region = cairo.Region()
+        else:
+            region = cairo.Region(cairo.RectangleInt(0, 0, max(1, self.width), DOCK_HEIGHT))
+        win.input_shape_combine_region(region, 0, 0)
+
     @property
     def width(self):
         """The slab's natural width - not the window's allocation, which a
@@ -622,6 +639,7 @@ class Dock(Gtk.Window):
             pane.show_all()
         self._follow_lockscreen()
         self._follow_keyboard()
+        self._follow_shade()
         threading.Thread(target=self._watch_windows, daemon=True).start()
 
         # The finger drives the grid. In the capture phase, so that the
@@ -1105,7 +1123,9 @@ class Dock(Gtk.Window):
         region = cairo.Region()
         if not self.locked:                 # locked: the lock screen's touches are its own
             for side, x in (("left", 0), ("right", half + gap)):
-                if self.progress > 0.0 and side == self.grid_side:
+                if self._shade_over(side):
+                    continue                        # the shade owns this panel
+                elif self.progress > 0.0 and side == self.grid_side:
                     continue                        # the grid window takes this panel
                 elif self.mode in ("both", side):   # the dock is here
                     region.union(cairo.RectangleInt(x, 0, half, DOCK_HEIGHT))
@@ -1115,6 +1135,8 @@ class Dock(Gtk.Window):
                 for pane in self.panes.values():
                     region.subtract(cairo.RectangleInt(pane.x, 0, pane.width, DOCK_HEIGHT))
         win.input_shape_combine_region(region, 0, 0)
+        for pane in self.panes.values():
+            pane.passthrough(self._shade_over(self._panel_of_pane(pane)))
 
     def _animate_to(self, target):
         """Finish the journey from wherever the grid is, easing out."""
@@ -1166,6 +1188,18 @@ class Dock(Gtk.Window):
         return self.mode if self.mode in ("left", "right") else pane.side
 
     def _begin_drag(self, panel):
+        # A shade pulled down over this panel owns every gesture on it. The
+        # dock is a layer above, so its strip along the bottom edge is still
+        # in front of the shade and still takes the finger - and the swipe
+        # that closes a shade is a swipe up, the same one that raises the
+        # grid. The grid was coming out from under the shade instead.
+        self.drag_blocked = self._shade_over(panel)
+        if self.drag_blocked:
+            debug("drag on the %s panel ignored: its shade is down" % panel)
+            self.drag_claimed = False
+            self.drag_app = None
+            self.drag_on_grid = False
+            return
         debug("drag begin on the %s panel, mode=%s" % (panel, self.mode))
         self._stop_animation()
         self.drag_on_grid = False
@@ -1189,6 +1223,7 @@ class Dock(Gtk.Window):
 
     def _on_grid_drag_begin(self, _gesture, x, y):
         """A drag that starts on the open grid: down closes it."""
+        self.drag_blocked = False
         debug("grid drag begin x=%.0f y=%.0f" % (x, y))
         self._stop_animation()
         self.drag_on_grid = True
@@ -1199,6 +1234,8 @@ class Dock(Gtk.Window):
         self.drag_app = None
 
     def _on_drag_update(self, gesture, _dx, dy):
+        if getattr(self, "drag_blocked", False):
+            return
         # The offset GTK reports is relative to the window the drag is on.
         # The grid's window moves under the finger as the finger drives it,
         # so on it the offset shrinks as the grid follows - a slow swipe
@@ -1228,12 +1265,18 @@ class Dock(Gtk.Window):
         self._set_progress(self.drag_start - dy / (STAGE_HEIGHT * GRID_TRAVEL))
 
     def _on_drag_cancel(self, _gesture, _sequence):
+        if getattr(self, "drag_blocked", False):
+            self.drag_blocked = False
+            return
         debug("drag cancelled at %.2f" % self.progress)
         if getattr(self, "drag_claimed", False) and getattr(self, "drag_app", None) is None:
             self._animate_to(1.0 if self.progress >= GRID_COMMIT else 0.0)
         self.drag_claimed = False
 
     def _on_drag_end(self, _gesture, _dx, dy):
+        if getattr(self, "drag_blocked", False):
+            self.drag_blocked = False
+            return
         debug("drag end dy=%.0f claimed=%s velocity=%.2f progress=%.2f"
               % (dy, self.drag_claimed, self.drag_velocity, self.progress))
         if not self.drag_claimed:
@@ -1365,6 +1408,63 @@ class Dock(Gtk.Window):
         debug("keyboard %s" % ("up on the %s panel" % panel if panel else "down"))
         self.osk_panel = panel
         self._apply_mode()
+
+    # ---- the notification shade --------------------------------------------
+
+    SHADE_NAME = "org.sfduo.Shade"
+    SHADE_PATH = "/org/sfduo/Shade"
+
+    def _follow_shade(self):
+        """Know which half has its shade pulled down.
+
+        The dock is on the overlay layer and the shade on the one below, so
+        the dock's strip along the bottom edge is in front of an open shade
+        and its swipe still works. Closing the shade is a swipe up from the
+        bottom, and that was raising the grid instead.
+
+        The port's phosh says which half is open on the session bus
+        (phosh-patches/0004): org.sfduo.Shade, one property, "none", "left",
+        "right" or "both". On a stock shell nobody owns the name, the read
+        fails, and the dock behaves as it always did.
+        """
+        self.shade = "none"
+        self.session_bus.signal_subscribe(
+            None, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+            self.SHADE_PATH, self.SHADE_NAME, Gio.DBusSignalFlags.NONE,
+            lambda _c, _s, _p, _i, _sig, params: self._on_shade_changed(params[1]))
+        # and when the shell comes or goes
+        self.session_bus.signal_subscribe(
+            "org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
+            "/org/freedesktop/DBus", self.SHADE_NAME, Gio.DBusSignalFlags.NONE,
+            lambda *_a: self._read_shade())
+        self._read_shade()
+
+    def _on_shade_changed(self, changed):
+        if "Open" in changed.keys():
+            self._set_shade(str(changed["Open"]))
+
+    def _read_shade(self):
+        try:
+            value = self.session_bus.call_sync(
+                self.SHADE_NAME, self.SHADE_PATH,
+                "org.freedesktop.DBus.Properties", "Get",
+                GLib.Variant("(ss)", (self.SHADE_NAME, "Open")),
+                None, Gio.DBusCallFlags.NONE, 500, None)
+            self._set_shade(str(value[0]))
+        except GLib.Error:
+            self._set_shade("none")
+        return False
+
+    def _set_shade(self, open_):
+        if open_ == getattr(self, "shade", None):
+            return
+        debug("shade open on: %s" % open_)
+        self.shade = open_
+        self._shape()
+
+    def _shade_over(self, panel):
+        """Is a shade down over this panel?"""
+        return getattr(self, "shade", "none") in (panel, "both")
 
     def _seat_session(self):
         """The path of the session that owns the screen."""

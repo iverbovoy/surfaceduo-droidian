@@ -120,6 +120,28 @@ halves are uneven everywhere, not only there. Split honestly and there is
 nothing left to hide, so the lock screen gets the same bar as everything
 else.
 
+### The dock keeps out of the way
+
+The dock is on the overlay layer and the shade on the one below it, so the
+dock's strip along the bottom edge is in front of an open shade. Swiping up
+to close the shade raised the app grid instead.
+
+The shell says which half is open, on the session bus: `org.sfduo.Shade`,
+one read-only property `Open` - `none`, `left`, `right` or `both` - with
+PropertiesChanged behind it. On a stock phosh nobody owns the name, the read
+fails and the dock behaves as it always did.
+
+The dock then takes no touches at all on that half: an empty input region on
+its strip and on the window that holds the buttons, so the finger reaches the
+shade underneath rather than being swallowed by a dock that does nothing with
+it. Closing the shade is a swipe up on the shade itself, which is what the
+hand was aiming at.
+
+The bottom hundred logical pixels of an open shade are phosh's own: the panel
+is draggable down to y=800 of 900 and no further (measured), so a swipe that
+starts right on the bottom edge still does nothing. It no longer does the
+wrong thing, which is what was asked for.
+
 So the file **is** installed, by `sfduo-phosh-install`, in step with the
 patched binary and never without it: `--restore` takes it away again. On a
 stock phosh the shade would be unreachable, which is a worse phone than one
