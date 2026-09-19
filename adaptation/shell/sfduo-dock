@@ -107,6 +107,7 @@ FLICK = 0.3               # px/ms: faster than this and the direction decides
 GRID_TRAVEL = 0.55        # the finger's share of the stage that opens the grid fully
 GRID_COMMIT = 0.3         # a slow release past this much of the way opens it
 MOVE_MS = 240             # the dock crossing to the other panel
+RISE_MS = 360             # the dock's halves coming in from the sides after an unlock
 WATCH_MS = 500            # how often to ask which windows are open
 WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
 FOCUS_TIMEOUT = 4         # seconds a mapped window gets to take the focus
@@ -1566,15 +1567,61 @@ class Dock(Gtk.Window):
             for w in self._windows():
                 GtkLayerShell.set_layer(w, GtkLayerShell.Layer.TOP)
             self._cover_strangers()
+            self._dip()
         else:
             for w in self._windows():
                 GtkLayerShell.set_layer(w, GtkLayerShell.Layer.OVERLAY)
+            self._rise()
             if self.curtain_up:
                 # held until now; from here it is an ordinary curtain, lifted
                 # by the adoption on the next beat or by the clock
                 self.curtain_timer = GLib.timeout_add_seconds(
                     WAIT_TIMEOUT + 2, self._lift_curtain)
         self._shape()
+
+    def _offstage(self, side, pane):
+        """Where a half waits beyond its own side of the display."""
+        return -pane.width if side == "left" else SCREEN_WIDTH
+
+    def _dip(self):
+        """Out past the sides, at once: the lock screen is over it, and this
+        is where the unlock brings the halves in from (see _rise)."""
+        if self.move is not None:
+            GLib.source_remove(self.move)
+            self.move = None
+        for side, pane in self.panes.items():
+            pane.move(x=self._offstage(side, pane), settle=True)
+
+    def _rise(self):
+        """After an unlock the halves come in from the sides, each from its
+        own edge, rather than being there already: the desktop is given back,
+        not swapped in. (They came up from the bottom first; from the sides
+        reads as the two halves of the device closing in on the hinge.) The
+        unlock is heard after the lock screen has gone, so this plays on the
+        desktop it belongs to."""
+        if self.mode == "hidden":
+            return                      # both panels taken: it stays below
+        targets = self._pane_targets(self.mode)
+        start = {s: (self._offstage(s, p), targets[s][1]) for s, p in self.panes.items()}
+        if self.move is not None:
+            GLib.source_remove(self.move)
+        frames = []
+
+        def step(t):
+            frames.append(t)
+            k = min(1.0, t / RISE_MS)
+            eased = 1.0 - (1.0 - k) ** 3            # ease-out cubic, as every move here
+            for side, pane in self.panes.items():
+                (x0, y0), (x1, y1) = start[side], targets[side]
+                pane.move(x=x0 + (x1 - x0) * eased, y=y1, settle=k >= 1.0)
+            if k >= 1.0:
+                self.move = None
+                self._shape()
+                self._report("dock coming in after the unlock", frames)
+                return False
+            return True
+
+        self.move = animate(step)
 
     def _windows(self):
         """Every layer surface of the dock's: this one, the halves, the
