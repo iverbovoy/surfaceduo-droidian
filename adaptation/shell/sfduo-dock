@@ -118,7 +118,7 @@ BACK_STRIP = 14           # the strip along a busy panel's outer edge that swipe
 BACK_SIZE = 56            # the round arrow that comes out of the edge with the finger
 BACK_ARM = 64             # how far in the finger goes before letting go means back
 BACK_TOP = 48             # the strip starts below the bar, clear of the shade's handle
-BACK_BUTTON = 46          # the resting back button at a busy panel's outer corner (#88)
+BACK_BUTTON = 36          # the resting back button at a busy panel's outer corner (#88)
 BACK_BUTTON_UP = 90       # ... a tenth of the panel above the bottom edge, clear of the band
 # The shell's own accent, as GNOME 47 named them: the button wears the colour
 # chosen in Settings rather than one of its own.
@@ -691,8 +691,8 @@ class BackButton(Gtk.Window):
         button = Gtk.Button()
         button.get_style_context().add_class("corner-back")
         button.set_relief(Gtk.ReliefStyle.NONE)
-        icon = Gtk.Image.new_from_icon_name("go-previous-symbolic", Gtk.IconSize.LARGE_TOOLBAR)
-        icon.set_pixel_size(24)
+        icon = Gtk.Image.new_from_icon_name("go-previous-symbolic", Gtk.IconSize.BUTTON)
+        icon.set_pixel_size(18)
         button.add(icon)
         button.connect("clicked", lambda _b: dock._back_tapped(self.side))
         self.button = button

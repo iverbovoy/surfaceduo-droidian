@@ -42,6 +42,7 @@ case "$name" in
 gnome-control-center)
     RESOURCE=/org/gnome/Settings/gtk/cc-window.ui
     FROM='<condition>max-width: 550sp</condition>'
+    PAGE=/org/gnome/Settings/gtk/cc-panel.ui   # the template every panel is built from
     ;;
 phosh-mobile-settings)
     RESOURCE=/mobi/phosh/MobileSettings/ui/mobile-settings-window.ui
@@ -58,6 +59,7 @@ REAL=/usr/bin/$name
 TO='max-width: 900sp'
 DIR="${XDG_RUNTIME_DIR:-/tmp}/sfduo-one-column/$name"
 UI="$DIR/window.ui"
+PAGE_UI="$DIR/page.ui"
 
 # The cache is against both files that decide what is in it: the program,
 # whose resource is taken apart, and this script, which patches it - an
@@ -155,15 +157,61 @@ try:
 except (StopIteration, AttributeError) as err:
     print(f"sfduo-one-column: the list stays: {err!r}", file=sys.stderr)
 
+# The page's own way back, where the page is in this file (Mobile Settings
+# holds both halves here; GNOME Settings builds its pages in code and is
+# dealt with through cc-panel.ui). Collapsed, the header of the content side
+# grows an arrow that leads to the list, at the top left - against the hinge
+# on the right panel. The port's own sits in the corner under the thumb on
+# either panel (#88), so this one goes.
+try:
+    split = next(o for o in root.iter("object") if o.get("class") == "AdwNavigationSplitView")
+    content_page = prop(split, "content").find("object")
+    toolbar = prop(content_page, "child").find("object")
+    header = next(o for o in toolbar.iter("object") if o.get("class") == "AdwHeaderBar")
+    ET.SubElement(header, "property", name="show-back-button").text = "False"
+except (StopIteration, AttributeError):
+    pass                    # a window whose page is not here: nothing to do
+
 tree.write(dst, encoding="unicode", xml_declaration=True)
 PY
     fi
     rm -f "$UI.new"
+    # The page's own way back goes too (#88). Collapsed, the split view gives
+    # a panel's header an arrow that leads to the list, and on the right
+    # panel that arrow is against the hinge - the far reach of the other
+    # hand - while the port's own sits in the corner under the thumb on
+    # whichever panel the window is on. A page that cannot be popped has no
+    # arrow: `can-pop` on the template every panel is built from, one line.
+    # The panels' own inner pages keep theirs; this is only the way out.
+    if [ -n "$PAGE" ]; then
+        rm -f "$PAGE_UI"
+        if gresource extract "$REAL" "$PAGE" > "$PAGE_UI.new" 2>/dev/null \
+           && grep -q "AdwNavigationPage" "$PAGE_UI.new"; then
+            python3 - "$PAGE_UI.new" "$PAGE_UI" <<'PAGEPY' || rm -f "$PAGE_UI"
+import sys
+import xml.etree.ElementTree as ET
+
+src, dst = sys.argv[1:3]
+tree = ET.parse(src)
+template = tree.getroot().find("template")
+if template is None or template.get("parent") != "AdwNavigationPage":
+    print("sfduo-one-column: the panel template is not what this expects", file=sys.stderr)
+    raise SystemExit(1)
+ET.SubElement(template, "property", name="can-pop").text = "False"
+tree.write(dst, encoding="unicode", xml_declaration=True)
+PAGEPY
+        fi
+        rm -f "$PAGE_UI.new"
+    fi
     echo "$stamp" > "$DIR/stamp"
 fi
 
 if [ -s "$UI" ]; then
     G_RESOURCE_OVERLAYS="${G_RESOURCE_OVERLAYS:+$G_RESOURCE_OVERLAYS:}$RESOURCE=$UI"
+    export G_RESOURCE_OVERLAYS
+fi
+if [ -n "$PAGE" ] && [ -s "$PAGE_UI" ]; then
+    G_RESOURCE_OVERLAYS="${G_RESOURCE_OVERLAYS:+$G_RESOURCE_OVERLAYS:}$PAGE=$PAGE_UI"
     export G_RESOURCE_OVERLAYS
 fi
 exec "$REAL" "$@"
