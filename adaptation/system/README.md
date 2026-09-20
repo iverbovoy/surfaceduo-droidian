@@ -238,9 +238,16 @@ it already has.
 A cold start is still a second and a half, and that is what the stand-in is
 for: Settings answers the tap in its own motion - a page titled as the one
 coming, with a spinner if the wait passes half a second - and the program's
-window lands on it. The dock's curtain for a window that follows another is
-the colour of a libadwaita window, without an icon, so it reads as that
-page. If the window never comes, the stand-in goes by itself after 8 s.
+window lands on it, drawn for the first time already on its panel: the
+compositor holds a new window until it is placed and settled
+(phoc-patches/0010), so the dock covers nothing for a page any more. If the
+window never comes, the stand-in goes by itself after 8 s.
+
+The list comes up with nothing lit. A window that opens hands the keyboard
+to the first thing that will take it, and a row holding the keyboard is
+drawn as chosen - Wi-Fi came up highlighted and the highlight went out at
+the first touch - so the window drops the focus when it is shown and
+whenever it is the active window again.
 
 Left out, on purpose, and why:
 

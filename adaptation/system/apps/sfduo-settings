@@ -300,6 +300,11 @@ class Window(Adw.ApplicationWindow):
         view.set_content(page)
         self.nav.add(Adw.NavigationPage(title="Settings", child=view))
         self.set_content(self.nav)
+        # A window that opens gives the keyboard to the first thing that can
+        # take it, and a row that has the keyboard is drawn as chosen: the
+        # list came up with Wi-Fi lit, and the light went out at the first
+        # touch. There is no keyboard here to speak of, so nothing holds it.
+        self.connect("map", lambda *_a: self.set_focus(None))
         self.connect("notify::is-active", self._on_active)
         # Back at the list, the first page, goes nowhere in the navigation -
         # so it leaves: the window is minimized, as back from an app's first
@@ -385,13 +390,26 @@ class Window(Adw.ApplicationWindow):
 
     def _on_active(self, *_args):
         stand_in = getattr(self, "stand_in", None)
+        if self.is_active():
+            self.set_focus(None)            # see the "map" handler
         if stand_in is None:
             return
         if not self.is_active():
             self.left = True                # the program's window took over
             self._stop_timers()
-        elif self.left:
-            self.nav.pop_to_page(self.nav.get_previous_page(stand_in) or stand_in)
+            return
+        if self.left:
+            # The page's window has just gone and this one is what shows
+            # through: it has to be the list already. Sliding the stand-in
+            # away once it is in sight is a second motion for one gesture,
+            # after the window's own leaving - so it goes without one.
+            back = self.nav.get_previous_page(stand_in) or stand_in
+            if hasattr(self.nav, "set_animate_transitions"):
+                self.nav.set_animate_transitions(False)
+                self.nav.pop_to_page(back)
+                GLib.idle_add(self.nav.set_animate_transitions, True)
+            else:
+                self.nav.pop_to_page(back)
 
     def _give_up(self):
         if getattr(self, "stand_in", None) is not None and not self.left:

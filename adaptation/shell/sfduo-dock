@@ -940,6 +940,21 @@ class Dock(Gtk.Window):
             return GLib.Variant("s", self._busy())
         return self._placed_variant()
 
+    @property
+    def compositor_holds(self):
+        """Whether the compositor keeps a new window out of sight until it
+        has been placed - the port's phoc, which owns org.sfduo.Phoc."""
+        if getattr(self, "_holds", None) is None:
+            try:
+                self._holds = self.session_bus.call_sync(
+                    "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                    "NameHasOwner", GLib.Variant("(s)", ("org.sfduo.Phoc",)), None,
+                    Gio.DBusCallFlags.NONE, 1000, None).unpack()[0]
+            except GLib.Error:
+                self._holds = False
+            debug(f"the compositor holds new windows: {self._holds}")
+        return self._holds
+
     def _busy(self):
         """Which panels have a window on them: "none", "left", "right" or
         "both". Windows only - the app grid does not count - so the shell can
@@ -1043,7 +1058,13 @@ class Dock(Gtk.Window):
         # them happens behind the curtain all the same - unless the shell has
         # shown it cannot place windows, in which case there is nothing to
         # hide and the curtain would only be a black screen.
-        if self.shell_places is not False:
+        # A curtain is only for a window that would be seen in the wrong
+        # place. The port's compositor holds a new window until it has been
+        # put on a panel and has drawn itself there (phoc-patches/0009), so
+        # there is nothing to hide; anywhere else the window is up at its
+        # own size for as long as the placing takes, and the panel is
+        # covered meanwhile.
+        if self.shell_places is not False and not self.compositor_holds:
             # a window that follows another goes to that one's panel, and
             # only that panel is covered: the other stays what it was
             follow = getattr(self, "follow", {})

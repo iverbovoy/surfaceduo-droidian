@@ -1,0 +1,475 @@
+From 96e1354e1f601fe4c317c66b9d37a596dd7ec4b6 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Sun, 20 Sep 2026 13:54:35 +0300
+Subject: [PATCH] view, sfduo-control: a new window is not drawn until it is
+ where it belongs
+
+A window was mapped at whatever size its client asked for and placed
+afterwards - by the dock, a beat later - so it was drawn twice over: its
+own size and place first, the panel's second, with the client laying its
+contents out again in between, and the dock's own slide carrying the first
+frame into the second. Filmed at 60 fps, opening a Settings page: the
+window appears at about two thirds of the panel, grows over some ten
+frames and reflows twice.
+
+A new toplevel is now held: drawn at zero alpha from its map, and let go -
+with the fade it used to get at its map - at the first frame it draws
+after all of this has happened:
+
+  - it has been put on a panel (phoc_view_tile says so),
+  - it is drawn at that panel's size, scale and all: a window wider than a
+    panel is scaled down to fit, and the panel is shorter while the shell's
+    bar is still on it, so "the size that was asked for" is not enough,
+  - and its client has stopped drawing for 110 ms, because a client answers
+    the size first and lays its contents out over the frames after.
+
+Whatever is still unsettled after 700 ms is shown anyway, which is also
+what a window nobody ever places gets.
+
+Two things had to stop moving for this to be worth anything. A window
+still held is tiled without the sliding ghost - what would travel is the
+frame it drew before anything placed it, growing into the panel, which is
+exactly the motion being removed. And a window put away over another one -
+the port's Settings over its own list - fades where it stands instead of
+shrinking towards the bottom edge: what the eye follows there is the
+window underneath, and a copy of this one flying down over it is one
+motion too many.
+---
+ src/sfduo-control.c | 238 +++++++++++++++++++++++++++++++++++++++-----
+ src/sfduo-control.h |   6 +-
+ src/view.c          |  53 +++++++---
+ 3 files changed, 254 insertions(+), 43 deletions(-)
+
+diff --git a/src/sfduo-control.c b/src/sfduo-control.c
+index 3efe8ac..262a272 100644
+--- a/src/sfduo-control.c
++++ b/src/sfduo-control.c
+@@ -8,6 +8,8 @@
+ 
+ #include "phoc-config.h"
+ 
++#include "anim/property-easer.h"
++#include "anim/timed-animation.h"
+ #include "desktop.h"
+ #include "seat.h"
+ #include "server.h"
+@@ -64,6 +66,8 @@
+  * shown before in about 65 ms, and draws nothing meanwhile. */
+ #define SFDUO_WAKE_QUIET_MS 110
+ #define SFDUO_WAKE_CAP_MS 700      /* ... and this is as long as it is ever waited for */
++#define SFDUO_HOLD_CAP_MS 700      /* a new window is never held longer than this */
++#define SFDUO_HOLD_FADE_MS 150     /* ... and fades in when it is let go */
+ 
+ static const char introspection_xml[] =
+   "<node>"
+@@ -81,6 +85,42 @@ static const char introspection_xml[] =
+   "</node>";
+ 
+ 
++/* A window kept out of sight until it is worth seeing: one woken behind the
++ * scenes for a page it is about to show, or a new one that has not been put
++ * on a panel yet. */
++typedef struct {
++  PhocView          *view;
++  struct wl_listener commit;
++  guint              quiet_id;
++  guint              cap_id;
++  gint64             started;
++  guint              commits;
++  gboolean           focus_at_end;   /* woken: it is what the hand asked for */
++  gboolean           wait_placed;    /* new: shown once placed and drawn there */
++  gboolean           placed;
++  guint32            want_width;     /* ... at this size, which is the panel's */
++  guint32            want_height;
++  float              last_scale;     /* a window fitted into a panel settles over a frame or two */
++  gboolean           fade;
++} PhocWake;
++
++static GSList *waking;
++
++
++/* Whether this window is being held out of sight until it is placed. */
++static gboolean
++view_is_held (PhocView *view)
++{
++  for (GSList *l = waking; l; l = l->next) {
++    PhocWake *wake = l->data;
++
++    if (wake->view == view && wake->wait_placed)
++      return TRUE;
++  }
++  return FALSE;
++}
++
++
+ static void
+ tile_view (PhocView *view, PhocViewTileDirection dir)
+ {
+@@ -91,6 +131,15 @@ tile_view (PhocView *view, PhocViewTileDirection dir)
+   if (phoc_view_is_tiled (view) && phoc_view_get_tile_direction (view) == dir)
+     return;
+ 
++  /* A window still held out of sight has nothing to slide: what would
++   * travel is the frame it drew at its own size, before anything put it on
++   * a panel, and it would be seen growing into place - the very thing the
++   * hold is there to prevent. It is simply put where it belongs. */
++  if (view_is_held (view)) {
++    phoc_view_tile (view, dir, NULL);
++    return;
++  }
++
+   /* The surface's box, where it is and where it is going: the tile's box
+    * is the window's geometry, the surface sits geom.x/y before it. */
+   if (surface && phoc_view_get_tiled_box (view, dir, NULL, &tiled)) {
+@@ -136,15 +185,33 @@ views_of (const char *app_id)
+ }
+ 
+ 
+-/* A window woken behind the scenes, on its way to being shown. */
+-typedef struct {
+-  PhocView          *view;
+-  struct wl_listener commit;
+-  guint              quiet_id;
+-  guint              cap_id;
+-  gint64             started;
+-  guint              commits;
+-} PhocWake;
++
++
++static void
++show_view (PhocView *view, gboolean fade)
++{
++  g_autoptr (PhocTimedAnimation) anim = NULL;
++  g_autoptr (PhocPropertyEaser) easer = NULL;
++
++  if (!fade) {
++    g_object_set (view, "alpha", 1.0f, NULL);
++    phoc_view_damage_whole (view);
++    return;
++  }
++
++  easer = g_object_new (PHOC_TYPE_PROPERTY_EASER,
++                        "target", view,
++                        "easing", PHOC_EASING_EASE_OUT_QUAD,
++                        NULL);
++  phoc_property_easer_set_props (easer, "alpha", 0.0, 1.0, NULL);
++  anim = g_object_new (PHOC_TYPE_TIMED_ANIMATION,
++                       "animatable", phoc_view_get_output (view),
++                       "duration", SFDUO_HOLD_FADE_MS,
++                       "property-easer", easer,
++                       "dispose-on-done", TRUE,
++                       NULL);
++  phoc_timed_animation_play (anim);
++}
+ 
+ 
+ static void
+@@ -153,17 +220,20 @@ wake_finish (PhocWake *wake)
+   g_clear_handle_id (&wake->quiet_id, g_source_remove);
+   g_clear_handle_id (&wake->cap_id, g_source_remove);
+   wl_list_remove (&wake->commit.link);
++  waking = g_slist_remove (waking, wake);
+ 
+-  g_debug ("wake done: %u frames in %" G_GINT64_FORMAT " ms%s", wake->commits,
++  g_debug ("%s done: %u frames in %" G_GINT64_FORMAT " ms%s",
++           wake->wait_placed ? "hold" : "wake", wake->commits,
+            (g_get_monotonic_time () - wake->started) / 1000,
+            wake->view ? "" : " (the window went)");
+ 
+   if (wake->view) {
+-    PhocSeat *seat = phoc_server_get_last_active_seat (phoc_server_get_default ());
++    show_view (wake->view, wake->fade);
++    if (wake->focus_at_end) {
++      PhocSeat *seat = phoc_server_get_last_active_seat (phoc_server_get_default ());
+ 
+-    g_object_set (wake->view, "alpha", 1.0f, NULL);
+-    phoc_view_damage_whole (wake->view);
+-    phoc_seat_set_focus_view (seat, wake->view);
++      phoc_seat_set_focus_view (seat, wake->view);
++    }
+     g_object_remove_weak_pointer (G_OBJECT (wake->view), (gpointer *) &wake->view);
+   }
+   g_free (wake);
+@@ -192,20 +262,87 @@ on_wake_cap (gpointer data)
+ }
+ 
+ 
++/* Whether the window is drawn at the size of the panel it is on. */
++static gboolean
++view_fills_its_panel (PhocView *view)
++{
++  struct wlr_box tile;
++  float scale;
++  int width, height;
++
++  if (view == NULL)
++    return TRUE;
++  if (!phoc_view_is_tiled (view))
++    return TRUE;                 /* nobody gave it a panel to fill */
++  if (!phoc_view_get_tiled_box (view, phoc_view_get_tile_direction (view), NULL, &tile))
++    return TRUE;
++
++  scale = phoc_view_get_scale (view);
++  width = (int) (view->box.width * scale + 0.5);
++  height = (int) (view->box.height * scale + 0.5);
++  g_debug ("  drawn %dx%d (%dx%d at %.3f), panel %dx%d",
++           width, height, view->box.width, view->box.height, scale, tile.width, tile.height);
++  return ABS (width - tile.width) <= 2 && ABS (height - tile.height) <= 2;
++}
++
++
+ static void
+ on_wake_commit (struct wl_listener *listener, void *data)
+ {
+   PhocWake *wake = wl_container_of (listener, wake, commit);
+ 
+-  /* still drawing: the page is on its way */
+   wake->commits++;
+-  g_debug ("wake frame %u at %" G_GINT64_FORMAT " ms", wake->commits,
+-           (g_get_monotonic_time () - wake->started) / 1000);
++  g_debug ("%s frame %u at %" G_GINT64_FORMAT " ms%s: %dx%d scale %.3f",
++           wake->wait_placed ? "hold" : "wake", wake->commits,
++           (g_get_monotonic_time () - wake->started) / 1000,
++           wake->placed ? " (placed)" : "",
++           wake->view ? wake->view->box.width : 0,
++           wake->view ? wake->view->box.height : 0,
++           wake->view ? phoc_view_get_scale (wake->view) : 0.0);
++
++  /* A new window waits to be put on a panel and to draw itself at the size
++   * it was given there. The frame right after the placing is still the
++   * client's own size - it answers a configure a frame or two later - and
++   * showing that one is showing the jump this is here to avoid. */
++  if (wake->wait_placed) {
++    if (!wake->placed)
++      return;
++    /* Drawn as large as the panel it was put on. The size alone is not it:
++     * a window is scaled down to fit its panel, and the panel is shorter
++     * while the shell's bar is still on it - the bar moves to the free one
++     * once there is a window here - so the window was drawn small and grew
++     * as the bar left. Nor is that enough: a client answers the size first
++     * and lays its contents out for it over the frames after, which is a
++     * page visibly settling. So once it is the panel's size, it is waited
++     * on as a woken window is - until it stops drawing. */
++    if (!view_fills_its_panel (wake->view))
++      return;
++    wake->wait_placed = FALSE;
++  }
++
++  /* one woken for a page: still drawing, the page is on its way */
+   g_clear_handle_id (&wake->quiet_id, g_source_remove);
+   wake->quiet_id = g_timeout_add (SFDUO_WAKE_QUIET_MS, on_wake_quiet, wake);
+ }
+ 
+ 
++static PhocWake *
++hold_view (PhocView *view, guint cap_ms)
++{
++  PhocWake *wake = g_new0 (PhocWake, 1);
++
++  wake->view = view;
++  wake->started = g_get_monotonic_time ();
++  g_object_add_weak_pointer (G_OBJECT (view), (gpointer *) &wake->view);
++  g_object_set (view, "alpha", 0.0f, NULL);
++  wake->commit.notify = on_wake_commit;
++  wl_signal_add (&view->wlr_surface->events.commit, &wake->commit);
++  wake->cap_id = g_timeout_add (cap_ms, on_wake_cap, wake);
++  waking = g_slist_prepend (waking, wake);
++  return wake;
++}
++
++
+ static void
+ wake_view (PhocView *view)
+ {
+@@ -216,19 +353,66 @@ wake_view (PhocView *view)
+     return;
+   }
+ 
+-  wake = g_new0 (PhocWake, 1);
+-  wake->view = view;
+-  wake->started = g_get_monotonic_time ();
+   g_debug ("waking %s", phoc_view_get_app_id (view));
+-  g_object_add_weak_pointer (G_OBJECT (view), (gpointer *) &wake->view);
++  wake = hold_view (view, SFDUO_WAKE_CAP_MS);
++  wake->focus_at_end = TRUE;
+   /* awake - its client starts drawing again - but with nothing to see yet */
+-  g_object_set (view, "alpha", 0.0f, NULL);
+   phoc_view_set_minimized (view, FALSE);
+-  wake->commit.notify = on_wake_commit;
+-  wl_signal_add (&view->wlr_surface->events.commit, &wake->commit);
+-  /* nothing counted until it draws; the cap is what saves a client that
+-   * never does */
+-  wake->cap_id = g_timeout_add (SFDUO_WAKE_CAP_MS, on_wake_cap, wake);
++}
++
++
++/**
++ * phoc_sfduo_control_hold_new_view:
++ * @view: a view that has just been mapped
++ *
++ * Keep a new window out of sight until it is where it belongs.
++ *
++ * A window is mapped at whatever size its client asked for and placed
++ * afterwards - by the dock, a beat later - so it was drawn twice over: its
++ * own size and place first, the panel's second, with the client laying its
++ * contents out again in between. What that looks like is a window that
++ * appears, jumps and reflows. Held here, it appears once: at the first
++ * frame it draws after it has been put on a panel, fading in. A window
++ * nobody places is shown when the hold runs out.
++ */
++void
++phoc_sfduo_control_hold_new_view (PhocView *view)
++{
++  PhocWake *wake;
++
++  if (view->wlr_surface == NULL)
++    return;
++
++  g_debug ("holding %s", phoc_view_get_app_id (view));
++  wake = hold_view (view, SFDUO_HOLD_CAP_MS);
++  wake->wait_placed = TRUE;
++  wake->fade = TRUE;
++  wake->last_scale = -1.0f;         /* unknown until the first frame */
++}
++
++
++/**
++ * phoc_sfduo_control_view_placed:
++ * @view: a view that has just been put on a panel
++ *
++ * Told to a window being held: the frame after this is the one to show.
++ */
++void
++phoc_sfduo_control_view_placed (PhocView *view)
++{
++  for (GSList *l = waking; l; l = l->next) {
++    PhocWake *wake = l->data;
++
++    if (wake->view != view)
++      continue;
++    wake->placed = TRUE;
++    /* what the placing asked the client for; zero when it was already
++     * that size and there is nothing to wait for */
++    wake->want_width = view->pending_move_resize.width;
++    wake->want_height = view->pending_move_resize.height;
++    g_debug ("placed %s, waiting for %ux%u", phoc_view_get_app_id (view),
++             wake->want_width, wake->want_height);
++  }
+ }
+ 
+ 
+diff --git a/src/sfduo-control.h b/src/sfduo-control.h
+index 79a7ea5..3f8bf0e 100644
+--- a/src/sfduo-control.h
++++ b/src/sfduo-control.h
+@@ -6,10 +6,14 @@
+ 
+ #pragma once
+ 
++#include "view.h"
++
+ #include <glib.h>
+ 
+ G_BEGIN_DECLS
+ 
+-void phoc_sfduo_control_start (void);
++void phoc_sfduo_control_start         (void);
++void phoc_sfduo_control_hold_new_view (PhocView *view);
++void phoc_sfduo_control_view_placed   (PhocView *view);
+ 
+ G_END_DECLS
+diff --git a/src/view.c b/src/view.c
+index 1c31d40..6795229 100644
+--- a/src/view.c
++++ b/src/view.c
+@@ -22,6 +22,7 @@
+ #include "subsurface.h"
+ #include "utils.h"
+ #include "timed-animation.h"
++#include "sfduo-control.h"
+ #include "view-ghost.h"
+ #include "view-child-private.h"
+ #include "view-private.h"
+@@ -1160,6 +1161,8 @@ phoc_view_tile (PhocView *self, PhocViewTileDirection direction, PhocOutput *out
+   /* a window that cannot shrink into the tile is fitted into it; it will
+    * not commit a new size, so the fitting is not left to a size change */
+   view_update_scale (self);
++  /* a new window held out of sight is now where it belongs */
++  phoc_sfduo_control_view_placed (self);
+ }
+ 
+ 
+@@ -1452,20 +1455,11 @@ phoc_view_map (PhocView *self, struct wlr_surface *surface)
+   if (phoc_desktop_get_enable_animations (desktop)
+       && self->parent == NULL
+       && !phoc_view_want_auto_maximize (self)) {
+-    g_autoptr (PhocTimedAnimation) fade_anim = NULL;
+-    g_autoptr (PhocPropertyEaser) easer = NULL;
+-    easer = g_object_new (PHOC_TYPE_PROPERTY_EASER,
+-                          "target", self,
+-                          "easing", PHOC_EASING_EASE_OUT_QUAD,
+-                          NULL);
+-    phoc_property_easer_set_props (easer, "alpha", 0.0, 1.0, NULL);
+-    fade_anim = g_object_new (PHOC_TYPE_TIMED_ANIMATION,
+-                              "animatable", phoc_view_get_output (self),
+-                              "duration", PHOC_ANIM_DURATION_WINDOW_FADE,
+-                              "property-easer", easer,
+-                              "dispose-on-done", TRUE,
+-                              NULL);
+-    phoc_timed_animation_play (fade_anim);
++    /* The fade a new window used to get here ran while the window was
++     * still wherever its client put it, and the placing that followed was
++     * plain to see. It is held instead, and fades in once it is on a panel
++     * (sfduo-control). */
++    phoc_sfduo_control_hold_new_view (self);
+   }
+ 
+   g_object_notify_by_pspec (G_OBJECT (self), props[PROP_IS_MAPPED]);
+@@ -2642,6 +2636,34 @@ phoc_view_is_minimized (PhocView *view)
+ }
+ 
+ 
++/*
++ * Whether another window lies under this one, waiting to be seen: what the
++ * eye follows when this one is put away is that window, and a copy of this
++ * one flying down over it is one motion too many.
++ */
++static gboolean
++view_is_over_another (PhocView *view)
++{
++  PhocDesktop *desktop = phoc_server_get_desktop (phoc_server_get_default ());
++  struct wlr_box box;
++
++  phoc_view_get_box (view, &box);
++  for (GList *l = phoc_desktop_get_views (desktop)->head; l; l = l->next) {
++    PhocView *other = PHOC_VIEW (l->data);
++    struct wlr_box other_box, overlap;
++
++    if (other == view || other->parent != NULL)
++      continue;
++    if (!phoc_view_is_mapped (other) || phoc_view_is_minimized (other))
++      continue;
++    phoc_view_get_box (other, &other_box);
++    if (wlr_box_intersection (&overlap, &box, &other_box))
++      return TRUE;
++  }
++  return FALSE;
++}
++
++
+ /**
+  * phoc_view_set_minimized:
+  * @view: a view
+@@ -2670,7 +2692,8 @@ phoc_view_set_minimized (PhocView *view, gboolean minimized)
+     return;
+ 
+   if (minimized && phoc_desktop_view_check_visibility (desktop, view))
+-    phoc_view_ghost_leave (view, PHOC_VIEW_GHOST_MINIMIZE);
++    phoc_view_ghost_leave (view, view_is_over_another (view) ?
++                           PHOC_VIEW_GHOST_CLOSE : PHOC_VIEW_GHOST_MINIMIZE);
+   phoc_view_damage_whole (view);
+   priv->minimized = minimized;
+   if (priv->toplevel_handle)
+-- 
+2.43.0
+

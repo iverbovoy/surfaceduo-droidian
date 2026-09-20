@@ -271,7 +271,29 @@ there still does nothing.
 A closed window fades and shrinks a little in place (200 ms); a minimized
 one shrinks to a third and drops to the bottom edge of its panel, where the
 dock is, fading late so the eye follows it there (280 ms) - phoc-patches/0006,
-one "ghost" with two kinds.
+one "ghost" with two kinds. A window put away over another one - the port's
+Settings over its own list - fades where it stands instead: what the eye
+follows there is the window underneath, and a copy of this one flying down
+over it is one motion too many (phoc-patches/0010).
+
+### A new window is not drawn until it is where it belongs
+
+A window maps at whatever size its client asked for and is placed a beat
+later, so it used to be drawn twice over - its own size and place first,
+the panel's second - with the client laying its contents out again in
+between and the dock's slide carrying the first frame into the second.
+Filmed at 60 fps, opening a Settings page: the window appears at about two
+thirds of the panel, grows over ten frames and reflows twice.
+
+`phoc-patches/0010` holds a new window at zero alpha from its map and lets
+it go, with the fade it used to get at the map, at the first frame it draws
+after it has been put on a panel, is drawn at that panel's size (scale and
+all - a window wider than a panel is scaled into it, and the panel is
+shorter while the shell's bar is still on it), and its client has stopped
+drawing for 110 ms. Anything still unsettled after 700 ms is shown as it
+is, which is also what a window nobody places gets. A window still held is
+tiled without the sliding ghost: what would travel is the frame it drew
+before anything placed it.
 
 The dock used to learn of windows by asking every half second, so it
 crossed onto a freed panel up to half a second after the window had gone.
@@ -701,13 +723,20 @@ and this is what puts it on one panel.
 
 ### The launch curtain
 
-A new window maps at its own size, across both panels, and can only be tiled
-once it has the focus - most of a second in the wrong place, and phoc has no
-way to be told where a window should open. The dock is above everything, so it
-covers the stage for that second: black, with the app's icon on the panel it
-is headed for, lifted 250 ms after the tiling chord so the window has laid
-itself out at its new size. It lifts on every path, including a launch that
-never produces a window.
+A new window maps at its own size, across both panels, and on a compositor
+that cannot be told where a window should open it can only be tiled once it
+has the focus - most of a second in the wrong place. The dock is above
+everything, so it covers the stage for that second: black, with the app's
+icon on the panel it is headed for, lifted 250 ms after the tiling chord so
+the window has laid itself out at its new size. It lifts on every path,
+including a launch that never produces a window.
+
+The curtain is a launch's, not a placement's, now that the port's phoc
+holds a new window until it is where it belongs (phoc-patches/0010): a
+window the dock merely adopts - one it did not launch, a page opened by
+the port's Settings - is no longer covered at all. The dock asks the
+session bus whether `org.sfduo.Phoc` is there to know; on a stock phoc the
+curtain goes up as before.
 
 `pkill -USR2 -f sfduo-dock` launches whatever `$XDG_RUNTIME_DIR/sfduo-launch`
 names (`org.gnome.Settings.desktop right`) exactly as a tap would - curtain,
