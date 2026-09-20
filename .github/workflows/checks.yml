@@ -34,3 +34,9 @@ jobs:
 
       - name: image-validator self-test
         run: ./tools/test-validate-image.sh
+
+      - name: running-apps grouping tests
+        run: |
+          sudo apt-get install -y -qq libglib2.0-dev python3-gi
+          bash tools/test-running-apps-filter.sh
+          /usr/bin/python3 tools/test-dock-follows.py

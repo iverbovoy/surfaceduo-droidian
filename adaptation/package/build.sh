@@ -571,6 +571,27 @@ chmod 755 "$PKG/usr/local/sbin/sfduo-brightness-sync.sh"
 # bus round trip through the settings daemon (#87). GROUP/MODE alone reach
 # the device node, not the sysfs attribute - Android's init leaves those
 # `system:system` - so the attribute is taken in hand the way the torch's is.
+# A window on this device is given a whole panel, and libadwaita's hairline
+# around a window then lands along the edge of the screen: a grey line at the
+# top, measured at rgb(70,70,70) over a window of rgb(34,34,38) and reported
+# from use. GTK4 reads this file for every application and every user (it
+# searches XDG_CONFIG_DIRS, checked on the device), so it is said once here
+# rather than into each program's own resources. It is said of every window,
+# not only of one marked maximized or tiled: this compositor puts a window on
+# a panel without the window being told either of those things, so those
+# classes are never on it - checked by trying the narrower rule first, which
+# changed nothing.
+install -d "$PKG/etc/xdg/gtk-4.0"
+cat > "$PKG/etc/xdg/gtk-4.0/gtk.css" <<'GTKCSS'
+window.csd, window.background, window.solid-csd {
+  box-shadow: none;
+  border: none;
+}
+headerbar, .titlebar, .top-bar {
+  box-shadow: none;
+}
+GTKCSS
+
 cat > "$PKG/etc/udev/rules.d/98-sfduo-backlight.rules" <<'RULES'
 SUBSYSTEM=="backlight", GROUP="video", MODE="0664"
 SUBSYSTEM=="backlight", ACTION=="add", RUN+="/bin/sh -c 'chgrp video /sys%p/brightness && chmod 0664 /sys%p/brightness'"
@@ -802,7 +823,7 @@ install -m755 "$SHELLDIR/sfduo-dock"       "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-brightness" "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-shell-setup" "$PKG/usr/local/sbin/"
 install -m755 "$SHELLDIR/sfduo-phosh-install" "$PKG/usr/local/sbin/"
-# The patched phosh (../shell/phosh-patches 0001-0012), built per
+# The patched phosh (../shell/phosh-patches 0001-0014), built per
 # ../shell/README.md. Version-locked: see sfduo-phosh-install.
 PHOSH_BIN="$ROOT/out/phosh/phosh-0.49.0-cf38ab5-sfduo"
 if [ -f "$PHOSH_BIN" ]; then

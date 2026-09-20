@@ -122,6 +122,8 @@ BACK_BUTTON = 36          # the resting back button at a busy panel's outer corn
 BACK_BUTTON_UP = 90       # ... a tenth of the panel above the bottom edge, clear of the band
 # The shell's own accent, as GNOME 47 named them: the button wears the colour
 # chosen in Settings rather than one of its own.
+DOCK_BASE = (18, 18, 20)  # the bar's colour before the accent is washed into it
+ACCENT_WASH = 0.22        # how much of the accent that wash is
 ACCENTS = {
     "blue":   "53,132,228",
     "teal":   "33,144,164",
@@ -982,6 +984,7 @@ class Dock(Gtk.Window):
       <interface name="org.sfduo.Dock">
         <property name="Placed" type="a{ss}" access="read"/>
         <property name="Busy" type="s" access="read"/>
+        <property name="Follows" type="a{ss}" access="read"/>
         <method name="Follow">
           <arg name="app_id" type="s" direction="in"/>
           <arg name="leader" type="s" direction="in"/>
@@ -990,14 +993,14 @@ class Dock(Gtk.Window):
     </node>"""
 
     def _publish_placement(self):
-        """Say which panel each window was put on: org.sfduo.Dock, one
-        property, Placed - app id to "left" or "right".
+        """Publish placement, panel occupancy and page/leader relationships.
 
         The dock is the only one that knows. The compositor tiles a window
         when asked and keeps no record of the half, and the foreign-toplevel
         protocol carries no geometry. The port's shell lists the open windows
         in the far half's shade and says where each one is from this
-        (phosh-patches/0009)."""
+        (phosh-patches/0009). Follows lets it leave out a page while the
+        window it belongs to is still open (phosh-patches/0014)."""
         node = Gio.DBusNodeInfo.new_for_xml(self.DOCK_XML)
         self.follow = self._load_follows()   # app_id -> the app whose panel it goes to
         self.session_bus.register_object(
@@ -1019,8 +1022,17 @@ class Dock(Gtk.Window):
             invocation.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method)
             return
         app_id, leader = params.unpack()
+        changed = self.follow.get(app_id) != leader
         self.follow[app_id] = leader
         self._save_follows()
+        if changed:
+            self._follows_changed()
+            # The buttons were laid out before this was known: a page that
+            # already had one of its own keeps it until they are laid out
+            # again, and the dock shows two gears for one Settings. Learning
+            # this happens whenever the record has been lost - it lives in
+            # the runtime directory, which a reboot empties.
+            GLib.idle_add(self._relay_running)
         invocation.return_value(None)
         side = self.placed.get(leader)
         debug(f"{app_id} follows {leader} ({side})")
@@ -1102,7 +1114,23 @@ class Dock(Gtk.Window):
     def _on_dock_property(self, _conn, _sender, _path, _iface, name):
         if name == "Busy":
             return GLib.Variant("s", self._busy())
-        return self._placed_variant()
+        if name == "Follows":
+            return self._follows_variant()
+        if name == "Placed":
+            return self._placed_variant()
+        return None
+
+    def _follows_variant(self):
+        return GLib.Variant("a{ss}", self.follow)
+
+    def _follows_changed(self):
+        # Follow runs on the main loop, like the D-Bus property callbacks.
+        # The shade hides a page only while its leader has an open window.
+        self.session_bus.emit_signal(
+            None, self.DOCK_PATH, "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            GLib.Variant("(sa{sv}as)", (self.DOCK_NAME,
+                                        {"Follows": self._follows_variant()}, [])))
 
     @property
     def compositor_holds(self):
@@ -1312,6 +1340,17 @@ class Dock(Gtk.Window):
         self._step_back(f"{app_id} never took the focus")
         return False
 
+    def _relay_running(self):
+        """Lay the running apps' buttons out again although the windows have
+        not changed - something else that decides which of them deserve one
+        has (a page learning whose it is)."""
+        running = getattr(self, "running", None)
+        if running is None:
+            return False
+        self.running = None                 # _set_running answers only to a change
+        self._set_running(running)
+        return False
+
     def _set_running(self, running):
         """running: app_id -> minimized. Dots on favourites, buttons for the
         rest, in every strip and both halves of the grid."""
@@ -1390,6 +1429,13 @@ class Dock(Gtk.Window):
         dock placed takes its panel, one it did not takes both - and the
         open grid takes the panel it is on, so the dock crosses to the other
         one just as it does for a window."""
+        # A shade pulled down is what the hand is holding and the eye is on.
+        # The dock goes out of sight under it - both halves, whichever panel
+        # the shade is over - and comes back when it folds. It took no
+        # touches there anyway (see _shape), so what was left was a bar
+        # standing under a shade for nothing.
+        if self._shade_over("left") or self._shade_over("right"):
+            return "hidden"
         busy = set(getattr(self, "window_busy", set()))
         if grid_open:
             busy.add(self.grid_side)
@@ -1536,6 +1582,7 @@ class Dock(Gtk.Window):
             # brought here by the grid's finger already: just settle
             for side, pane in panes.items():
                 pane.move(settle=True)
+            self.replace_when_still = False
             return False
 
         def step(t):
@@ -1549,6 +1596,11 @@ class Dock(Gtk.Window):
             if k >= 1.0:
                 self.move = None
                 self._shape()
+                if getattr(self, "replace_when_still", False):
+                    # a half changed width while this was running: it was
+                    # carried to where its old width said (_on_pane_size_allocate)
+                    self.replace_when_still = False
+                    self._place_panes()
                 self._report("dock %s" % ("dipping" if mode == "hidden" else "crossing to " + mode), frames)
                 return False
             return True
@@ -1739,8 +1791,18 @@ class Dock(Gtk.Window):
             name = "blue"
         rgb = ACCENTS.get(name, ACCENTS["blue"])
         debug(f"accent: {name}")
-        self.accent_css.load_from_data(
-            (".corner-back { color: rgb(%s); }" % rgb).encode())
+        # The bar takes a wash of the same colour rather than the colour
+        # itself: it lies under everything the eye is actually looking at,
+        # and a bar in full accent would be the brightest thing on a dark
+        # screen. The dot under a running app is the accent outright - it
+        # is small, and saying "this one is open" is its whole job.
+        wash = ",".join(str(round(base * (1 - ACCENT_WASH) + accent * ACCENT_WASH))
+                        for base, accent in zip(DOCK_BASE, (int(v) for v in rgb.split(","))))
+        self.accent_css.load_from_data((
+            ".corner-back { color: rgb(%s); }"
+            ".dock-pane { background-color: rgba(%s,0.92); }"
+            ".running-dot { color: rgb(%s); }"
+            % (rgb, wash, rgb)).encode())
 
     def _back_tapped(self, side):
         """The corner arrow: the same thing the edge swipe ends in."""
@@ -2068,6 +2130,7 @@ class Dock(Gtk.Window):
         debug("shade open on: %s" % open_)
         self.shade = open_
         self._shape()
+        self._apply_mode()          # under an open shade the dock dips away
 
     def _shade_over(self, panel):
         """Is a shade down over this panel?"""
@@ -2445,14 +2508,26 @@ class Dock(Gtk.Window):
 
     def _on_pane_size_allocate(self, pane, allocation):
         """A half that changed width - a running app got a button, or lost
-        it - stands where its new width says, unless it is on its way."""
+        it - stands where its new width says.
+
+        On its way it cannot: the crossing is driving both halves, frame by
+        frame, from the widths they had when it began. But the new width has
+        to be answered once it arrives, or the two stand as far apart as the
+        old width said and the bar has a black slit down it where they
+        should meet - six pixels of it, measured, when a running app's
+        button went while the dock was crossing.
+        """
         if allocation.width != getattr(pane, "placed_width", None):
             pane.placed_width = allocation.width
             debug("%s half: window %d, slab natural %d, slab allocated %d"
                   % (pane.side, allocation.width, pane.slab.get_preferred_width()[1],
                      pane.slab.get_allocated_width()))
-            if self.move is None and self.half > 1:
+            if self.half <= 1:
+                return
+            if self.move is None:
                 self._place_panes()
+            else:
+                self.replace_when_still = True
 
 
     def _launch_from_file(self):

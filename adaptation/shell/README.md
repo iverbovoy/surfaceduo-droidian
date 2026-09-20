@@ -137,6 +137,11 @@ shade underneath rather than being swallowed by a dock that does nothing with
 it. Closing the shade is a swipe up on the shade itself, which is what the
 hand was aiming at.
 
+And it goes out of sight while any shade is down - both halves dip below the
+edge, the way they do when both panels are taken, and rise again when the
+shade folds. A bar that cannot be touched is a bar standing under the shade
+for nothing; the shade is what the hand is holding at that moment.
+
 That region only reaches the compositor with a commit, and the dock's strip
 draws nothing, so nothing was committed: the strip kept its old region, and
 the bottom 84 px of an open shade (the dock's height) stayed the dock's and
@@ -199,6 +204,17 @@ carries no geometry. The dock publishes what it placed on the session bus -
 `org.sfduo.Dock`, one read-only property `Placed`, app id to `left` or
 `right`, with PropertiesChanged behind it - and the rows follow it. Without
 the dock the rows just leave the panel out.
+
+A settings page belongs to the Settings window that opened it (#90).
+The dock publishes its existing `Follow` relationships as the read-only
+`Follows` property (`a{ss}`, page app id to leader app id), with
+`PropertiesChanged` whenever a relationship changes. `phosh-patches/0014`
+uses it to filter the page's row while the leader has an open window, just
+as the dock already leaves out its extra button. The row stays available:
+closing the leader makes a surviving page appear again, and a settings
+program opened without its leader is listed normally. Opening or closing
+windows, a late app id and a dock restart all refresh the filter. With an
+older dock, or no dock, every window is listed as before.
 
 ### No home bar where the dock is
 
@@ -300,6 +316,21 @@ above and below a window crossing to the other panel. What is repainted is
 still the surface's rectangle - shadow and all, and for anything that
 travels the whole path between its ends, or a slice of the window stays
 behind in the seam.
+
+### A window that fills a panel has no edge to draw
+
+libadwaita outlines a window with a pale hairline and lights the top of its
+header the same way. On a phone with a desktop around the window that is its
+edge; here a window is given a whole panel, so the "edge" lands along the top
+of the screen - a grey line, measured at rgb(70,70,70) over a window of
+rgb(34,34,38) and noticed in use before it was measured.
+
+The package says so once, in `/etc/xdg/gtk-4.0/gtk.css`: a window that has
+taken a panel (`.maximized`, `.tiled`, `.fullscreen`) draws no outline and no
+highlight over its header. GTK4 reads that file for every application and
+every user, which is checked on the device - so it needs no overlay in any
+program's own resources. A window that has not taken a panel, a dialog over
+one, keeps its edge.
 
 ### A new window is not drawn until it is where it belongs
 

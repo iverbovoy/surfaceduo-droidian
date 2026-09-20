@@ -1,0 +1,135 @@
+Subject: [PATCH] running-apps: a settings page belongs to its open leader (#90)
+
+Read the dock's Follows property and filter a page only while its leader
+has a window. Keep the row so it returns on close, a late app-id change,
+or dock disappearance. Older docks continue to list every window.
+
+--- a/src/running-apps.c
++++ b/src/running-apps.c
+@@ -10,6 +10,7 @@
+ 
+ #include "phosh-wayland.h"
+ #include "running-apps.h"
++#include "running-apps-filter.h"
+ #include "shell-priv.h"
+ #include "toplevel-manager.h"
+ #include "toplevel.h"
+@@ -48,6 +49,7 @@
+   GtkWidget    *list;
+   GDBusProxy   *dock;
+   GCancellable *cancel;
++  GHashTable   *open_apps;
+ };
+ 
+ G_DEFINE_TYPE (PhoshRunningApps, phosh_running_apps, GTK_TYPE_BOX)
+@@ -118,12 +120,46 @@
+ }
+ 
+ 
++static gboolean
++filter_row (GtkListBoxRow *row, gpointer data)
++{
++  PhoshRunningApps *self = PHOSH_RUNNING_APPS (data);
++  PhoshToplevel *toplevel = g_object_get_data (G_OBJECT (row), "toplevel");
++  g_autoptr (GVariant) follows = NULL;
++  g_autofree char *owner = NULL;
++
++  /* An old or absent dock leaves every window listed. */
++  if (self->dock)
++    owner = g_dbus_proxy_get_name_owner (self->dock);
++  if (owner)
++    follows = g_dbus_proxy_get_cached_property (self->dock, "Follows");
++
++  return !phosh_running_app_is_follower (follows, self->open_apps,
++                                         phosh_toplevel_get_app_id (toplevel));
++}
++
++
+ static void
+ update_visibility (PhoshRunningApps *self)
+ {
+   g_autoptr (GList) rows = gtk_container_get_children (GTK_CONTAINER (self->list));
+-
+-  gtk_widget_set_visible (GTK_WIDGET (self), rows != NULL);
++  gboolean visible = FALSE;
++
++  /* Keep the rows: a page must reappear when its leader closes. Use all
++   * live windows, including minimized ones, not just the filtered rows. */
++  g_hash_table_remove_all (self->open_apps);
++  for (GList *l = rows; l; l = l->next) {
++    PhoshToplevel *toplevel = g_object_get_data (G_OBJECT (l->data), "toplevel");
++    const char *app_id = phosh_toplevel_get_app_id (toplevel);
++
++    if (app_id && *app_id)
++      g_hash_table_add (self->open_apps, g_strdup (app_id));
++  }
++  gtk_list_box_invalidate_filter (GTK_LIST_BOX (self->list));
++  for (GList *l = rows; l; l = l->next)
++    visible |= gtk_widget_get_child_visible (GTK_WIDGET (l->data));
++
++  gtk_widget_set_visible (GTK_WIDGET (self), visible);
+ }
+ 
+ 
+@@ -220,6 +256,7 @@
+ 
+   if (row)
+     update_row (self, row);
++  update_visibility (self);
+ }
+ 
+ 
+@@ -230,6 +267,7 @@
+ 
+   for (GList *l = rows; l; l = l->next)
+     update_row (self, GTK_LIST_BOX_ROW (l->data));
++  update_visibility (self);
+ }
+ 
+ 
+@@ -275,6 +313,7 @@
+   g_clear_object (&self->dock);
+ 
+   G_OBJECT_CLASS (phosh_running_apps_parent_class)->dispose (object);
++  g_clear_pointer (&self->open_apps, g_hash_table_unref);
+ }
+ 
+ 
+@@ -316,6 +355,8 @@
+   tray = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+   gtk_style_context_add_class (gtk_widget_get_style_context (tray), "phosh-notification-tray");
+   self->list = gtk_list_box_new ();
++  self->open_apps = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
++  gtk_list_box_set_filter_func (GTK_LIST_BOX (self->list), filter_row, self, NULL);
+   gtk_list_box_set_selection_mode (GTK_LIST_BOX (self->list), GTK_SELECTION_NONE);
+   g_signal_connect_swapped (self->list, "row-activated", G_CALLBACK (on_row_activated), self);
+   gtk_box_pack_start (GTK_BOX (tray), self->list, FALSE, FALSE, 0);
+--- /dev/null
++++ b/src/running-apps-filter.h
+@@ -0,0 +1,26 @@
++/*
++ * Copyright (C) 2026 The Surface Duo port
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++
++#pragma once
++
++#include <glib.h>
++
++/* A relationship alone is not enough: independently opened settings must
++ * still be reachable when their saved leader has no window. */
++static inline gboolean
++phosh_running_app_is_follower (GVariant *follows, GHashTable *open_apps, const char *app_id)
++{
++  const char *leader = NULL;
++
++  if (follows == NULL || app_id == NULL || *app_id == '\0' ||
++      !g_variant_is_of_type (follows, G_VARIANT_TYPE ("a{ss}")))
++    return FALSE;
++  if (!g_variant_lookup (follows, app_id, "&s", &leader) ||
++      *leader == '\0' || g_strcmp0 (leader, app_id) == 0)
++    return FALSE;
++
++  return g_hash_table_contains (open_apps, leader);
++}

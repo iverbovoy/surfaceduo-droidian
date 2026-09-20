@@ -43,6 +43,7 @@ gnome-control-center)
     RESOURCE=/org/gnome/Settings/gtk/cc-window.ui
     FROM='<condition>max-width: 550sp</condition>'
     PAGE=/org/gnome/Settings/gtk/cc-panel.ui   # the template every panel is built from
+    STYLE=/org/gnome/Settings/gtk/style.css    # ... and the sheet it brings along
     ;;
 phosh-mobile-settings)
     RESOURCE=/mobi/phosh/MobileSettings/ui/mobile-settings-window.ui
@@ -60,6 +61,7 @@ TO='max-width: 900sp'
 DIR="${XDG_RUNTIME_DIR:-/tmp}/sfduo-one-column/$name"
 UI="$DIR/window.ui"
 PAGE_UI="$DIR/page.ui"
+STYLE_CSS="$DIR/style.css"
 
 # The cache is against both files that decide what is in it: the program,
 # whose resource is taken apart, and this script, which patches it - an
@@ -203,6 +205,31 @@ PAGEPY
         fi
         rm -f "$PAGE_UI.new"
     fi
+    # And its own stylesheet, for the same edge the package takes off every
+    # other window in /etc/xdg/gtk-4.0/gtk.css: a program's own CSS is loaded
+    # at GTK's APPLICATION priority, which outranks that file, so this one
+    # has to be told in its own sheet. A few lines are added to the end of
+    # what it ships.
+    if [ -n "$STYLE" ]; then
+        rm -f "$STYLE_CSS"
+        if gresource extract "$REAL" "$STYLE" > "$STYLE_CSS.new" 2>/dev/null; then
+            {
+                cat "$STYLE_CSS.new"
+                cat <<'CSS'
+
+/* sfduo: a window here is given a whole panel and has no edge to draw */
+window.csd, window.background, window.solid-csd {
+  box-shadow: none;
+  border: none;
+}
+headerbar, .titlebar, .top-bar {
+  box-shadow: none;
+}
+CSS
+            } > "$STYLE_CSS"
+        fi
+        rm -f "$STYLE_CSS.new"
+    fi
     echo "$stamp" > "$DIR/stamp"
 fi
 
@@ -212,6 +239,10 @@ if [ -s "$UI" ]; then
 fi
 if [ -n "$PAGE" ] && [ -s "$PAGE_UI" ]; then
     G_RESOURCE_OVERLAYS="${G_RESOURCE_OVERLAYS:+$G_RESOURCE_OVERLAYS:}$PAGE=$PAGE_UI"
+    export G_RESOURCE_OVERLAYS
+fi
+if [ -n "$STYLE" ] && [ -s "$STYLE_CSS" ]; then
+    G_RESOURCE_OVERLAYS="${G_RESOURCE_OVERLAYS:+$G_RESOURCE_OVERLAYS:}$STYLE=$STYLE_CSS"
     export G_RESOURCE_OVERLAYS
 fi
 exec "$REAL" "$@"
