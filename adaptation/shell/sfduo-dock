@@ -71,6 +71,12 @@ BUTTON_SIZE = 60          # the box it sits in - equal for every app; six of
 DOCK_HEIGHT = 84          # the strip the dock reserves along the bottom
 CONFIG = os.path.expanduser("~/.config/sfduo/dock.json")
 PLACED = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-placed.json")
+# Who opens pages over whom (org.sfduo.Dock.Follow), kept beside the
+# placements: a leader says it once, when it opens a page, and the dock is
+# expected to know it for as long as that page is open - including across a
+# restart of the dock itself, after which two gears stood in the dock, the
+# port's Settings and the page it had opened.
+FOLLOWS = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-follows.json")
 PERF_LOG = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-dock.perf")  # one line per animation
 APP_IDS = os.path.expanduser("~/.config/sfduo/app-ids.json")   # desktop id -> what its window is called
 PANEL_HEIGHT = 32         # phosh's top bar
@@ -112,10 +118,35 @@ BACK_STRIP = 14           # the strip along a busy panel's outer edge that swipe
 BACK_SIZE = 56            # the round arrow that comes out of the edge with the finger
 BACK_ARM = 64             # how far in the finger goes before letting go means back
 BACK_TOP = 48             # the strip starts below the bar, clear of the shade's handle
+BACK_BUTTON = 46          # the resting back button at a busy panel's outer corner (#88)
+BACK_BUTTON_UP = 90       # ... a tenth of the panel above the bottom edge, clear of the band
+# The shell's own accent, as GNOME 47 named them: the button wears the colour
+# chosen in Settings rather than one of its own.
+ACCENTS = {
+    "blue":   "53,132,228",
+    "teal":   "33,144,164",
+    "green":  "58,148,74",
+    "yellow": "200,136,0",
+    "orange": "237,91,0",
+    "red":    "230,45,66",
+    "pink":   "213,97,153",
+    "purple": "145,65,172",
+    "slate":  "111,131,150",
+}
 # Alt+Left is "back" to libadwaita's navigation and to Firefox, and "a word
 # back" to a shell: a swipe over these does nothing.
 TERMINALS = {"cool-retro-term", "org.gnome.Console", "kgx", "org.gnome.Terminal",
              "foot", "Alacritty", "org.wezfurlong.wezterm", "xterm"}
+# Where a back button is offered (#88). Nothing on Wayland can be asked
+# whether it has anywhere to go back to, and a button that does nothing when
+# pressed is worse than no button: the swipe from the edge (#80) can be
+# offered to everything because a gesture nobody knows about costs nothing
+# when it does nothing, but a drawn button is a promise. So it is drawn for
+# the settings the port itself lays out - its own, and the two programs whose
+# pages it opens, which is where the back arrow in the window's own header is
+# in the wrong corner on the right panel - and for anything opened as a page
+# over another window (the Follow map), which is the same thing.
+BACK_APPS = {"org.sfduo.Settings", "org.gnome.Settings", "mobi.phosh.MobileSettings"}
 WATCH_MS = 500            # how often to ask which windows are open, unless told sooner
 # Told by the shell (WindowsChanged) that a window came or went, the dock
 # looks again this long after: half of phoc's close and minimize motions, so
@@ -174,6 +205,20 @@ viewport { background-color: transparent; }
   color: #e8e4d9;
 }
 .edge-back.armed { background-color: #3584e4; color: #ffffff; }
+/* The same arrow at rest, in the corner of a busy panel: a quiet dark disc
+   over somebody else's window, with the arrow itself in the accent chosen in
+   Settings - written over this rule at startup and whenever that choice
+   changes (Dock._accent_css); what is here is the fallback. */
+.corner-back {
+  background: rgba(40,40,44,0.72);
+  border: none;
+  box-shadow: none;
+  border-radius: 999px;
+  color: rgb(53,132,228);
+  padding: 0;
+  min-width: 0; min-height: 0;
+}
+.corner-back:active, .corner-back:hover { background: rgba(40,40,44,0.92); }
 /* The launch curtain: black over both panels while a new window is being put
    on its panel, the app's icon where it is going to be. */
 .curtain { background-color: #000000; }
@@ -601,6 +646,69 @@ class BackArrow(Gtk.Window):
             context.remove_class("armed")
 
 
+class BackButton(Gtk.Window):
+    """Back where the thumb already is: a small arrow at the bottom outer
+    corner of a panel that has a window on it (#88).
+
+    The swipe in from the outer edge (#80) is the same thing with nothing to
+    aim at, and a hand that has not been told about it finds nothing. This is
+    its visible half. It stands at the *outer* corner - the left of the left
+    panel, the right of the right one - so it is under the thumb of the hand
+    holding that side, and it is on whichever panel has a window, so it
+    follows a window across the hinge without knowing anything about windows.
+
+    Another program's back arrow is at the top left of its own header, which
+    on the right panel is the corner nearest the hinge: the far reach of the
+    other hand. This one is the port's answer for every application, not only
+    for the ones whose window it rewrites.
+    """
+
+    def __init__(self, dock, side):
+        super().__init__()
+        self.dock = dock
+        self.side = side
+        self.active = None
+        screen = Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+        self.set_app_paintable(True)
+        self.set_size_request(BACK_BUTTON, BACK_BUTTON)
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_namespace(self, "sfduo-back-button")
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.BOTTOM, True)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT if side == "left"
+                                 else GtkLayerShell.Edge.RIGHT, True)
+        # above the band along the bottom edge, not in it: the band is where
+        # the swipe that puts a window away lives, and a thumb reaching the
+        # very corner of the screen is reaching past the window it is in
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, BACK_BUTTON_UP)
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT if side == "left"
+                                 else GtkLayerShell.Edge.RIGHT, EDGE_MARGIN)
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        button = Gtk.Button()
+        button.get_style_context().add_class("corner-back")
+        button.set_relief(Gtk.ReliefStyle.NONE)
+        icon = Gtk.Image.new_from_icon_name("go-previous-symbolic", Gtk.IconSize.LARGE_TOOLBAR)
+        icon.set_pixel_size(24)
+        button.add(icon)
+        button.connect("clicked", lambda _b: dock._back_tapped(self.side))
+        self.button = button
+        self.add(button)
+
+    def set_active(self, on):
+        """Shown, and taking touches, only while a window is on this panel."""
+        if on == self.active:
+            return
+        self.active = on
+        if on:
+            self.show_all()
+        else:
+            self.hide()
+
+
 class PaneWindow(Gtk.Window):
     """Half of the dock: a layer surface the size of its buttons, put where
     it belongs by its left margin, moved and never redrawn.
@@ -763,6 +871,8 @@ class Dock(Gtk.Window):
         # back from the outer edges (#80)
         self.back_strips = {side: BackStrip(self, side) for side in ("left", "right")}
         self.back_arrows = {side: BackArrow(side) for side in ("left", "right")}
+        self.back_buttons = {side: BackButton(self, side) for side in ("left", "right")}
+        self._follow_accent()
         strip = Gtk.Box()
         strip.set_size_request(-1, DOCK_HEIGHT)
         self.add(strip)
@@ -835,6 +945,25 @@ class Dock(Gtk.Window):
         except (OSError, ValueError):
             return {}
 
+    @staticmethod
+    def _load_follows():
+        """The Follow map as it was left: a page belongs to the program that
+        opened it for as long as both are running, and the dock is restarted
+        more often than they are."""
+        try:
+            with open(FOLLOWS) as fp:
+                return {k: v for k, v in json.load(fp).items()
+                        if isinstance(k, str) and isinstance(v, str)}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_follows(self):
+        try:
+            with open(FOLLOWS, "w") as fp:
+                json.dump(self.follow, fp)
+        except OSError as err:
+            print(f"sfduo-dock: {FOLLOWS}: {err}", file=sys.stderr)
+
     def _save_placed(self):
         try:
             with open(PLACED, "w") as fp:
@@ -870,7 +999,7 @@ class Dock(Gtk.Window):
         in the far half's shade and says where each one is from this
         (phosh-patches/0009)."""
         node = Gio.DBusNodeInfo.new_for_xml(self.DOCK_XML)
-        self.follow = {}          # app_id -> the app whose panel it goes to
+        self.follow = self._load_follows()   # app_id -> the app whose panel it goes to
         self.session_bus.register_object(
             self.DOCK_PATH, node.interfaces[0], self._on_dock_method,
             self._on_dock_property, None)
@@ -891,6 +1020,7 @@ class Dock(Gtk.Window):
             return
         app_id, leader = params.unpack()
         self.follow[app_id] = leader
+        self._save_follows()
         invocation.return_value(None)
         side = self.placed.get(leader)
         debug(f"{app_id} follows {leader} ({side})")
@@ -904,11 +1034,35 @@ class Dock(Gtk.Window):
         known now, the next look at the windows only confirms it."""
         for app_id in app_ids:
             self._move_to(app_id, side)
+        # Called to this panel, it has to be visible on it: a window that was
+        # put away is tiled where it belongs and stays away otherwise, which
+        # is a tap on a dock button doing nothing at all.
+        if app_ids:
+            self._present(app_ids[-1])
         running = getattr(self, "running", {})
         self.window_busy = {self.placed.get(a, "both") for a, minimized in running.items()
                             if not minimized}
         GLib.idle_add(self._apply_mode)
         self.watch_wake.set()
+
+    def _present(self, app_id):
+        """Bring an app's windows out and to the front.
+
+        A window that was put away is not shown again by tiling it, and a tap
+        on a dock button is the hand asking for that app: the port's phoc
+        wakes it and shows it when its client has caught up
+        (org.sfduo.Phoc.Present, phoc-patches/0009). Anywhere else the focus
+        does it, which is what the dock did before there was anything to put
+        a window away with."""
+        try:
+            shown = self.session_bus.call_sync(
+                "org.sfduo.Phoc", "/org/sfduo/Phoc", "org.sfduo.Phoc", "Present",
+                GLib.Variant("(s)", (app_id,)), GLib.VariantType("(u)"),
+                Gio.DBusCallFlags.NO_AUTO_START, 1000, None)[0]
+        except GLib.Error:
+            shown = 0
+        if not shown:
+            subprocess.run(["wlrctl", "toplevel", "focus", f"app_id:{app_id}"], check=False)
 
     def _tile(self, app_id, side):
         """Ask the port's phoc to put an app's windows on a panel.
@@ -1194,6 +1348,7 @@ class Dock(Gtk.Window):
             for button in buttons:
                 button.dot.set_visible(app_id in running)
         self._relayout()
+        self._shape()              # a window came or went: the back button follows it
         return False
 
     def _relayout(self):
@@ -1464,11 +1619,16 @@ class Dock(Gtk.Window):
         # this window draws nothing to commit: without a frame the strip kept
         # its old region, and an open shade lost its bottom 84 px to it.
         self.queue_draw()
-        # the outer edges swipe back where the bottom band swipes the window
+        # the outer edges swipe back where the bottom band swipes the window,
+        # and the outer corner of the same panel carries the arrow for it
         for side, strip in getattr(self, "back_strips", {}).items():
-            strip.set_active(not self.locked and not self._shade_over(side)
-                             and not (self.progress > 0.0 and side == self.grid_side)
-                             and self.mode not in ("both", side))
+            on = (not self.locked and not self._shade_over(side)
+                  and not (self.progress > 0.0 and side == self.grid_side)
+                  and self.mode not in ("both", side))
+            strip.set_active(on)
+            button = getattr(self, "back_buttons", {}).get(side)
+            if button is not None:
+                button.set_active(on and self._back_offered(side))
         for pane in self.panes.values():
             pane.passthrough(self._shade_over(self._panel_of_pane(pane)))
 
@@ -1548,15 +1708,66 @@ class Dock(Gtk.Window):
         self.back_armed = False
         self._back_end(strip)
 
-    def _go_back(self, panel):
-        """Alt+Left to the window on that panel: back, to libadwaita and to
-        Firefox. The one on top when there are two there - a page Settings
-        opened over itself (Follow) - is the follower."""
+    # ---- the shell's accent ------------------------------------------------
+
+    def _follow_accent(self):
+        """Wear the accent colour chosen in Settings, and keep wearing it.
+
+        GNOME 47 gave the desktop nine named accents
+        (`org.gnome.desktop.interface accent-color`); Appearance is where
+        one is picked. The corner's back button is the port's own furniture
+        sitting over somebody else's window, so it takes the colour the rest
+        of the system is wearing rather than inventing one."""
+        self.accent_css = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(), self.accent_css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+        try:
+            self.interface = Gio.Settings.new("org.gnome.desktop.interface")
+        except GLib.Error:
+            self.interface = None
+            return
+        self.interface.connect("changed::accent-color", lambda *_a: self._accent_css())
+        self._accent_css()
+
+    def _accent_css(self):
+        if self.interface is None:
+            return
+        try:
+            name = self.interface.get_string("accent-color")
+        except (GLib.Error, TypeError):
+            name = "blue"
+        rgb = ACCENTS.get(name, ACCENTS["blue"])
+        debug(f"accent: {name}")
+        self.accent_css.load_from_data(
+            (".corner-back { color: rgb(%s); }" % rgb).encode())
+
+    def _back_tapped(self, side):
+        """The corner arrow: the same thing the edge swipe ends in."""
+        debug(f"back button on the {side} panel")
+        threading.Thread(target=self._go_back, args=(side,), daemon=True).start()
+
+    def _back_target(self, panel):
+        """The window that would hear Alt+Left on that panel: the one on top
+        when there are two - a page Settings opened over itself (Follow) is
+        the follower - or nothing when the panel is empty."""
         running = getattr(self, "running", {})
         here = [a for a, p in self.placed.items()
                 if p == panel and a in running and not running[a]]
         followers = [a for a in here if a in getattr(self, "follow", {})]
-        target = (followers or here or [None])[-1]
+        return (followers or here or [None])[-1]
+
+    def _back_offered(self, panel):
+        """Whether to draw the corner button: only where back leads somewhere
+        (see BACK_APPS). The swipe is offered everywhere regardless."""
+        target = self._back_target(panel)
+        return target is not None and (target in BACK_APPS
+                                       or target in getattr(self, "follow", {}))
+
+    def _go_back(self, panel):
+        """Alt+Left to the window on that panel: back, to libadwaita and to
+        Firefox."""
+        target = self._back_target(panel)
         if target in TERMINALS:
             debug(f"back on the {panel} panel: {target} is a terminal, nothing sent")
             return
@@ -2273,7 +2484,7 @@ class Dock(Gtk.Window):
                 threading.Thread(target=self._move_group, args=(group, side),
                                  daemon=True).start()
                 return
-            subprocess.Popen(["wlrctl", "toplevel", "focus", f"app_id:{app_id}"])
+            self._present(app_id)
             return
         before = toplevel_ids()
         try:
