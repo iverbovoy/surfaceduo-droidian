@@ -1,4 +1,4 @@
-From ecf70c84258368fbdaa2f1c2844e0b5f20c9ebc3 Mon Sep 17 00:00:00 2001
+From 8d8733a22c95dd38775f1c5bf5470c20ec79b268 Mon Sep 17 00:00:00 2001
 From: Ivan Verbovoy <ivanverbovoy@gmail.com>
 Date: Sun, 20 Sep 2026 18:08:43 +0300
 Subject: [PATCH] view-ghost: a ghost is the window, not the whole surface
@@ -8,22 +8,30 @@ that the window itself never shows. The ghost was made of the client's whole
 surface, and a client that draws its own decorations draws its shadow
 outside the window's geometry: phoc offsets a view by that geometry when it
 renders it, the ghost did not, so the shadow's margins travelled with the
-picture and the geometry sat a few pixels off.
+picture.
 
-The ghost now takes the geometry's rectangle and the part of the buffer that
-holds it, whatever the buffer's scale. The tiling's ghost gets its
-destination the same way - the tile's own box, where it used to subtract the
-geometry offset by hand to make up for this.
+The ghost now takes the geometry's rectangle - at the geometry's corner,
+which is `view->box` plus the offset, since `view->box` is where the surface
+sits and not where the window does - and the part of the buffer that holds
+it, whatever the buffer's scale. The tiling's ghost gets its destination the
+same way: the tile's own box, where it used to subtract the offset by hand.
 
-Measured on the frames of a crossing, the rows just below the window: a tail
-of 35 to 16 that never reached black before, and black in the next row after.
+What is drawn and what is repainted are not the same thing here. The pixels
+to repaint are the surface's, shadow and all, or a window that moves leaves
+that shadow behind - and for anything that travels it is the whole path
+between its ends, not the two ends: a window crossing the hinge left a slice
+of itself standing in the seam.
+
+Measured on the frames of a crossing: the rows just below the window went
+from a tail of 35 to 16 that never reached black, to black in the next row;
+and the half a window leaves is clean, where a strip of it stayed before.
 ---
- src/sfduo-control.c | 31 +++++++++++++++++++++++--------
- src/view-ghost.c    | 23 +++++++++++++++++++++--
- 2 files changed, 44 insertions(+), 10 deletions(-)
+ src/sfduo-control.c | 35 ++++++++++++++------
+ src/view-ghost.c    | 78 ++++++++++++++++++++++++++++++++++++++++-----
+ 2 files changed, 96 insertions(+), 17 deletions(-)
 
 diff --git a/src/sfduo-control.c b/src/sfduo-control.c
-index 262a272..2a45c36 100644
+index 262a272..abdd3f7 100644
 --- a/src/sfduo-control.c
 +++ b/src/sfduo-control.c
 @@ -62,9 +62,10 @@
@@ -61,11 +69,16 @@ index 262a272..2a45c36 100644
    if (surface && phoc_view_get_tiled_box (view, dir, NULL, &tiled)) {
      struct wlr_box box;
  
-@@ -151,11 +155,11 @@ tile_view (PhocView *view, PhocViewTileDirection dir)
+@@ -149,13 +153,15 @@ tile_view (PhocView *view, PhocViewTileDirection dir)
+     if (view->box.width > 0)
+       scale = (float)box.width / view->box.width;
      phoc_view_get_geometry (view, &geom);
++    /* where the window is: the surface's corner plus the geometry's offset
++     * into it, which is what the tile's box is measured in too */
      from = (struct wlr_box) {
-       .x = view->box.x, .y = view->box.y,
+-      .x = view->box.x, .y = view->box.y,
 -      .width = surface->current.width * scale, .height = surface->current.height * scale,
++      .x = view->box.x + geom.x * scale, .y = view->box.y + geom.y * scale,
 +      .width = geom.width * scale, .height = geom.height * scale,
      };
      to = from;
@@ -76,7 +89,7 @@ index 262a272..2a45c36 100644
      phoc_view_tile (view, dir, NULL);
      phoc_view_ghost_move (view, &from, &to);
      return;
-@@ -240,12 +244,22 @@ wake_finish (PhocWake *wake)
+@@ -240,12 +246,22 @@ wake_finish (PhocWake *wake)
  }
  
  
@@ -99,7 +112,7 @@ index 262a272..2a45c36 100644
    wake_finish (wake);
    return G_SOURCE_REMOVE;
  }
-@@ -386,6 +400,7 @@ phoc_sfduo_control_hold_new_view (PhocView *view)
+@@ -386,6 +402,7 @@ phoc_sfduo_control_hold_new_view (PhocView *view)
    g_debug ("holding %s", phoc_view_get_app_id (view));
    wake = hold_view (view, SFDUO_HOLD_CAP_MS);
    wake->wait_placed = TRUE;
@@ -108,10 +121,67 @@ index 262a272..2a45c36 100644
    wake->last_scale = -1.0f;         /* unknown until the first frame */
  }
 diff --git a/src/view-ghost.c b/src/view-ghost.c
-index 4c57212..40ead7e 100644
+index 4c57212..ec0c567 100644
 --- a/src/view-ghost.c
 +++ b/src/view-ghost.c
-@@ -299,6 +299,7 @@ ghost_new (PhocView *view, PhocViewGhostKind kind, const struct wlr_box *to)
+@@ -59,7 +59,8 @@ struct _PhocViewGhost {
+   PhocOutput               *output;
+   struct wlr_client_buffer *buffer;     /* locked while the ghost lives */
+   struct wlr_fbox           src_box;
+-  struct wlr_box            box;        /* layout coordinates, full size */
++  struct wlr_box            box;        /* the window itself, in layout coordinates */
++  struct wlr_box            pad;        /* what the surface has around it: the client's shadow */
+   enum wl_output_transform  transform;
+   PhocViewGhostKind         kind;
+   float                     progress;   /* 0 as the window was .. 1 gone */
+@@ -77,12 +78,43 @@ static void on_output_destroyed (gpointer data, GObject *where_the_object_was);
+ 
+ static void damage_box (PhocViewGhost *self, struct wlr_box box);
+ 
++/* The window plus whatever its client draws around it. The ghost draws the
++ * window alone, but the pixels that have to be repainted are the surface's:
++ * a window that moves leaves its shadow behind otherwise - a pale strip
++ * along the edge it left, seen after a window crossed to the other panel. */
++static struct wlr_box
++with_shadow (PhocViewGhost *self, struct wlr_box box)
++{
++  box.x -= self->pad.x;
++  box.y -= self->pad.y;
++  box.width += self->pad.width;
++  box.height += self->pad.height;
++  return box;
++}
++
++
+ static void
+ damage (PhocViewGhost *self)
+ {
+-  damage_box (self, self->box);
+-  if (self->kind == PHOC_VIEW_GHOST_MOVE)
+-    damage_box (self, self->to);
++  if (self->to.width > 0) {
++    /* Anything that travels is drawn all the way between its two ends, so
++     * the whole path is what has to be repainted. The ends alone left the
++     * ground between them as it was: a window crossing the hinge left a
++     * slice of itself in the seam. */
++    struct wlr_box from = with_shadow (self, self->box), to = with_shadow (self, self->to);
++    struct wlr_box box;
++    int x2 = MAX (from.x + from.width, to.x + to.width);
++    int y2 = MAX (from.y + from.height, to.y + to.height);
++
++    box.x = MIN (from.x, to.x);
++    box.y = MIN (from.y, to.y);
++    box.width = x2 - box.x;
++    box.height = y2 - box.y;
++    damage_box (self, box);
++    return;
++  }
++
++  damage_box (self, with_shadow (self, self->box));
+ }
+ 
+ 
+@@ -299,6 +331,7 @@ ghost_new (PhocView *view, PhocViewGhostKind kind, const struct wlr_box *to)
    struct wlr_surface *surface = view->wlr_surface;
    PhocViewGhost *self;
    PhocOutput *output;
@@ -119,7 +189,7 @@ index 4c57212..40ead7e 100644
    float scale;
  
    if (!phoc_desktop_get_enable_animations (desktop) || view->parent != NULL)
-@@ -320,13 +321,31 @@ ghost_new (PhocView *view, PhocViewGhostKind kind, const struct wlr_box *to)
+@@ -320,13 +353,42 @@ ghost_new (PhocView *view, PhocViewGhostKind kind, const struct wlr_box *to)
    wlr_surface_get_buffer_source_box (surface, &self->src_box);
    self->transform = surface->current.transform;
  
@@ -132,14 +202,27 @@ index 4c57212..40ead7e 100644
 +   * buffer that holds it. */
    scale = phoc_view_get_scale (view);
 +  phoc_view_get_geometry (view, &geom);
++  /* view->box is where the *surface* sits; the window starts geom.x/y into
++   * it. Both were the same until clients with their own decorations came
++   * along - and a ghost drawn at the surface's corner is the window drawn
++   * that much up and to the left of itself. */
    self->box = (struct wlr_box) {
-     .x = view->box.x,
-     .y = view->box.y,
+-    .x = view->box.x,
+-    .y = view->box.y,
 -    .width = surface->current.width * scale,
 -    .height = surface->current.height * scale,
++    .x = view->box.x + geom.x * scale,
++    .y = view->box.y + geom.y * scale,
 +    .width = geom.width * scale,
 +    .height = geom.height * scale,
    };
++  /* what the client draws outside the window, kept for the damage */
++  self->pad = (struct wlr_box) {
++    .x = (int) (geom.x * scale),
++    .y = (int) (geom.y * scale),
++    .width = (int) ((surface->current.width - geom.width) * scale),
++    .height = (int) ((surface->current.height - geom.height) * scale),
++  };
 +  if (surface->current.width > 0 && self->src_box.width > 0) {
 +    /* buffer pixels per surface-local pixel, whatever the buffer's scale */
 +    double bx = self->src_box.width / (double) surface->current.width;

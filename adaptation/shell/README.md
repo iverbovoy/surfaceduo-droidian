@@ -292,6 +292,15 @@ Settings over its own list - fades where it stands instead: what the eye
 follows there is the window underneath, and a copy of this one flying down
 over it is one motion too many (phoc-patches/0010).
 
+A ghost is the window, not the client's whole surface (phoc-patches/0011).
+A client that draws its own decorations draws its shadow outside the
+window's geometry, and phoc offsets a view by that geometry when it renders
+it: a ghost made of the surface carried those margins along, a pale edge
+above and below a window crossing to the other panel. What is repainted is
+still the surface's rectangle - shadow and all, and for anything that
+travels the whole path between its ends, or a slice of the window stays
+behind in the seam.
+
 ### A new window is not drawn until it is where it belongs
 
 A window maps at whatever size its client asked for and is placed a beat
