@@ -566,8 +566,14 @@ echo "$P" > /sys/class/backlight/panel1-backlight/brightness 2>/dev/null
 exit 0
 BRT
 chmod 755 "$PKG/usr/local/sbin/sfduo-brightness-sync.sh"
+# The backlights: the `video` group writes them, so the shell's own keeper
+# can put a level back the instant the panels are reset to full, without a
+# bus round trip through the settings daemon (#87). GROUP/MODE alone reach
+# the device node, not the sysfs attribute - Android's init leaves those
+# `system:system` - so the attribute is taken in hand the way the torch's is.
 cat > "$PKG/etc/udev/rules.d/98-sfduo-backlight.rules" <<'RULES'
 SUBSYSTEM=="backlight", GROUP="video", MODE="0664"
+SUBSYSTEM=="backlight", ACTION=="add", RUN+="/bin/sh -c 'chgrp video /sys%p/brightness && chmod 0664 /sys%p/brightness'"
 RULES
 
 # Flashlight: let the video group drive the torch LEDs without root.
@@ -628,6 +634,29 @@ def emit_lid(fd, closed):
     ev(fd, EV_SW, SW_LID, 1 if closed else 0)
     ev(fd, EV_SYN, 0, 0)
 
+LEVEL = "/run/user/32011/sfduo-brightness"      # the shell's level, kept by sfduo-brightness
+
+def restore_brightness():
+    """The levels the screen went down with, written while it is still dark.
+
+    Whatever lights the panels sets them to full first, and the shell's own
+    keeper can only answer once that has happened - which is a bright frame
+    or two on every open. Here it is done before the light. The numbers are
+    the panels' own, as the session keeper last saw them (#87)."""
+    try:
+        with open(LEVEL) as f:
+            levels = [int(v) for v in f.read().split()]
+    except (OSError, ValueError):
+        return
+    for p, level in zip(("panel0-backlight", "panel1-backlight"), levels):
+        if level < 1:
+            continue
+        try:
+            with open("/sys/class/backlight/%s/brightness" % p, "w") as f:
+                f.write(str(level))
+        except OSError:
+            pass
+
 def screens_on(fd):
     ev(fd, EV_KEY, KEY_WAKEUP, 1); ev(fd, EV_SYN, 0, 0)
     ev(fd, EV_KEY, KEY_WAKEUP, 0); ev(fd, EV_SYN, 0, 0)
@@ -637,7 +666,7 @@ def screens_on(fd):
                 f.write("0")
         except OSError:
             pass
-    os.system("/usr/local/sbin/sfduo-brightness-sync.sh")
+    restore_brightness()
 
 def main():
     setup_gpio()

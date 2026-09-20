@@ -19,11 +19,15 @@
 # time the device was opened - long enough to be the first thing seen. The
 # beat stays as a net underneath, slow, for whatever the notification misses.
 #
-# The restoring is done by handing the shell back its own number: writing
-# gnome-settings-daemon's Brightness property, even with the value it already
-# holds, makes it write the hardware again. Going to the hardware directly
-# needs a privilege this has no business holding, and logind's SetBrightness
-# refuses anything that is not the seat's own session.
+# The restoring is done twice over. The panels themselves first, written
+# straight away - the session user is in `video` and a udev rule gives that
+# group the two backlights - because the level that matters is the one the
+# panel lights at, and it is written while the panel is still dark: the
+# level goes to full a moment before the light comes on, so put back at once
+# there is nothing to see at all. Then the shell is handed back its own
+# number, which makes gnome-settings-daemon write the hardware too and keeps
+# its idea of the level and the hardware's the same. Going through the shell
+# alone was a bus round trip that landed after the panel had lit.
 
 import os
 import sys
@@ -42,6 +46,23 @@ POLL_MS = 2000          # the net under the watch, not the way it usually works
 # install, the screen all but dark - and differed from install to install.
 DEFAULT_PERCENT = 40
 DEFAULT_DONE = os.path.expanduser("~/.local/state/sfduo/brightness-default")
+# What the root side reads when the device is opened: the panels are set to
+# full before they are lit, and only root can answer that early (#87). The
+# panels' own numbers, not the shell's percentage - the two are not a
+# straight line (37% is 48 of 255 here), and what has to be put back is
+# exactly what the panels were showing.
+LEVEL = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-brightness")
+
+
+def write(panel, value):
+    """Straight to the panel. Nothing here is lost if it fails - the shell is
+    asked for the same thing a moment later."""
+    try:
+        with open(SYSFS % (panel, "brightness"), "w") as fp:
+            fp.write(str(value))
+        return True
+    except OSError:
+        return False
 
 
 def read(panel, attr):
@@ -109,6 +130,23 @@ class Keeper:
         self.check()
         return True
 
+    @staticmethod
+    def remember(levels):
+        """Leave the panels' own levels where the lid daemon can find them."""
+        try:
+            with open(LEVEL, "w") as fp:
+                fp.write(" ".join(str(v) for v in levels) + "\n")
+        except OSError:
+            pass
+
+    @staticmethod
+    def recall():
+        try:
+            with open(LEVEL) as fp:
+                return [int(v) for v in fp.read().split()]
+        except (OSError, ValueError):
+            return []
+
     def wanted(self):
         """The level the shell believes it is at, as a percentage."""
         try:
@@ -122,13 +160,24 @@ class Keeper:
 
     def check(self):
         percent = self.wanted()
-        if percent is None or percent < 0 or percent >= 100:
+        if percent is None or percent < 0:
             return True
 
-        reset = any(read(p, "brightness") == read(p, "max_brightness")
-                    for p in PANELS)
+        levels = [read(p, "brightness") for p in PANELS]
+        tops = [read(p, "max_brightness") for p in PANELS]
+        reset = any(level == top for level, top in zip(levels, tops))
         if not reset:
+            if percent < 100 and all(levels):
+                self.remember(levels)     # what to put back next time
             return True
+        if percent >= 100:
+            return True
+
+        # The panels first, with what they were showing before: whatever is
+        # about to light them has just set them to full, and this is written
+        # while they are still dark.
+        for panel, level in zip(PANELS, self.recall()):
+            write(panel, level)
 
         try:
             self.props.call_sync(
