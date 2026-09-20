@@ -1,0 +1,256 @@
+From 1eca0b6c82b33ca1617364973a19159dad356dec Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Sun, 20 Sep 2026 12:49:15 +0300
+Subject: [PATCH] sfduo-control: org.sfduo.Phoc.Present brings a window back,
+ ready
+
+The port's Settings opens its pages in GNOME Settings and Mobile Settings
+and now keeps them running, with their windows put away between pages: a
+page is then a switch inside a program that is already up - a tenth of a
+second - rather than a program started to show it, which is over one.
+
+Two things were in the way. A window put away does not come back when its
+program is asked for another page: the program presents it, but a present
+with no activation token moves nothing here, and phoc brings a view back
+when it is focused, which nobody does. And a minimized view is told it is
+suspended, so its client stops drawing: it reaches the page only once the
+window is on the screen again, and the eye caught the page it was put away
+on - or, when it went back through the program's own first screen, an empty
+column - while the new page was still being built behind it.
+
+Present(app_id) answers both. A view that is not minimized is focused, as
+before. A minimized one is taken out of that state at once, which wakes its
+client, but with nothing to see: it is drawn at zero alpha while its
+commits are counted, and the window appears when the client has stopped
+drawing - the page reached, its own transition over - or when it has had
+700 ms, whichever comes first. The quiet is 110 ms, which has to outlast
+the pause between the client's first frame and the page asked for: GNOME
+Settings builds a page it has not shown before in about 65 ms and draws
+nothing meanwhile.
+
+Measured on the device, from the tap on a row to the page on the screen:
+1180 ms before, 320-430 ms now, in one motion instead of two.
+---
+ src/sfduo-control.c | 174 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 174 insertions(+)
+
+diff --git a/src/sfduo-control.c b/src/sfduo-control.c
+index ac3861f..3efe8ac 100644
+--- a/src/sfduo-control.c
++++ b/src/sfduo-control.c
+@@ -9,6 +9,7 @@
+ #include "phoc-config.h"
+ 
+ #include "desktop.h"
++#include "seat.h"
+ #include "server.h"
+ #include "sfduo-control.h"
+ #include "view.h"
+@@ -28,10 +29,41 @@
+  * other jumped after it. Here nothing is focused or raised: the stacking
+  * stays as it was, and each window slides across instead of jumping
+  * (phoc_view_ghost_move).
++ *
++ * Present(app_id) brings an app's window back and to the front. The port's
++ * Settings keeps the programs whose pages it opens alive and puts their
++ * windows away rather than closing them, so that the next page is a switch
++ * inside a running program rather than a cold start - a tenth of a second
++ * instead of over one. Asking such a program for another page over its own
++ * D-Bus action does not bring its window back: it presents the window, but
++ * a client's present with no activation token moves nothing here, and phoc
++ * brings a minimized view back when it is focused. So the caller says it
++ * outright.
++ *
++ * A window that was put away is woken before it is shown. A minimized view
++ * is told it is suspended, so its client stops its clock: the page asked
++ * for is drawn only once the window is back on the screen, and the eye
++ * catches the window as it was put away - for GNOME Settings an empty
++ * column - with the page sliding in after it. So Present takes the view out
++ * of its minimized state at once, which wakes the client, but keeps it
++ * invisible; when the client stops drawing - the page reached, its own
++ * slide over - or when it has had long enough, the window appears, already
++ * the page that was asked for.
++ *
++ * The waiting starts at the client's first frame, not at the call: a client
++ * that has been asleep takes a moment to draw anything at all, and counting
++ * the quiet from before it woke showed the window at the page it was put
++ * away from, with the new one arriving after - the very thing this is for.
+  */
+ 
+ #define SFDUO_BUS_NAME "org.sfduo.Phoc"
+ #define SFDUO_OBJECT_PATH "/org/sfduo/Phoc"
++/* No drawing for this long and the client is taken to be ready. It has to
++ * outlast the pause between a client's first frame - what it had when it was
++ * put away - and the page asked for: GNOME Settings builds a page it has not
++ * shown before in about 65 ms, and draws nothing meanwhile. */
++#define SFDUO_WAKE_QUIET_MS 110
++#define SFDUO_WAKE_CAP_MS 700      /* ... and this is as long as it is ever waited for */
+ 
+ static const char introspection_xml[] =
+   "<node>"
+@@ -41,6 +73,10 @@ static const char introspection_xml[] =
+   "      <arg name='side' type='s' direction='in'/>"
+   "      <arg name='tiled' type='u' direction='out'/>"
+   "    </method>"
++  "    <method name='Present'>"
++  "      <arg name='app_id' type='s' direction='in'/>"
++  "      <arg name='presented' type='u' direction='out'/>"
++  "    </method>"
+   "  </interface>"
+   "</node>";
+ 
+@@ -80,6 +116,122 @@ tile_view (PhocView *view, PhocViewTileDirection dir)
+ }
+ 
+ 
++/* every mapped window of an app, oldest first */
++static GSList *
++views_of (const char *app_id)
++{
++  PhocDesktop *desktop = phoc_server_get_desktop (phoc_server_get_default ());
++  GSList *found = NULL;
++
++  for (GList *l = phoc_desktop_get_views (desktop)->head; l; l = l->next) {
++    PhocView *view = PHOC_VIEW (l->data);
++
++    if (!phoc_view_is_mapped (view) || view->parent != NULL)
++      continue;
++    if (g_strcmp0 (phoc_view_get_app_id (view), app_id) != 0)
++      continue;
++    found = g_slist_prepend (found, view);
++  }
++  return g_slist_reverse (found);
++}
++
++
++/* A window woken behind the scenes, on its way to being shown. */
++typedef struct {
++  PhocView          *view;
++  struct wl_listener commit;
++  guint              quiet_id;
++  guint              cap_id;
++  gint64             started;
++  guint              commits;
++} PhocWake;
++
++
++static void
++wake_finish (PhocWake *wake)
++{
++  g_clear_handle_id (&wake->quiet_id, g_source_remove);
++  g_clear_handle_id (&wake->cap_id, g_source_remove);
++  wl_list_remove (&wake->commit.link);
++
++  g_debug ("wake done: %u frames in %" G_GINT64_FORMAT " ms%s", wake->commits,
++           (g_get_monotonic_time () - wake->started) / 1000,
++           wake->view ? "" : " (the window went)");
++
++  if (wake->view) {
++    PhocSeat *seat = phoc_server_get_last_active_seat (phoc_server_get_default ());
++
++    g_object_set (wake->view, "alpha", 1.0f, NULL);
++    phoc_view_damage_whole (wake->view);
++    phoc_seat_set_focus_view (seat, wake->view);
++    g_object_remove_weak_pointer (G_OBJECT (wake->view), (gpointer *) &wake->view);
++  }
++  g_free (wake);
++}
++
++
++static gboolean
++on_wake_quiet (gpointer data)
++{
++  PhocWake *wake = data;
++
++  wake->quiet_id = 0;
++  wake_finish (wake);
++  return G_SOURCE_REMOVE;
++}
++
++
++static gboolean
++on_wake_cap (gpointer data)
++{
++  PhocWake *wake = data;
++
++  wake->cap_id = 0;
++  wake_finish (wake);
++  return G_SOURCE_REMOVE;
++}
++
++
++static void
++on_wake_commit (struct wl_listener *listener, void *data)
++{
++  PhocWake *wake = wl_container_of (listener, wake, commit);
++
++  /* still drawing: the page is on its way */
++  wake->commits++;
++  g_debug ("wake frame %u at %" G_GINT64_FORMAT " ms", wake->commits,
++           (g_get_monotonic_time () - wake->started) / 1000);
++  g_clear_handle_id (&wake->quiet_id, g_source_remove);
++  wake->quiet_id = g_timeout_add (SFDUO_WAKE_QUIET_MS, on_wake_quiet, wake);
++}
++
++
++static void
++wake_view (PhocView *view)
++{
++  PhocWake *wake;
++
++  if (view->wlr_surface == NULL) {
++    phoc_view_set_minimized (view, FALSE);
++    return;
++  }
++
++  wake = g_new0 (PhocWake, 1);
++  wake->view = view;
++  wake->started = g_get_monotonic_time ();
++  g_debug ("waking %s", phoc_view_get_app_id (view));
++  g_object_add_weak_pointer (G_OBJECT (view), (gpointer *) &wake->view);
++  /* awake - its client starts drawing again - but with nothing to see yet */
++  g_object_set (view, "alpha", 0.0f, NULL);
++  phoc_view_set_minimized (view, FALSE);
++  wake->commit.notify = on_wake_commit;
++  wl_signal_add (&view->wlr_surface->events.commit, &wake->commit);
++  /* nothing counted until it draws; the cap is what saves a client that
++   * never does */
++  wake->cap_id = g_timeout_add (SFDUO_WAKE_CAP_MS, on_wake_cap, wake);
++}
++
++
+ static void
+ handle_method_call (GDBusConnection       *connection,
+                     const char            *sender,
+@@ -95,6 +247,28 @@ handle_method_call (GDBusConnection       *connection,
+   PhocViewTileDirection dir;
+   guint tiled = 0;
+ 
++  if (g_strcmp0 (method_name, "Present") == 0) {
++    GSList *views;
++    PhocSeat *seat = phoc_server_get_last_active_seat (phoc_server_get_default ());
++    guint presented = 0;
++
++    g_variant_get (parameters, "(&s)", &app_id);
++    views = views_of (app_id);
++    for (GSList *l = views; l; l = l->next) {
++      PhocView *view = PHOC_VIEW (l->data);
++
++      if (phoc_view_is_minimized (view))
++        wake_view (view);                 /* shown once it has caught up */
++      else
++        phoc_seat_set_focus_view (seat, view);
++      presented++;
++    }
++    g_slist_free (views);
++    g_debug ("Present %s: %u", app_id, presented);
++    g_dbus_method_invocation_return_value (invocation, g_variant_new ("(u)", presented));
++    return;
++  }
++
+   if (g_strcmp0 (method_name, "Tile") != 0) {
+     g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_METHOD,
+                                            "No method %s", method_name);
+-- 
+2.43.0
+

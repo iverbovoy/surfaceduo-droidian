@@ -199,25 +199,48 @@ pages for hardware this phone does not have.
 `sfduo-settings` ("Settings" in the grid) is the one list now, grouped for
 this device: Connections, Screen, Sound and Notifications, Surface Duo,
 Security, Apps and Accounts, System, For Developers. Each row opens its page
-in whichever program has it (`gnome-control-center wifi`,
-`phosh-mobile-settings osk`, `gnome-control-center system datetime`) or a
-page of its own. Everything stays on the panel Settings was opened on: before
+in whichever program has it, or a page of its own. The page is asked for on
+the session bus - GNOME Settings' `launch-panel` action, Mobile Settings'
+`set-panel`, both taking the panel and its arguments - not by running the
+program again. Everything stays on the panel Settings was opened on: before
 a row opens its page, Settings asks the dock to put that program's window on
 its own panel (`org.sfduo.Dock.Follow(app_id, leader)`), so the page comes
 up over the list and the other panel is left as it was; a window of that
 program already open on the other panel is moved across. The Surface Duo
 page says what is installed; its switches are #20.
 
-A page from another program is a window a second away on a cold start,
-and the first version showed exactly that: a tap, a second of nothing, a
-floating window jumping into place under a black curtain. Now Settings
-answers the tap in its own motion - it slides in a page titled as the one
-coming, with a spinner if the wait passes half a second - and the other
-program's window lands on it. The dock's curtain for a window that follows
-another is the colour of a libadwaita window, without an icon, so it reads
-as that page. Back closes the window; Settings is the active window again
-and slides its stand-in away, back to the list. If the window never comes,
-the stand-in goes by itself after 8 s.
+### A page in a tenth of a second
+
+A page used to cost over a second, every time. Settings ran
+`gnome-control-center <panel>`: a whole GTK process started to hand a panel
+name to the instance already running, and then exit. Measured on 2026-09-20,
+from the tap on a row to the page's first frame: 1180 ms that way, 1070 ms
+for the same page asked for on the bus with the program not running, and
+35-60 ms for the call with the program running, the page drawn 120 ms after
+the tap. So the programs are asked on the bus, and they are kept running
+while this window is open - closing it tells them to quit, which matters
+because GNOME Settings is 145 MB.
+
+Back from a page puts its window away rather than closing it (the wrapper
+takes Alt+Left before the program's own navigation sees it, so the window is
+put away on the page it is showing, not on the program's first screen), and
+the program waits there for the next page.
+
+Bringing that window back is the compositor's (`org.sfduo.Phoc.Present`,
+phoc-patches/0009), and it is asked for before the page is: a window put
+away is told it is suspended and its client stops drawing, so it reaches the
+page only once it is on the screen - the eye would catch the page it was put
+away on while the new one is built. Present wakes the client with nothing to
+see and shows the window once it has stopped drawing. From the tap to the
+page, one motion: 320-430 ms, or 190 ms when the page asked for is the one
+it already has.
+
+A cold start is still a second and a half, and that is what the stand-in is
+for: Settings answers the tap in its own motion - a page titled as the one
+coming, with a spinner if the wait passes half a second - and the program's
+window lands on it. The dock's curtain for a window that follows another is
+the colour of a libadwaita window, without an icon, so it reads as that
+page. If the window never comes, the stand-in goes by itself after 8 s.
 
 Left out, on purpose, and why:
 
@@ -244,21 +267,27 @@ and named by D-Bus service files in `/usr/local/share/dbus-1/services` (both
 are D-Bus activated), takes the window's `.ui` from the installed binary at
 launch, raises the line to 900sp and serves it through `G_RESOURCE_OVERLAYS`:
 list, then page, on one panel; two columns spanned across both. It
-re-extracts when the binary changes and runs the program untouched if the
-line is not in the file any more. A session bus that started before the
+re-extracts when either the binary or this script changes - the cache is
+stamped with both, followed through the symlink it is started by - and runs
+the program untouched if the line is not in the file any more. A session bus that started before the
 service directory existed needs `org.freedesktop.DBus.ReloadConfig` or a new
 login.
 
-Their own lists are not the way in any more, Settings is. Going back to
-the list closes the window outright, and Settings is underneath where it
-was: the rewritten `.ui` connects the list page's `shown` signal to
-`gtk_window_close`, which GtkBuilder finds by name in the loaded libraries
-when the window's class has no callback of that name. The list's column
-also holds a single "‹ Settings" button (`window.close`), for the moment
-the page is on screen and in case the signal never comes. The list is still in the `.ui`, hidden
-(the programs' code holds on to it), with the search and menu buttons above
-it. The same launch-time rewrite does it, with Python's XML parser rather
-than sed; a file of an unexpected shape gets the width change only.
+Their own lists are not the way in any more, Settings is. Back puts the
+window away and leaves Settings showing underneath: the rewritten `.ui`
+takes Alt+Left - what the dock's swipe from the edge sends - on a shortcut
+controller in the capture phase and answers it with `window.minimize`,
+before the program's own navigation sees it. So the window is put away on
+the page it is showing, and the program stays: the next page it is asked
+for is a switch inside it, and asked for the page it already has there is
+nothing to change at all. Going back through the program's first screen
+instead - an empty column here - meant coming back on that screen, with the
+page arriving after. The column still holds a single "‹ Settings" button
+(`window.minimize`) for the moment it is on screen. The list is still in the
+`.ui`, hidden (the programs' code holds on to it), with the search and menu
+buttons above it. The same launch-time rewrite does it, with Python's XML
+parser rather than sed; a file of an unexpected shape gets the width change
+only.
 
 While Settings runs, the dock shows no button of its own for a window that
 follows it: GNOME Settings over Settings was a second gear beside the

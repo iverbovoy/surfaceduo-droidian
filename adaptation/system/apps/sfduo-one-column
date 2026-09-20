@@ -22,12 +22,15 @@
 #
 # Neither program's own list of pages is the way in any more: the port's
 # Settings is (sfduo-settings), and it opens their pages over itself, on its
-# panel. So the list's column holds one button instead, "Settings", that
-# closes the window and leaves the port's Settings showing under it: the back
-# arrow on a page leads there. The list is still in the file, hidden - the
-# program's code holds on to it - and the search and menu buttons above it
-# are hidden with it. Should the file not have the shape this expects, only
-# the width is changed.
+# panel. So the list's column holds one button instead, "Settings", that puts
+# the window away and leaves the port's Settings showing under it: the back
+# arrow on a page leads there. The window is minimized rather than closed, so
+# the program stays and the next page it is asked for is a switch inside it -
+# a tenth of a second against the second a cold start costs (#86); the port's
+# Settings tells it to quit when it closes itself. The list is still in the
+# file, hidden - the program's code holds on to it - and the search and menu
+# buttons above it are hidden with it. Should the file not have the shape
+# this expects, only the width is changed.
 #
 # Mobile Settings draws nothing at all with GTK's own default renderer on
 # this device - an empty grey window - and draws with GSK_RENDERER=gl. The
@@ -56,7 +59,10 @@ TO='max-width: 900sp'
 DIR="${XDG_RUNTIME_DIR:-/tmp}/sfduo-one-column/$name"
 UI="$DIR/window.ui"
 
-stamp=$(stat -c '%Y %s' "$REAL" 2>/dev/null)
+# The cache is against both files that decide what is in it: the program,
+# whose resource is taken apart, and this script, which patches it - an
+# upgrade of either has to be met with a new copy and not a stale one.
+stamp=$(stat -Lc '%Y %s' "$REAL" "$0" 2>/dev/null | tr '\n' ' ')
 if [ "$(cat "$DIR/stamp" 2>/dev/null)" != "$stamp" ]; then
     mkdir -p "$DIR"
     rm -f "$UI" "$DIR/stamp"
@@ -86,7 +92,7 @@ def hide(obj):
 def button():
     """One button over the whole column: back to the port's Settings."""
     btn = ET.Element("object", {"class": "GtkButton"})
-    for name, value in (("action-name", "window.close"), ("hexpand", "True"),
+    for name, value in (("action-name", "window.minimize"), ("hexpand", "True"),
                         ("vexpand", "True"), ("tooltip-text", "Back to Settings")):
         ET.SubElement(btn, "property", name=name).text = value
     ET.SubElement(ET.SubElement(btn, "style"), "class", name="flat")
@@ -117,15 +123,24 @@ try:
                 hide(c.find("object"))
     content.remove(listing)
     hide(listing)
-    # Back to the root closes the window outright: the sidebar page being
-    # shown is the moment, and GtkBuilder finds gtk_window_close by name in
-    # the loaded libraries when the class has no such callback. The button
-    # stays for the moment the page shows, and in case the signal never
-    # comes.
+    # Back puts the window away from the page it is on, without going
+    # through the program's own first screen: Alt+Left is taken before the
+    # navigation sees it. That screen is a column with one button here, and
+    # a window put away on it came back on it - a blank page for a tenth of
+    # a second while the page asked for was built, because a window put away
+    # is suspended and its client only starts drawing when it is shown
+    # again. Put away on its page, it comes back on that page; asked for the
+    # same one again, there is nothing to change at all.
     template = root.find("template")
     if template is not None:
-        ET.SubElement(page, "signal", name="shown", handler="gtk_window_close",
-                      object=template.get("class"), swapped="yes")
+        controller = ET.SubElement(ET.SubElement(template, "child"), "object",
+                                   {"class": "GtkShortcutController"})
+        ET.SubElement(controller, "property", name="scope").text = "local"
+        ET.SubElement(controller, "property", name="propagation-phase").text = "capture"
+        shortcut = ET.SubElement(ET.SubElement(controller, "child"), "object",
+                                 {"class": "GtkShortcut"})
+        ET.SubElement(shortcut, "property", name="trigger").text = "<Alt>Left"
+        ET.SubElement(shortcut, "property", name="action").text = "action(window.minimize)"
     column = ET.SubElement(content, "object", {"class": "GtkBox"})
     ET.SubElement(column, "property", name="orientation").text = "vertical"
     ET.SubElement(column, "child").append(button())

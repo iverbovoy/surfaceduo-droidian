@@ -8,8 +8,12 @@
 # grouping in its code, so regrouping it would be a third patched binary to
 # keep in step with its package. This is a list of our own instead: the
 # pages grouped for a phone with two panels, each row opening the page it
-# names in whichever program has it - `gnome-control-center <panel>`,
-# `phosh-mobile-settings <panel>` - or a page of this one.
+# names in whichever program has it - GNOME Settings' `launch-panel` action
+# or Mobile Settings' `set-panel`, asked for on the session bus - or a page
+# of this one. The programs are kept running while this window is open, so
+# that a page is a switch inside one of them (a tenth of a second) and not a
+# program started to show it (over a second, #86); they are told to quit
+# when this window goes.
 #
 # Left out on purpose: Printers; NFC (nfcd does not start, there is no NFC
 # device); Waydroid (not installed); Remote desktop; Thunderbolt and Device
@@ -48,6 +52,11 @@ APP_ID = "org.sfduo.Settings"
 GNOME = "gnome-control-center"
 MOBILE = "phosh-mobile-settings"
 APP_IDS = {GNOME: "org.gnome.Settings", MOBILE: "mobi.phosh.MobileSettings"}
+# Both programs are one GApplication each, with an action for the page to
+# show: asking for a page on the bus switches the one already running
+# instead of starting a second process to tell it (#86).
+BUS_PATHS = {GNOME: "/org/gnome/Settings", MOBILE: "/mobi/phosh/MobileSettings"}
+PAGE_ACTIONS = {GNOME: "launch-panel", MOBILE: "set-panel"}
 
 # (title, subtitle, icon, what it opens)
 #   ("gnome", panel, subpage...)  a GNOME Settings page
@@ -104,26 +113,107 @@ BLOCKS = [
 ]
 
 
+_bus = None
+
+
+def bus():
+    global _bus
+    if _bus is None:
+        _bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    return _bus
+
+
+def said(name, path, interface, method, args, flags=Gio.DBusCallFlags.NONE, then=None):
+    """A call whose answer nobody waits for, and what to do once it comes.
+
+    Everything here is said while a finger is still on the screen, and one
+    of these - activating a program that is not running yet - takes the best
+    part of a second to come back. Waiting for any of them would hold the
+    list still for that long."""
+    def done(conn, result):
+        try:
+            conn.call_finish(result)
+        except GLib.Error as err:
+            print(f"sfduo-settings: {method}: {err.message}", file=sys.stderr)
+            return
+        if then is not None:
+            then()
+
+    bus().call(name, path, interface, method, args, None, flags, 20000, None, done)
+
+
 def follow_me(program):
     """Ask the dock to open the program's window on this one's panel."""
+    said("org.sfduo.Dock", "/org/sfduo/Dock", "org.sfduo.Dock", "Follow",
+         GLib.Variant("(ss)", (APP_IDS[program], APP_ID)),
+         Gio.DBusCallFlags.NO_AUTO_START)
+
+
+def is_running(program):
+    """Whether the program holds its name on the bus - whether, that is,
+    there is a window of it to switch rather than a program to start."""
     try:
-        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-        bus.call_sync("org.sfduo.Dock", "/org/sfduo/Dock", "org.sfduo.Dock", "Follow",
-                      GLib.Variant("(ss)", (APP_IDS[program], APP_ID)),
-                      None, Gio.DBusCallFlags.NO_AUTO_START, 1000, None)
+        answer = bus().call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                                 "org.freedesktop.DBus", "NameHasOwner",
+                                 GLib.Variant("(s)", (APP_IDS[program],)), None,
+                                 Gio.DBusCallFlags.NONE, 1000, None)
     except GLib.Error:
-        pass            # no dock, or an older one: the page goes where it goes
+        return False
+    return answer.unpack()[0]
 
 
-def run(argv):
-    """Start a program and forget it: the pages are windows of their own."""
-    if argv[0] in APP_IDS:
-        follow_me(argv[0])
+def open_page(program, panel, extra=()):
+    """Show a page of another settings program.
+
+    The page is an action of that program: `launch-panel` for GNOME
+    Settings, `set-panel` for Mobile Settings, both taking (panel, args).
+    Running, it switches to the page in the window it has - a tenth of a
+    second, and no window for the shell to place. Not running, the same
+    call starts it through its D-Bus service (the port's, so the window is
+    one column) and that takes about a second.
+
+    A window put away by `back` is brought out by the compositor, and before
+    the page is asked for, not after. A window put away is told it is
+    suspended and its client stops drawing; the program brings its own
+    window back when it gets the action, and then draws - so the eye caught
+    the page it was put away on while the new one was still being built.
+    Present (phoc-patches/0009) takes the window out of that sleep first but
+    keeps it unseen, and shows it once its client has stopped drawing: by
+    then it is the page that was asked for. It is said and waited for, so
+    that it is in hand before the program hears about the page.
+    """
+    follow_me(program)
     try:
-        subprocess.Popen(argv, start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except OSError as err:
-        print(f"sfduo-settings: {argv[0]}: {err}", file=sys.stderr)
+        bus().call_sync("org.sfduo.Phoc", "/org/sfduo/Phoc", "org.sfduo.Phoc", "Present",
+                        GLib.Variant("(s)", (APP_IDS[program],)), None,
+                        Gio.DBusCallFlags.NO_AUTO_START, 500, None)
+    except GLib.Error:
+        pass            # a stock phoc: the window comes back as it always did
+    parameter = GLib.Variant("(sav)", (panel, [GLib.Variant("s", e) for e in extra]))
+    said(APP_IDS[program], BUS_PATHS[program], "org.freedesktop.Application",
+         "ActivateAction",
+         GLib.Variant("(sava{sv})", (PAGE_ACTIONS[program], [parameter], {})))
+
+
+def close_pages():
+    """Tell the pages' programs to go when this one does.
+
+    They are kept alive while this window is open so that the second page
+    and every one after it is a switch rather than a cold start; GNOME
+    Settings is 145 MB of that, which it should not be once nobody is in
+    Settings at all."""
+    for program in APP_IDS:
+        if not is_running(program):
+            continue
+        try:
+            # waited for: this runs as this program leaves, and a call with
+            # nobody to finish it would never be written to the bus
+            bus().call_sync(APP_IDS[program], BUS_PATHS[program],
+                            "org.freedesktop.Application", "ActivateAction",
+                            GLib.Variant("(sava{sv})", ("quit", [], {})), None,
+                            Gio.DBusCallFlags.NO_AUTO_START, 1000, None)
+        except GLib.Error as err:
+            print(f"sfduo-settings: quit {program}: {err.message}", file=sys.stderr)
 
 
 def read(path):
@@ -243,20 +333,23 @@ class Window(Adw.ApplicationWindow):
         if kind == "duo":
             self.nav.push(DuoPage())
             return
-        # The page is another program's window, a second or so away on a
-        # cold start. Answer the tap now, in this window's own motion: slide
-        # in a page with the same title, and let the window land on it.
-        self._wait(name)
-        if kind == "gnome":
-            run([GNOME, *target[1:]])
-        elif kind == "mobile":
-            run([MOBILE, target[1]])
+        program = GNOME if kind == "gnome" else MOBILE
+        # A program already running answers in about a tenth of a second,
+        # with the window it has: nothing to wait for and nothing to stand
+        # in for. A cold start is a second away, so the tap is answered here
+        # meanwhile - a page with the same title slides in, and the window
+        # lands on it.
+        if not is_running(program):
+            self._wait(name)
+        open_page(program, target[1], target[2:])
 
     # ---- the page another program shows --------------------------------------
     #
-    # A row that opens GNOME Settings or Mobile Settings pushes a stand-in
-    # here first, titled as the page will be, and the program's window then
-    # comes up over it on this panel (the dock's Follow). Back in that window
+    # A row that opens GNOME Settings or Mobile Settings while it is not
+    # running pushes a stand-in here first, titled as the page will be, and
+    # the program's window then comes up over it on this panel (the dock's
+    # Follow). A program already running needs none of this: its window is
+    # there before the eye, with the page already switched. Back in that window
     # closes it (sfduo-one-column), this window is the active one again, and
     # the stand-in slides away: to the eye, one program going forward and
     # back. If the window never comes, the stand-in goes by itself.
@@ -327,6 +420,11 @@ class App(Adw.Application):
     def do_activate(self):
         window = self.get_active_window() or Window(self)
         window.present()
+
+    def do_shutdown(self):
+        # the pages' programs are kept alive for this window's sake alone
+        close_pages()
+        Adw.Application.do_shutdown(self)
 
 
 def main():
