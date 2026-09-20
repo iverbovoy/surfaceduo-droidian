@@ -1,0 +1,158 @@
+From ecf70c84258368fbdaa2f1c2844e0b5f20c9ebc3 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Sun, 20 Sep 2026 18:08:43 +0300
+Subject: [PATCH] view-ghost: a ghost is the window, not the whole surface
+
+A window sliding to the other panel carried a pale edge above and below it
+that the window itself never shows. The ghost was made of the client's whole
+surface, and a client that draws its own decorations draws its shadow
+outside the window's geometry: phoc offsets a view by that geometry when it
+renders it, the ghost did not, so the shadow's margins travelled with the
+picture and the geometry sat a few pixels off.
+
+The ghost now takes the geometry's rectangle and the part of the buffer that
+holds it, whatever the buffer's scale. The tiling's ghost gets its
+destination the same way - the tile's own box, where it used to subtract the
+geometry offset by hand to make up for this.
+
+Measured on the frames of a crossing, the rows just below the window: a tail
+of 35 to 16 that never reached black before, and black in the next row after.
+---
+ src/sfduo-control.c | 31 +++++++++++++++++++++++--------
+ src/view-ghost.c    | 23 +++++++++++++++++++++--
+ 2 files changed, 44 insertions(+), 10 deletions(-)
+
+diff --git a/src/sfduo-control.c b/src/sfduo-control.c
+index 262a272..2a45c36 100644
+--- a/src/sfduo-control.c
++++ b/src/sfduo-control.c
+@@ -62,9 +62,10 @@
+ #define SFDUO_OBJECT_PATH "/org/sfduo/Phoc"
+ /* No drawing for this long and the client is taken to be ready. It has to
+  * outlast the pause between a client's first frame - what it had when it was
+- * put away - and the page asked for: GNOME Settings builds a page it has not
+- * shown before in about 65 ms, and draws nothing meanwhile. */
+-#define SFDUO_WAKE_QUIET_MS 110
++ * put away - and the page asked for, which is the program building a page it
++ * has not shown before: about 65 ms of drawing nothing, and more the first
++ * time a page is opened at all. */
++#define SFDUO_WAKE_QUIET_MS 200
+ #define SFDUO_WAKE_CAP_MS 700      /* ... and this is as long as it is ever waited for */
+ #define SFDUO_HOLD_CAP_MS 700      /* a new window is never held longer than this */
+ #define SFDUO_HOLD_FADE_MS 150     /* ... and fades in when it is let go */
+@@ -102,6 +103,7 @@ typedef struct {
+   guint32            want_height;
+   float              last_scale;     /* a window fitted into a panel settles over a frame or two */
+   gboolean           fade;
++  gboolean           from_hold;     /* a new window, not one woken for a page */
+ } PhocWake;
+ 
+ static GSList *waking;
+@@ -140,8 +142,10 @@ tile_view (PhocView *view, PhocViewTileDirection dir)
+     return;
+   }
+ 
+-  /* The surface's box, where it is and where it is going: the tile's box
+-   * is the window's geometry, the surface sits geom.x/y before it. */
++  /* Where the window is and where it is going. Both are the window's own
++   * rectangle - its geometry, which is what the ghost draws - so this is
++   * where it stands now and the tile it has been given; its size does not
++   * change until its client answers, and the ghost carries the size it has. */
+   if (surface && phoc_view_get_tiled_box (view, dir, NULL, &tiled)) {
+     struct wlr_box box;
+ 
+@@ -151,11 +155,11 @@ tile_view (PhocView *view, PhocViewTileDirection dir)
+     phoc_view_get_geometry (view, &geom);
+     from = (struct wlr_box) {
+       .x = view->box.x, .y = view->box.y,
+-      .width = surface->current.width * scale, .height = surface->current.height * scale,
++      .width = geom.width * scale, .height = geom.height * scale,
+     };
+     to = from;
+-    to.x = tiled.x - geom.x / scale;
+-    to.y = tiled.y - geom.y / scale;
++    to.x = tiled.x;
++    to.y = tiled.y;
+     phoc_view_tile (view, dir, NULL);
+     phoc_view_ghost_move (view, &from, &to);
+     return;
+@@ -240,12 +244,22 @@ wake_finish (PhocWake *wake)
+ }
+ 
+ 
++static gboolean view_fills_its_panel (PhocView *view);
++
+ static gboolean
+ on_wake_quiet (gpointer data)
+ {
+   PhocWake *wake = data;
+ 
+   wake->quiet_id = 0;
++  /* The panel can change under a window while it is quiet: the shell's bar
++   * leaves a panel once there is a window on it, and the window it left
++   * grows into the room - which, shown a moment too early, is a window
++   * that settles with a jump. Back to waiting, then. */
++  if (wake->from_hold && wake->view && !view_fills_its_panel (wake->view)) {
++    wake->wait_placed = TRUE;
++    return G_SOURCE_REMOVE;
++  }
+   wake_finish (wake);
+   return G_SOURCE_REMOVE;
+ }
+@@ -386,6 +400,7 @@ phoc_sfduo_control_hold_new_view (PhocView *view)
+   g_debug ("holding %s", phoc_view_get_app_id (view));
+   wake = hold_view (view, SFDUO_HOLD_CAP_MS);
+   wake->wait_placed = TRUE;
++  wake->from_hold = TRUE;
+   wake->fade = TRUE;
+   wake->last_scale = -1.0f;         /* unknown until the first frame */
+ }
+diff --git a/src/view-ghost.c b/src/view-ghost.c
+index 4c57212..40ead7e 100644
+--- a/src/view-ghost.c
++++ b/src/view-ghost.c
+@@ -299,6 +299,7 @@ ghost_new (PhocView *view, PhocViewGhostKind kind, const struct wlr_box *to)
+   struct wlr_surface *surface = view->wlr_surface;
+   PhocViewGhost *self;
+   PhocOutput *output;
++  struct wlr_box geom;
+   float scale;
+ 
+   if (!phoc_desktop_get_enable_animations (desktop) || view->parent != NULL)
+@@ -320,13 +321,31 @@ ghost_new (PhocView *view, PhocViewGhostKind kind, const struct wlr_box *to)
+   wlr_surface_get_buffer_source_box (surface, &self->src_box);
+   self->transform = surface->current.transform;
+ 
++  /* The window, not the whole surface. A client with its own decorations
++   * draws its shadow outside the window's geometry, and a ghost made of the
++   * whole surface carried those margins with it: a pale line along the top
++   * and the bottom of a window sliding to the other panel, which the window
++   * itself never shows - phoc offsets a view by its geometry when it draws
++   * it. So the ghost takes the geometry's rectangle, and the part of the
++   * buffer that holds it. */
+   scale = phoc_view_get_scale (view);
++  phoc_view_get_geometry (view, &geom);
+   self->box = (struct wlr_box) {
+     .x = view->box.x,
+     .y = view->box.y,
+-    .width = surface->current.width * scale,
+-    .height = surface->current.height * scale,
++    .width = geom.width * scale,
++    .height = geom.height * scale,
+   };
++  if (surface->current.width > 0 && self->src_box.width > 0) {
++    /* buffer pixels per surface-local pixel, whatever the buffer's scale */
++    double bx = self->src_box.width / (double) surface->current.width;
++    double by = self->src_box.height / (double) surface->current.height;
++
++    self->src_box.x += geom.x * bx;
++    self->src_box.y += geom.y * by;
++    self->src_box.width = geom.width * bx;
++    self->src_box.height = geom.height * by;
++  }
+   if (to)
+     self->to = *to;
+   ghosts = g_list_prepend (ghosts, self);
+-- 
+2.43.0
+
