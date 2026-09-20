@@ -200,6 +200,22 @@ carries no geometry. The dock publishes what it placed on the session bus -
 `right`, with PropertiesChanged behind it - and the rows follow it. Without
 the dock the rows just leave the panel out.
 
+### No home bar where the dock is
+
+phosh keeps fifteen logical pixels along the bottom for its home bar, as an
+exclusive zone, and phoc takes them off the usable area - so every window on
+this display was that much shorter than its panel. On the screen it read as
+two halves that do not line up: a window stopping short of the bottom while
+the dock on the other half ran to the edge (measured on a lossless
+screenshot: 28 physical pixels).
+
+That bottom edge is the dock's here. The swipe up on it raises the
+applications, and over a window it puts the window away; the home bar is a
+second thing in the same place that says nothing. `phosh-patches/0013`: on a
+display with a seam - which the shell already works out for the top bar and
+the shades - the home bar reserves nothing and shows nothing. Every other
+display keeps it, so a stock phosh restored by `--restore` is unchanged.
+
 ### The unlock hands the desktop back
 
 The lock screen used to be destroyed on the unlock and the desktop was there

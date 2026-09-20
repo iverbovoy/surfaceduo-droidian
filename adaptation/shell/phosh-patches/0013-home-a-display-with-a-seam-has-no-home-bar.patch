@@ -1,0 +1,107 @@
+From: The Surface Duo port <none@invalid>
+Date: Sat, 20 Sep 2026 18:30:00 +0300
+Subject: [PATCH 13/13] home: a display with a seam has no home bar
+
+The bottom edge of each half of this display belongs to the shell's dock:
+the swipe up there raises the applications, and over a window it puts the
+window away. The home bar is one more thing in the same place saying
+nothing - and its exclusive zone, fifteen logical pixels, was taken off
+every window on the display: a window on one half stopped short of the
+bottom while the dock on the other half ran to the edge, and the two did
+not line up. Measured on a lossless screenshot: the window's last row 28
+physical pixels above the bottom of the panel.
+
+On a display with a seam - which the shell already works out for the top
+bar and the shades (patch 0004) - the home bar reserves nothing and shows
+nothing. Any other display keeps it as it was.
+---
+--- a/src/home.c
++++ b/src/home.c
+@@ -18,6 +18,7 @@
+ #include "osk-manager.h"
+ #include "style-manager.h"
+ #include "feedback-manager.h"
++#include "layout-manager.h"
+ #include "util.h"
+ 
+ #include <handy.h>
+@@ -86,6 +87,38 @@
+ G_DEFINE_TYPE(PhoshHome, phosh_home, PHOSH_TYPE_DRAG_SURFACE);
+ 
+ 
++/*
++ * How much of the home surface stays on the screen, and how much of the
++ * display it takes out of the usable area.
++ *
++ * On a display with a seam down it - a hinge between two halves - the bottom
++ * edge of each half belongs to the shell's dock: the swipe up there is what
++ * raises the applications and what puts a window away, and the home bar is
++ * one more thing in the same place saying nothing. Worse, its reservation
++ * shortened every window by its height: a window on one half stopped 15 px
++ * above the bottom, where the other half's dock ran to the edge, and the two
++ * did not line up. So on such a display the home bar reserves nothing and
++ * shows nothing; on any other it is what it always was.
++ */
++static int
++home_bar_height (void)
++{
++  static int height = -1;
++  GdkRectangle seam;
++
++  if (height >= 0)
++    return height;
++
++  height = PHOSH_HOME_BAR_HEIGHT;
++  if (phosh_shell_get_default () &&
++      phosh_layout_manager_get_seam (phosh_shell_get_layout_manager (phosh_shell_get_default ()),
++                                     &seam))
++    height = 0;
++
++  return height;
++}
++
++
+ static void
+ phosh_home_update_home_bar (PhoshHome *self)
+ {
+@@ -173,7 +206,7 @@
+                                               0, 0, NULL, &handle);
+   if (!success) {
+     g_warning ("Failed to get handle position");
+-    handle = PHOSH_HOME_BAR_HEIGHT;
++    handle = home_bar_height ();
+   }
+ 
+   g_debug ("Drag Handle: %d", handle);
+@@ -187,7 +220,7 @@
+ static int
+ get_margin (gint height)
+ {
+-  return (-1 * height) + PHOSH_HOME_BAR_HEIGHT;
++  return (-1 * height) + home_bar_height ();
+ }
+ 
+ 
+@@ -466,7 +499,7 @@
+   double progress, alpha;
+ 
+   gtk_window_get_size (GTK_WINDOW (self), &width, &height);
+-  progress = 1.0 - (-margin / (double)(height - PHOSH_HOME_BAR_HEIGHT));
++  progress = 1.0 - (-margin / (double)(height - home_bar_height ()));
+   /* Avoid negative values when resizing the surface */
+   progress = MAX (0, progress);
+ 
+@@ -728,11 +761,11 @@
+                                  ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT,
+                        "layer", ZWLR_LAYER_SHELL_V1_LAYER_TOP,
+                        "kbd-interactivity", FALSE,
+-                       "exclusive-zone", PHOSH_HOME_BAR_HEIGHT,
++                       "exclusive-zone", home_bar_height (),
+                        "namespace", "phosh home",
+                        /* drag-surface */
+                        "layer-shell-effects", layer_shell_effects,
+-                       "exclusive", PHOSH_HOME_BAR_HEIGHT,
++                       "exclusive", home_bar_height (),
+                        "threshold", PHOSH_HOME_DRAG_THRESHOLD,
+                        NULL);
+ }
