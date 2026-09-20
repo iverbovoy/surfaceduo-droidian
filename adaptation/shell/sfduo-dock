@@ -910,12 +910,12 @@ class Dock(Gtk.Window):
         GLib.idle_add(self._apply_mode)
         self.watch_wake.set()
 
-    def _move_to(self, app_id, side):
-        """Put an open window on a panel.
+    def _tile(self, app_id, side):
+        """Ask the port's phoc to put an app's windows on a panel.
 
-        The port's phoc does it directly (org.sfduo.Phoc.Tile): no focus, no
-        raise, and the window slides across. Anywhere else, as a user would:
-        focus it, wait for it, the tiling chord - half a second a window."""
+        Directly: no focus, no raise, and the window slides across - or, if
+        it has not been seen yet, is simply put there (phoc-patches/0010).
+        Returns whether anything was moved."""
         try:
             tiled = self.session_bus.call_sync(
                 "org.sfduo.Phoc", "/org/sfduo/Phoc", "org.sfduo.Phoc", "Tile",
@@ -923,9 +923,19 @@ class Dock(Gtk.Window):
                 Gio.DBusCallFlags.NO_AUTO_START, 1000, None)[0]
         except GLib.Error:
             tiled = 0
-        if tiled:
-            self.placed[app_id] = side
-            self._save_placed()
+        if not tiled:
+            return False
+        self.placed[app_id] = side
+        self._save_placed()
+        return True
+
+    def _move_to(self, app_id, side):
+        """Put an open window on a panel.
+
+        The port's phoc does it directly (_tile). Anywhere else, as a user
+        would: focus it, wait for it, the tiling chord - half a second a
+        window."""
+        if self._tile(app_id, side):
             return
         if not self._take_focus(app_id):
             return
@@ -2355,6 +2365,12 @@ class Dock(Gtk.Window):
         if found != app_id:
             learn_app_id(info, found)
         app_id = found
+        # The port's phoc places it outright, a frame after the window
+        # appears - and it holds the window out of sight until then, so the
+        # placing is never seen. Waiting for the window to take the focus
+        # first, as the chord needs, took half a second of that hold.
+        if self._tile(app_id, side):
+            return True
         if not self._take_focus(app_id):
             # No chord reaches the window from here; it stays across both
             # panels, and the dock hides as for any such window.

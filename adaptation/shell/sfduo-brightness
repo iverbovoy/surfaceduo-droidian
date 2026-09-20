@@ -12,6 +12,13 @@
 # is what makes this safe - at 100% there is nothing to restore, and every
 # other value is a disagreement only the panel reset could have caused.
 #
+# Watched, not asked after. `actual_brightness` in sysfs wakes a poll() with
+# POLLPRI the moment the driver changes it (checked on this device), so the
+# level is put back within a frame or two of the panel coming up. Asking once
+# a second, as this did, meant the screen was at full for up to a second every
+# time the device was opened - long enough to be the first thing seen. The
+# beat stays as a net underneath, slow, for whatever the notification misses.
+#
 # The restoring is done by handing the shell back its own number: writing
 # gnome-settings-daemon's Brightness property, even with the value it already
 # holds, makes it write the hardware again. Going to the hardware directly
@@ -29,7 +36,7 @@ from gi.repository import Gio, GLib  # noqa: E402
 SCREEN = "org.gnome.SettingsDaemon.Power.Screen"
 PANELS = ("panel0-backlight", "panel1-backlight")
 SYSFS = "/sys/class/backlight/%s/%s"
-POLL_MS = 1000
+POLL_MS = 2000          # the net under the watch, not the way it usually works
 # The level a new user starts at. Left alone it came out of whatever
 # systemd-backlight saved at the first-boot reboot - 2 of 255 on one clean
 # install, the screen all but dark - and differed from install to install.
@@ -55,6 +62,7 @@ class Keeper:
             "org.freedesktop.DBus.Properties", None)
 
         GLib.timeout_add(POLL_MS, self.check)
+        self.watch_panels()
         self.default_tries = 30
         if not os.path.exists(DEFAULT_DONE):
             GLib.timeout_add_seconds(2, self.first_default)
@@ -75,6 +83,31 @@ class Keeper:
         with open(DEFAULT_DONE, "w") as fp:
             fp.write(f"{DEFAULT_PERCENT}\n")
         return False
+
+    def watch_panels(self):
+        """Wake on the driver's own word that a panel's level changed."""
+        self.watched = []
+        for panel in PANELS:
+            try:
+                fp = open(SYSFS % (panel, "actual_brightness"))
+            except OSError as err:
+                print(f"sfduo-brightness: {panel}: {err}", file=sys.stderr)
+                continue
+            fp.read()               # sysfs wants the value read before it notifies
+            channel = GLib.IOChannel.unix_new(fp.fileno())
+            GLib.io_add_watch(channel, GLib.PRIORITY_HIGH,
+                              GLib.IOCondition.PRI | GLib.IOCondition.ERR,
+                              self.on_panel_changed)
+            self.watched.append((fp, channel))
+
+    def on_panel_changed(self, channel, condition):
+        try:
+            os.lseek(channel.unix_get_fd(), 0, os.SEEK_SET)
+            os.read(channel.unix_get_fd(), 32)
+        except OSError:
+            pass
+        self.check()
+        return True
 
     def wanted(self):
         """The level the shell believes it is at, as a percentage."""

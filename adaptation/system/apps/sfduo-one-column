@@ -133,6 +133,13 @@ try:
     # same one again, there is nothing to change at all.
     template = root.find("template")
     if template is not None:
+        # The program's own back button leads to that first screen too, and
+        # left to itself it stops there - a column with one button in it.
+        # Reaching it, by any road, puts the window away as well: GtkBuilder
+        # finds gtk_window_minimize by name in the loaded libraries when the
+        # window's class has no callback of that name.
+        ET.SubElement(page, "signal", name="shown", handler="gtk_window_minimize",
+                      object=template.get("class"), swapped="yes")
         controller = ET.SubElement(ET.SubElement(template, "child"), "object",
                                    {"class": "GtkShortcutController"})
         ET.SubElement(controller, "property", name="scope").text = "local"
