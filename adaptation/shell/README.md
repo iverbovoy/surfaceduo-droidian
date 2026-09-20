@@ -187,8 +187,11 @@ keeps that margin; phosh's own animation used to set the other three to zero.
 The far shade also lists the open windows (`phosh-patches/0009`, a
 `PhoshRunningApps` above the notifications): icon, name, which panel the
 window is on, and a button that closes it; a tap on a row brings the window
-forward and folds the shade. It was the only place on the device where a
-window could be closed without knowing the dock's hidden long swipe.
+forward and folds the shade. Together with an application's own way out, it
+is how a window is closed on this device: the dock's swipe only puts a
+window away. A swipe used to close it past 220 px of travel, one gesture
+standing for two things that cannot be undone alike - a window swiped a
+finger too far was gone - and that reading is retired.
 
 Which panel a window is on is the dock's to say: the compositor tiles a
 window when asked and keeps no record of the half, and wlr-foreign-toplevel
@@ -251,8 +254,8 @@ not locked.
 
 phoc 0.47 dropped every minimize request: xdg_toplevel's `set_minimized`,
 and wlr-foreign-toplevel's, which is what `wlrctl toplevel minimize` and so
-the dock's short swipe along a busy panel's band send - that swipe had
-never minimized anything. `phoc-patches/0005` gives a view a minimized
+the dock's swipe along a busy panel's band send - that swipe had never
+minimized anything. `phoc-patches/0005` gives a view a minimized
 state: not drawn, no input, the focus handed on, the window fading away as
 a closed one does; activating it brings it back. The dock reads it as a
 free panel (`Busy`), so the bar moves across (#79).

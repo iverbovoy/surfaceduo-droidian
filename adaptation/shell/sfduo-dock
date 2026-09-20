@@ -98,7 +98,6 @@ STAGE_HEIGHT = SCREEN_HEIGHT - PANEL_HEIGHT   # everything below the top bar
 EDGE = 36                 # the gesture band along the bottom of a busy panel: 4.5 mm,
                           # taken from the app beneath - 22 was missed by the thumb
 EDGE_MARGIN = 10          # a half's distance from its panel's outer edge when apart
-CLOSE_PX = 220            # a swipe this long over an app closes it, not just hides it
 GRID_ICON = ICON_SIZE     # the app grid's icons: the dock's size, not phosh's 64
 GRID_COLUMNS = 5          # on one panel: 675px at scale 2 gives five of ~130
 SLIDE_MS = 220            # the grid settling after the finger lets go
@@ -1565,7 +1564,7 @@ class Dock(Gtk.Window):
         self.drag_last = (GLib.get_monotonic_time(), 0.0)
         self.drag_velocity = 0.0
         # A swipe that starts over a panel with a window on it is about that
-        # window, not the grid: up hides it, further up closes it.
+        # window, not the grid: up puts it away, however far it goes.
         self.drag_app = None
         if self.progress <= 0.0 and self.mode not in ("both", panel):
             self.drag_app = next((a for a, p in self.placed.items() if p == panel), None)
@@ -1646,17 +1645,15 @@ class Dock(Gtk.Window):
         self.swiped = True
         GLib.idle_add(self._unswipe)
         if self.drag_app is not None:
-            if dy < -CLOSE_PX:
-                action = "close"
-            elif dy < -SWIPE_PX:
-                action = "minimize"
-            else:
+            # However far it goes, a swipe over a window puts it away. It
+            # used to close the window past a length of travel, which is one
+            # gesture standing for two things that cannot be taken back the
+            # same way - a window swiped a finger too far was gone. Closing
+            # is the far shade's list of windows and the application's own.
+            if dy >= -SWIPE_PX:
                 return
             target = self.drag_app if self.drag_app.startswith("state:") else f"app_id:{self.drag_app}"
-            subprocess.Popen(["wlrctl", "toplevel", action, target])
-            if action == "close":
-                self.placed.pop(self.drag_app, None)
-                self._save_placed()
+            subprocess.Popen(["wlrctl", "toplevel", "minimize", target])
             return
         # A flick decides by direction; a slow release, by which side of
         # halfway the grid was left on.
