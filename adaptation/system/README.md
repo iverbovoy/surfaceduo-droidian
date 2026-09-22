@@ -115,6 +115,8 @@ Since 0.14.1 the screen does not blank and lock on its own
 default a user's own value overrides). An open Duo on a desk is being looked
 at, and closing it is how it is put away; the backlight still dims after a
 short idle (`idle-dim`, to 30 %), and the power button locks as before.
+Settings' Surface Duo page sets a delay again ("Turn the screen off when
+idle"); it writes the same key as Battery and Power's "Screen Blank".
 
 There is a second reason, found while measuring the kernel: Droidian's
 `mobile-power-saver` ties its hard saving to the blanked screen - the CPU

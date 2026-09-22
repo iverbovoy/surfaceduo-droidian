@@ -243,17 +243,67 @@ class DuoPage(Adw.NavigationPage):
             about.add(row)
         page.add(about)
 
+        screen = Adw.PreferencesGroup(title="Screen")
+        blank = self._blank_row()
+        if blank:
+            screen.add(blank)
+            page.add(screen)
+
+        # The dock is not a switch of its own: with the port's phosh it is
+        # the desktop - without it there is no launcher and no way back to a
+        # window put away - so it goes on and off with the two-panel shell
         later = Adw.PreferencesGroup(
             title="Switches",
-            description="The two-panel shell, the dock, the fold effect and the "
-                        "output scale will be switched here. Until then they are "
-                        "changed with the sfduo-* commands.")
+            description="The two-panel shell with its dock, the fold effect and "
+                        "the output scale will be switched here. Until then they "
+                        "are changed with the sfduo-* commands.")
         page.add(later)
 
         view = Adw.ToolbarView()
         view.add_top_bar(Adw.HeaderBar())
         view.set_content(page)
         self.set_child(view)
+
+    # The port's default is Never (dconf/52-sfduo-idle): closing the Duo is
+    # what turns it off, and mobile-power-saver slows the phone down while the
+    # screen is blank. The key is GNOME's own, the one Battery and Power's
+    # "Screen Blank" writes, so the two pages cannot disagree.
+    BLANK_DELAYS = [(0, "Never"), (60, "1 minute"), (120, "2 minutes"),
+                    (300, "5 minutes"), (600, "10 minutes"), (900, "15 minutes")]
+
+    def _blank_row(self):
+        source = Gio.SettingsSchemaSource.get_default()
+        if not source or not source.lookup("org.gnome.desktop.session", True):
+            return None
+        self._session = Gio.Settings(schema_id="org.gnome.desktop.session")
+        delays = list(self.BLANK_DELAYS)
+        current = self._session.get_uint("idle-delay")
+        if current not in (d for d, _ in delays):
+            # set elsewhere to a value not offered here: shown, not changed
+            delays.append((current, f"{current // 60} min {current % 60} s"
+                           if current % 60 else f"{current // 60} minutes"))
+            delays.sort()
+        self._delays = [d for d, _ in delays]
+
+        row = Adw.ComboRow(
+            title="Turn the screen off when idle",
+            subtitle="Closing the Duo turns it off anyway. While the screen is "
+                     "off the phone slows down, and it locks.",
+            model=Gtk.StringList.new([label for _, label in delays]))
+        row.set_selected(self._delays.index(current))
+        row.connect("notify::selected", self._on_blank_selected)
+        self._session.connect("changed::idle-delay", self._on_blank_changed, row)
+        return row
+
+    def _on_blank_selected(self, row, _pspec):
+        delay = self._delays[row.get_selected()]
+        if self._session.get_uint("idle-delay") != delay:
+            self._session.set_uint("idle-delay", delay)
+
+    def _on_blank_changed(self, settings, _key, row):
+        delay = settings.get_uint("idle-delay")
+        if delay in self._delays and row.get_selected() != self._delays.index(delay):
+            row.set_selected(self._delays.index(delay))
 
     @staticmethod
     def _package_version():
