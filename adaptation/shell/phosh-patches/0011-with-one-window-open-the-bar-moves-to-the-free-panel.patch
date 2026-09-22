@@ -140,7 +140,7 @@
  
    /* Home is created after the top-panel so it honors its exclusive zone */
    priv->home = PHOSH_DRAG_SURFACE (phosh_home_new (phosh_wayland_get_zwlr_layer_shell_v1 (wl),
-@@ -689,6 +698,96 @@
+@@ -689,6 +698,104 @@
  }
  
  
@@ -150,7 +150,8 @@
 + * output is both panels: every window loses those pixels, on either side.
 + * With one panel taken and the other free there is no need - the free half's
 + * bar can say it all - so the taken half's bar folds away, the other shows
-+ * everything, and the reservation drops to a pixel. Which panels are taken
++ * everything, and the reservation drops to a pixel. With both taken both
++ * fold away (#95). Which panels are taken
 + * is the dock's to say (org.sfduo.Dock "Busy": none, left, right or both);
 + * without a dock, and on the lock screen, the bars stay as they are.
 + */
@@ -180,6 +181,13 @@
 +    exclusive = 1;
 +  } else if (g_strcmp0 (busy, "right") == 0) {
 +    near = PHOSH_TOP_BAR_MODE_ALL;
++    far = PHOSH_TOP_BAR_MODE_NONE;
++    exclusive = 1;
++  } else if (g_strcmp0 (busy, "both") == 0) {
++    /* A window on each panel, or one across both: no half is free to carry
++     * the bar, and every line of height is the windows'. Both halves fold to
++     * their handles, and a shade is still pulled by either. */
++    near = PHOSH_TOP_BAR_MODE_NONE;
 +    far = PHOSH_TOP_BAR_MODE_NONE;
 +    exclusive = 1;
 +  }
@@ -237,7 +245,7 @@
  static void
  set_locked (PhoshShell *self, gboolean locked)
  {
-@@ -710,6 +809,7 @@
+@@ -710,6 +817,7 @@
  
    update_top_level_layer (self);
    update_top_bar_transparency (self);
