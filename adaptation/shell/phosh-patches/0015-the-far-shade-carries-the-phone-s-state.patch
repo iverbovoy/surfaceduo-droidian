@@ -1,0 +1,68 @@
+--- a/src/top-panel.c
++++ b/src/top-panel.c
+@@ -23,8 +23,11 @@
+ #include "top-panel.h"
+ #include "top-panel-bg.h"
+ #include "arrow.h"
++#include "batteryinfo.h"
+ #include "util.h"
+ #include "wall-clock.h"
++#include "wifi-info.h"
++#include "wwan-info.h"
+ 
+ #include <handy.h>
+ 
+@@ -1033,6 +1036,44 @@
+ }
+ 
+ 
++/*
++ * The far shade's head carries the phone's state under the clock and the
++ * date - signal, Wi-Fi, battery - because outside the lock screen there is
++ * no bar to show it (phosh-patches/0011, #95, #97). They are indicators of
++ * their own, not the bar's: the bar keeps its own for the lock screen.
++ */
++static void
++add_far_status (PhoshTopPanel *self)
++{
++  GtkWidget *box, *wwan, *wifi, *battery;
++
++  box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);
++  gtk_widget_set_halign (box, GTK_ALIGN_CENTER);
++  gtk_widget_set_margin_top (box, 6);
++  gtk_style_context_add_class (gtk_widget_get_style_context (box), "phosh-far-status");
++
++  wwan = phosh_wwan_info_new ();
++  g_object_set (wwan, "pixel-size", 16, "show-detail", TRUE, NULL);
++  g_object_bind_property (wwan, "present", wwan, "visible", G_BINDING_SYNC_CREATE);
++  gtk_container_add (GTK_CONTAINER (box), wwan);
++
++  wifi = phosh_wifi_info_new ();
++  g_object_set (wifi, "pixel-size", 16, NULL);
++  g_object_bind_property (wifi, "present", wifi, "visible", G_BINDING_SYNC_CREATE);
++  gtk_container_add (GTK_CONTAINER (box), wifi);
++
++  battery = phosh_battery_info_new ();
++  g_object_set (battery, "pixel-size", 16, NULL);
++  phosh_battery_info_set_show_detail (PHOSH_BATTERY_INFO (battery), TRUE);
++  gtk_widget_set_visible (battery, TRUE);
++  gtk_container_add (GTK_CONTAINER (box), battery);
++
++  gtk_widget_set_visible (box, TRUE);
++  /* under the date, in the box that holds it and the clock */
++  gtk_container_add (GTK_CONTAINER (gtk_widget_get_parent (self->lbl_date)), box);
++}
++
++
+ /**
+  * phosh_top_panel_set_half:
+  * @self: The top panel
+@@ -1050,6 +1091,8 @@
+   phosh_settings_set_half (PHOSH_SETTINGS (self->settings), half);
+   gtk_widget_set_child_visible (self->btn_lock, half != PHOSH_SETTINGS_HALF_FAR);
+   gtk_widget_set_child_visible (self->btn_power, half != PHOSH_SETTINGS_HALF_FAR);
++  if (half == PHOSH_SETTINGS_HALF_FAR)
++    add_far_status (self);
+ }
+ 
+ 
