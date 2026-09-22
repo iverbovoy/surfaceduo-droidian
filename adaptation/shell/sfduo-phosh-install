@@ -107,11 +107,9 @@ case "$1" in
     fi
     tiling_lock off
     hinge_description off
-    echo "sfduo-phosh: restart the shell (sudo systemctl restart phosh). Only the phosh binary and"
-    echo "sfduo-phosh: the tiling changed: the dock, the CSS and the black background are separate -"
-    echo "sfduo-phosh: see adaptation/shell/README.md to turn them off. The packaged phosh does not"
-    echo "sfduo-phosh: tell logind about its first lock screen: after a reboot the dock is visible"
-    echo "sfduo-phosh: over it until the first unlock."
+    echo "sfduo-phosh: restart the shell (sudo systemctl restart phosh). The dock and the shell's"
+    echo "sfduo-phosh: CSS stand down from their next start; phoc and the keyboard are separate -"
+    echo "sfduo-phosh: 'sudo sfduo-shell --stock' restores all of it at once."
     exit 0
     ;;
 --patched)

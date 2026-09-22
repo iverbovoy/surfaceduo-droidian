@@ -533,8 +533,21 @@ only with it, by `sfduo-phosh-install`: on a stock phosh it costs the whole
 notification shade, as that section explains.
 
 All of this is experimental and changes from one release to the next. To go
-back to stock phosh behaviour, remove `/etc/xdg/autostart/sfduo-dock.desktop`
-and the `gtk.css` link, and restart the shell.
+back to Droidian's own shell - the packaged phosh, phoc and keyboard, no dock,
+no shell CSS - switch "Two-panel shell" off on Settings' Surface Duo page, or:
+
+```
+sudo sfduo-shell --stock     # --duo brings it back
+sudo sfduo-shell --restart
+```
+
+It is one switch because the parts do not work apart: under the port's phosh
+the dock is the desktop (stopped, it left only the wallpaper - no launcher, no
+way back to a window put away), and under the packaged phosh no window takes
+the focus, so the dock can place none. `sfduo-shell --stock` runs the three
+`--restore`s below; the dock and `sfduo-shell-css` stand down while
+`/etc/sfduo/phosh-stock` is there. The output scale is the same command,
+`sudo sfduo-shell --scale 2|2.5|3`, and the same Settings page.
 
 A black background, which suits a screen with a black bar down the middle -
 the package sets it as the default (`/etc/dconf/db/local.d/51-sfduo-background`);
@@ -721,10 +734,10 @@ the next install or upgrade of this package, whose postinst runs the same
 script, does not quietly put the patched one back again - it did until 0.13.1,
 and a restore made just before an upgrade looked as if it had never happened.
 `--patched` removes the marker and installs the patched binary again. A phosh
-upgrade replaces the binary on its own either way. Restoring changes the
-binary only: the dock, the CSS and the black background stay until they are
-turned off as described under Installing, and on the packaged phosh the dock
-is visible over the first lock screen after a reboot, until the first unlock.
+upgrade replaces the binary on its own either way. Restoring phosh alone
+changes the binary and the tiling lock; the marker also stops the dock and
+empties the shell's CSS the next time each starts. `sfduo-shell --stock`
+(Installing, above) is the whole of it at once, phoc and the keyboard too.
 
 The patches are against droidian/phosh at cf38ab5, the tree the installed
 package was built from, configured as the package is (`--prefix=/usr

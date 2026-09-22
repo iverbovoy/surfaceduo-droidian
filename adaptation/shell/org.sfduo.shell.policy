@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Settings' Surface Duo page switches the shell and the output scale with
+     `pkexec sfduo-shell ...` (#20). The password is asked once and kept for
+     a few minutes, as for any administrator setting in GNOME Settings. -->
+<policyconfig>
+  <vendor>Surface Duo port</vendor>
+  <action id="org.sfduo.shell">
+    <description>Change the Surface Duo shell</description>
+    <message>Switching the shell or the output scale needs your password</message>
+    <icon_name>phone-symbolic</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/sbin/sfduo-shell</annotate>
+  </action>
+</policyconfig>

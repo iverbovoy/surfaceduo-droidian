@@ -18,6 +18,7 @@ restart the shell.
 """
 import argparse
 import configparser
+import os
 import re
 import sys
 
@@ -28,6 +29,11 @@ GRID_SPACING = 6          # phosh's column spacing
 
 TEMPLATE = "/usr/share/sfduo/gtk.css.in"
 OUTPUT = "/usr/share/sfduo/gtk.css"
+# `sfduo-shell --stock` (and `sfduo-phosh-install --restore`) leave this: the
+# packaged phosh has no seam to keep its furniture off, and the margins made
+# for the port's phosh only push its own about. The user's gtk.css stays a
+# link to OUTPUT, so an empty OUTPUT is the whole of turning it off.
+KEEP_STOCK = "/etc/sfduo/phosh-stock"
 
 
 def scale_from_phoc():
@@ -70,6 +76,11 @@ def main(argv):
     ap.add_argument("-o", "--output", default=OUTPUT)
     ap.add_argument("--print", action="store_true", help="show the numbers and exit")
     args = ap.parse_args(argv[1:])
+    if not args.print and os.path.exists(KEEP_STOCK):
+        with open(args.output, "w") as fp:
+            fp.write(f"/* the packaged phosh is kept ({KEEP_STOCK}): no shell CSS */\n")
+        print(f"sfduo-shell-css: {args.output} left empty - the packaged phosh is kept")
+        return
     if args.scale is not None:
         scale, where = args.scale, "the command line"
     else:

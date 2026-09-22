@@ -2713,6 +2713,14 @@ def only_one():
 
 
 def main():
+    # `sfduo-shell --stock`: the packaged phosh gives no window the focus, so
+    # nothing launched from here could be placed - its own home is the way in
+    if os.path.exists("/etc/sfduo/phosh-stock"):
+        print("sfduo-dock: the packaged phosh is kept (/etc/sfduo/phosh-stock) - "
+              "no dock; `sudo sfduo-shell --duo` brings the two-panel shell back",
+              file=sys.stderr)
+        return
+
     lock = only_one()
     if lock is None:
         print("sfduo-dock: already running", file=sys.stderr)

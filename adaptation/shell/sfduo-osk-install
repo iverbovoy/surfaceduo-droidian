@@ -27,7 +27,7 @@ case "$1" in
         echo "sfduo-osk: packaged phosh-osk-stub restored - restart the shell (sudo systemctl restart phosh)"
     fi
     echo "sfduo-osk: it stays through package upgrades until 'sfduo-osk-install --patched'."
-    echo "sfduo-osk: tiled windows reach half the hinge into the bezel again on this phoc."
+    echo "sfduo-osk: the keyboard runs across both panels again."
     exit 0
     ;;
 --patched)
@@ -48,8 +48,8 @@ esac
 [ -f "$OURS" ] && [ -n "$WANT" ] || { echo "sfduo-osk: no patched binary in this package"; exit 0; }
 HAVE=$(dpkg-query -W -f='${Version}' phosh-osk-stub 2>/dev/null || true)
 if [ "$HAVE" != "$WANT" ]; then
-    echo "sfduo-osk: phoc is $HAVE, the patched binary is for $WANT - left alone;"
-    echo "sfduo-osk: tiled windows reach half the hinge into the bezel on this phoc"
+    echo "sfduo-osk: phosh-osk-stub is $HAVE, the patched binary is for $WANT - left alone;"
+    echo "sfduo-osk: the keyboard runs across both panels on this one"
     exit 0
 fi
 if cmp -s "$OURS" "$BIN"; then

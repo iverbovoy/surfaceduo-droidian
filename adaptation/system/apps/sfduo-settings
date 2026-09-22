@@ -42,7 +42,7 @@ import gi
 try:
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+    from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 except (ValueError, ImportError) as err:
     print(f"sfduo-settings: {err} - opening GNOME Settings; "
           "`sudo sfduo-shell-setup` once online brings this one", file=sys.stderr)
@@ -236,12 +236,13 @@ class DuoPage(Adw.NavigationPage):
             ("Port", self._package_version()),
             ("Kernel", os.uname().release),
             ("Shell", self._shell()),
-            ("Output scale", self._scale()),
         ):
             row = Adw.ActionRow(title=title, subtitle=value or "unknown")
             row.add_css_class("property")
             about.add(row)
         page.add(about)
+
+        page.add(self._shell_group())
 
         screen = Adw.PreferencesGroup(title="Screen")
         blank = self._blank_row()
@@ -249,20 +250,137 @@ class DuoPage(Adw.NavigationPage):
             screen.add(blank)
             page.add(screen)
 
-        # The dock is not a switch of its own: with the port's phosh it is
-        # the desktop - without it there is no launcher and no way back to a
-        # window put away - so it goes on and off with the two-panel shell
-        later = Adw.PreferencesGroup(
-            title="Switches",
-            description="The two-panel shell with its dock, the fold effect and "
-                        "the output scale will be switched here. Until then they "
-                        "are changed with the sfduo-* commands.")
-        page.add(later)
-
         view = Adw.ToolbarView()
         view.add_top_bar(Adw.HeaderBar())
         view.set_content(page)
         self.set_child(view)
+
+    # The shell and the scale are root's to change, so they go through
+    # `pkexec sfduo-shell` (org.sfduo.shell.policy), the same command that
+    # does it over ssh. Neither applies until the shell restarts, and a
+    # restart closes every window - this one too - so it is a button of its
+    # own that shows when something is waiting for it, not a side effect.
+    SHELL_TOOL = "/usr/local/sbin/sfduo-shell"
+    SCALES = [("2", "2"), ("2.5", "2.5"), ("3", "3")]
+
+    def _shell_group(self):
+        group = Adw.PreferencesGroup(title="Shell")
+        state = self._shell_state()
+
+        self._duo = Adw.SwitchRow(
+            title="Two-panel shell",
+            subtitle="The dock, a top bar per panel, a window on each. "
+                     "Off: Droidian's own phone shell.")
+        self._duo.set_active(state.get("shell") != "stock")
+        self._duo.connect("notify::active", self._on_duo)
+        group.add(self._duo)
+
+        scales = [value for value, _ in self.SCALES]
+        current = state.get("scale", "2")
+        if current not in scales:
+            # set by hand to something not offered here: shown, not changed
+            scales.append(current)
+        self._scales = scales
+        self._scale_row = Adw.ComboRow(
+            title="Output scale",
+            subtitle="2: 1392×900, the port's. 3: Droidian's. "
+                     "2.5 is drawn at 3 and scaled down, and is slower.",
+            model=Gtk.StringList.new(scales))
+        self._scale_row.set_selected(scales.index(current))
+        self._scale_row.connect("notify::selected", self._on_scale)
+        group.add(self._scale_row)
+
+        self._restart = Adw.ActionRow(
+            title="Restart the shell to apply",
+            subtitle="Every open window is closed, this one too")
+        button = Gtk.Button(label="Restart", valign=Gtk.Align.CENTER)
+        button.add_css_class("destructive-action")
+        button.connect("clicked", lambda _b: self._run(["--restart"]))
+        self._restart.add_suffix(button)
+        self._restart.set_visible(self._pending())
+        group.add(self._restart)
+        return group
+
+    def _shell_state(self):
+        try:
+            out = subprocess.run([self.SHELL_TOOL], capture_output=True, text=True,
+                                 check=False).stdout
+        except OSError:
+            return {}
+        return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+    def _pending(self):
+        """Whether the running shell is not what is set: a binary replaced
+        under a running phosh or phoc, or an output at another scale."""
+        for name in ("phosh", "phoc", "phosh-osk-stub"):
+            for pid in os.listdir("/proc"):
+                if not pid.isdigit() or read(f"/proc/{pid}/comm") != name[:15]:
+                    continue
+                try:
+                    if os.readlink(f"/proc/{pid}/exe").endswith(" (deleted)"):
+                        return True
+                except OSError:
+                    pass
+        monitors = Gdk.Display.get_default().get_monitors()
+        if monitors.get_n_items():
+            running = monitors.get_item(0).get_scale()
+            try:
+                return abs(running - float(self._shell_state().get("scale", running))) > 0.01
+            except ValueError:
+                return False
+        return False
+
+    def _on_duo(self, row, _pspec):
+        want = row.get_active()
+        if want == (self._shell_state().get("shell") != "stock"):
+            return
+        self._run(["--duo" if want else "--stock"])
+
+    def _on_scale(self, row, _pspec):
+        want = self._scales[row.get_selected()]
+        if want == self._shell_state().get("scale"):
+            return
+        self._run(["--scale", want])
+
+    def _run(self, args):
+        """pkexec in the background: the password prompt is phosh's, and the
+        install scripts take a few seconds that the page should not hang for.
+        Refused or failed, the rows go back to what is actually set."""
+        for widget in (self._duo, self._scale_row, self._restart):
+            widget.set_sensitive(False)
+        try:
+            proc = Gio.Subprocess.new(
+                ["pkexec", self.SHELL_TOOL, *args],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
+        except GLib.Error as err:
+            print(f"sfduo-settings: pkexec: {err.message}", file=sys.stderr)
+            self._settle()
+            return
+
+        def done(proc, result):
+            try:
+                _ok, out, _err = proc.communicate_utf8_finish(result)
+            except GLib.Error as err:
+                out = err.message
+            if out:
+                print(out.rstrip(), file=sys.stderr)
+            # 126: the prompt was dismissed, 127: not authorised
+            if proc.get_exit_status() != 0:
+                print(f"sfduo-settings: sfduo-shell {' '.join(args)}: "
+                      f"exit {proc.get_exit_status()}", file=sys.stderr)
+            self._settle()
+
+        proc.communicate_utf8_async(None, None, done)
+
+    def _settle(self):
+        state = self._shell_state()
+        self._duo.set_active(state.get("shell") != "stock")
+        scale = state.get("scale")
+        if scale in self._scales:
+            self._scale_row.set_selected(self._scales.index(scale))
+        self._restart.set_visible(self._pending())
+        for widget in (self._duo, self._scale_row, self._restart):
+            widget.set_sensitive(True)
 
     # The port's default is Never (dconf/52-sfduo-idle): closing the Duo is
     # what turns it off, and mobile-power-saver slows the phone down while the
@@ -321,15 +439,6 @@ class DuoPage(Adw.NavigationPage):
             return "stock phosh (the port's shell restored away)"
         version = read("/usr/lib/sfduo/phosh/version")
         return "phosh with the port's patches" if version else "stock phosh"
-
-    @staticmethod
-    def _scale():
-        text = read("/etc/phosh/phoc.ini") or ""
-        for line in text.splitlines():
-            key, _, value = line.partition("=")
-            if key.strip() == "scale":
-                return value.strip()
-        return None
 
 
 class Window(Adw.ApplicationWindow):

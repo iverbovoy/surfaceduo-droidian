@@ -1,0 +1,101 @@
+#!/bin/sh
+# sfduo-shell: the two switches of the port's shell, in one place (#20).
+#
+#   sfduo-shell               what is set: shell=duo|stock, scale=S
+#   sfduo-shell --duo         the two-panel shell: the port's phosh, phoc and
+#                             keyboard, the dock and the shell's CSS
+#   sfduo-shell --stock       Droidian's own phone shell: the packaged phosh,
+#                             phoc and keyboard, no dock, no CSS
+#   sfduo-shell --scale S     the output scale, 2, 2.5 or 3
+#   sfduo-shell --restart     restart the shell, which is what applies them
+#
+# Settings' Surface Duo page runs this through pkexec
+# (org.sfduo.shell.policy); over ssh it is the same command with sudo, so a
+# broken Settings is never the only way back.
+#
+# The shell is one switch because its parts do not work apart. Stopped under
+# the port's phosh the dock left only the wallpaper - no launcher, no way back
+# to a window put away - and under the packaged phosh no window takes the
+# focus, so the dock can place none. Off therefore means all of it: the three
+# binaries go back through their own --restore, each keeping its marker
+# through package upgrades, and /etc/sfduo/phosh-stock - the phosh one - is
+# what the dock and sfduo-shell-css read to stand down.
+#
+# The scale is the one line in /etc/phosh/phoc.ini: phosh-session takes that
+# file whole and phoc reads no other, so there is no drop-in to write. It is
+# a conffile and already the user's to change (postinst's CSS step reads it
+# back); a package upgrade that ships a new one asks which to keep.
+set -e
+SBIN=/usr/local/sbin
+KEEP_STOCK=/etc/sfduo/phosh-stock
+INI=/etc/phosh/phoc.ini
+SECTION="output:HWCOMPOSER-1"
+
+scale() {
+    [ -f "$INI" ] || { echo 3; return; }    # Droidian's own, from /usr/share
+    awk -v sec="[$SECTION]" '
+        /^\[/ { in_sec = ($0 == sec) }
+        in_sec && /^[ \t]*scale[ \t]*=/ { sub(/^[^=]*=[ \t]*/, ""); print; exit }
+    ' "$INI"
+}
+
+need_root() {
+    [ "$(id -u)" = 0 ] || { echo "sfduo-shell: $1 needs root: sudo sfduo-shell $1" >&2; exit 1; }
+}
+
+case "$1" in
+"")
+    if [ -f "$KEEP_STOCK" ]; then echo shell=stock; else echo shell=duo; fi
+    echo "scale=$(scale)"
+    ;;
+--duo)
+    need_root "$1"
+    "$SBIN/sfduo-phosh-install" --patched
+    "$SBIN/sfduo-phoc-install" --patched
+    "$SBIN/sfduo-osk-install" --patched
+    "$SBIN/sfduo-shell-css"
+    echo "sfduo-shell: the two-panel shell - restart the shell (sfduo-shell --restart)"
+    ;;
+--stock)
+    need_root "$1"
+    # a binary never replaced has no copy to restore and is stock already
+    for part in phosh phoc osk; do
+        "$SBIN/sfduo-$part-install" --restore || true
+    done
+    mkdir -p "$(dirname "$KEEP_STOCK")"
+    : > "$KEEP_STOCK"
+    "$SBIN/sfduo-shell-css"
+    echo "sfduo-shell: Droidian's own shell - restart the shell (sfduo-shell --restart)"
+    ;;
+--scale)
+    need_root "$1"
+    case "$2" in
+    2|2.5|3) ;;
+    *) echo "sfduo-shell: the scale is 2, 2.5 or 3, not '$2'" >&2; exit 2 ;;
+    esac
+    [ -f "$INI" ] || { echo "sfduo-shell: no $INI" >&2; exit 1; }
+    [ "$(scale)" = "$2" ] && { echo "sfduo-shell: the scale is $2 already"; exit 0; }
+    grep -q "^\[$SECTION\]" "$INI" || { echo "sfduo-shell: no [$SECTION] in $INI" >&2; exit 1; }
+    awk -v sec="[$SECTION]" -v want="$2" '
+        /^\[/ {
+            if (in_sec && !done) { print "scale = " want; done = 1 }
+            in_sec = ($0 == sec)
+        }
+        in_sec && !done && /^[ \t]*scale[ \t]*=/ { print "scale = " want; done = 1; next }
+        { print }
+        END { if (in_sec && !done) print "scale = " want }
+    ' "$INI" > "$INI.sfduo-new"
+    chmod --reference="$INI" "$INI.sfduo-new"
+    mv -f "$INI.sfduo-new" "$INI"
+    "$SBIN/sfduo-shell-css"
+    echo "sfduo-shell: scale $2 - restart the shell (sfduo-shell --restart)"
+    ;;
+--restart)
+    need_root "$1"
+    systemctl restart phosh
+    ;;
+*)
+    echo "usage: sfduo-shell [--duo | --stock | --scale 2|2.5|3 | --restart]" >&2
+    exit 2
+    ;;
+esac

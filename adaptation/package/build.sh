@@ -815,10 +815,8 @@ fi
 # The two-panel shell (../shell/README.md) - EXPERIMENTAL. A dock across both
 # panels that tiles what it launches onto the panel that was tapped, and the
 # CSS that keeps phosh's own furniture off the hinge. It autostarts with the
-# session; removing /etc/xdg/autostart/sfduo-dock.desktop turns it off.
-# With a stock phosh the dock can sit on the lock screen after a reboot until
-# the first unlock; the patched phosh below fixes that, and
-# `sfduo-phosh-install --restore` is how a user goes back to the stock one.
+# session; `sfduo-shell --stock` (or Settings' Surface Duo page) turns the
+# whole shell off, the dock with it.
 install -m755 "$SHELLDIR/sfduo-dock"       "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-brightness" "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-shell-setup" "$PKG/usr/local/sbin/"
@@ -870,6 +868,11 @@ if [ -f "$OSK_BIN" ]; then
 else
     echo "NOTE: $OSK_BIN not found - building without the patched keyboard"
 fi
+# The shell and the output scale as two switches (#20): sfduo-shell wraps the
+# three install scripts above and the scale line in phoc.ini; Settings runs
+# it through pkexec, which the policy names.
+install -m755  "$SHELLDIR/sfduo-shell"               "$PKG/usr/local/sbin/"
+install -Dm644 "$SHELLDIR/org.sfduo.shell.policy"    "$PKG/usr/share/polkit-1/actions/org.sfduo.shell.policy"
 install -Dm644 "$SHELLDIR/sfduo-dock.desktop"       "$PKG/etc/xdg/autostart/sfduo-dock.desktop"
 # The hinge, read once and told to everyone: org.sfduo.Posture on the
 # session bus - the smoothed angle, the posture, whether it is moving (#55)
