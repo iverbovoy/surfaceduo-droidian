@@ -140,61 +140,40 @@
  
    /* Home is created after the top-panel so it honors its exclusive zone */
    priv->home = PHOSH_DRAG_SURFACE (phosh_home_new (phosh_wayland_get_zwlr_layer_shell_v1 (wl),
-@@ -689,6 +698,104 @@
+@@ -689,6 +698,83 @@
  }
  
  
-+/* {{{ One window, the whole panel */
++/* {{{ No status bar */
 +/*
-+ * The near half's bar reserves its height at the top of the output, and one
-+ * output is both panels: every window loses those pixels, on either side.
-+ * With one panel taken and the other free there is no need - the free half's
-+ * bar can say it all - so the taken half's bar folds away, the other shows
-+ * everything, and the reservation drops to a pixel. With both taken both
-+ * fold away (#95). Which panels are taken
-+ * is the dock's to say (org.sfduo.Dock "Busy": none, left, right or both);
-+ * without a dock, and on the lock screen, the bars stay as they are.
++ * Outside the lock screen the bar is folded to its handle on both halves
++ * (#95, #96): its icons sat in the same pixels of an AMOLED panel all day,
++ * and its height was taken from every window on either panel. A shade is
++ * still pulled down by either handle, and the far one shows the clock and
++ * the date. The lock screen keeps its bar - it is lit to be glanced at - and
++ * so does a shell without the dock (org.sfduo.Dock), whose desktop is where
++ * the time is shown instead.
 + */
 +static void
 +update_bar_modes (PhoshShell *self)
 +{
 +  PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
-+  PhoshTopBarMode near = PHOSH_TOP_BAR_MODE_HALF, far = PHOSH_TOP_BAR_MODE_HALF;
-+  g_autoptr (GVariant) value = NULL;
++  PhoshTopBarMode mode = PHOSH_TOP_BAR_MODE_HALF;
 +  g_autofree char *owner = NULL;
-+  const char *busy = "none";
 +  guint exclusive = PHOSH_TOP_BAR_HEIGHT;
 +
 +  if (priv->top_panel == NULL || priv->top_panel_right == NULL)
 +    return;
 +
-+  if (priv->dock_proxy && !priv->locked) {
++  if (priv->dock_proxy && !priv->locked)
 +    owner = g_dbus_proxy_get_name_owner (priv->dock_proxy);
-+    value = owner ? g_dbus_proxy_get_cached_property (priv->dock_proxy, "Busy") : NULL;
-+    if (value && g_variant_is_of_type (value, G_VARIANT_TYPE_STRING))
-+      busy = g_variant_get_string (value, NULL);
-+  }
-+
-+  if (g_strcmp0 (busy, "left") == 0) {
-+    near = PHOSH_TOP_BAR_MODE_NONE;
-+    far = PHOSH_TOP_BAR_MODE_ALL;
-+    exclusive = 1;
-+  } else if (g_strcmp0 (busy, "right") == 0) {
-+    near = PHOSH_TOP_BAR_MODE_ALL;
-+    far = PHOSH_TOP_BAR_MODE_NONE;
-+    exclusive = 1;
-+  } else if (g_strcmp0 (busy, "both") == 0) {
-+    /* A window on each panel, or one across both: no half is free to carry
-+     * the bar, and every line of height is the windows'. Both halves fold to
-+     * their handles, and a shade is still pulled by either. */
-+    near = PHOSH_TOP_BAR_MODE_NONE;
-+    far = PHOSH_TOP_BAR_MODE_NONE;
++  if (owner) {
++    mode = PHOSH_TOP_BAR_MODE_NONE;
 +    exclusive = 1;
 +  }
-+  g_debug ("Busy: %s", busy);
 +
-+  phosh_top_panel_set_bar_mode (PHOSH_TOP_PANEL (priv->top_panel), near);
-+  phosh_top_panel_set_bar_mode (PHOSH_TOP_PANEL (priv->top_panel_right), far);
++  phosh_top_panel_set_bar_mode (PHOSH_TOP_PANEL (priv->top_panel), mode);
++  phosh_top_panel_set_bar_mode (PHOSH_TOP_PANEL (priv->top_panel_right), mode);
 +  if (priv->bar_exclusive != exclusive) {
 +    priv->bar_exclusive = exclusive;
 +    phosh_drag_surface_set_exclusive (priv->top_panel, exclusive);
@@ -245,7 +224,7 @@
  static void
  set_locked (PhoshShell *self, gboolean locked)
  {
-@@ -710,6 +817,7 @@
+@@ -710,6 +796,7 @@
  
    update_top_level_layer (self);
    update_top_bar_transparency (self);
