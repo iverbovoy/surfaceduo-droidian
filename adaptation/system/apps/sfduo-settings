@@ -491,7 +491,10 @@ class Window(Adw.ApplicationWindow):
         if subtitle:
             row.set_subtitle(subtitle)
         row.add_prefix(Gtk.Image.new_from_icon_name(icon))
-        row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
+        # no chevron: it points right on both panels, and on the right one it
+        # meets the dock's back arrow at the same edge pointing the other way.
+        # A row with an icon and a title reads as a door without it (Android's
+        # settings have none).
         row.connect("activated", lambda _r: self._open(name, target))
         return row
 

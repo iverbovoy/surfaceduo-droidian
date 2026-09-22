@@ -263,6 +263,18 @@ headerbar button.back {
   border: none;
   opacity: 0;
 }
+/* sfduo: nor a chevron at the end of a row. It points right on both
+   panels, and on the right one it meets the port's back arrow at the same
+   edge pointing the other way; the port's own list has none either. A
+   picture standing alone at a row's end is one, whichever panel or file
+   made it - a switch, a value or an error sits in a box of its own. */
+row .suffixes > image {
+  -gtk-icon-size: 0;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  opacity: 0;
+}
 CSS
             } > "$STYLE_CSS"
         fi
