@@ -139,6 +139,18 @@ phosh-lockscreen scrolledwindow {
    reaches nothing else. */
 phosh-lockscreen deck > box > box > label.dim-label { margin-left: @RIGHT@px; }
 
+/* ---- system dialogs --------------------------------------------------- */
+
+/* The password prompt, the Wi-Fi password, the power menu, a mount or an
+   app's permission request (#92): each is a layer over the whole output with
+   one centred box, so it sat across the hinge. These go the other way from
+   the rest, onto the LEFT panel with a right margin of @RIGHT@px - most of
+   them ask for typing, and the keyboard (osk-patches/0001) takes the right
+   panel. The box sits in an HdyClamp of 400, which grows to hold the margin
+   and stays centred, so the box lands on the left panel's middle at any
+   width. */
+.phosh-system-modal-dialog { margin-right: @RIGHT@px; }
+
 /* ---- home bar --------------------------------------------------------- */
 
 /* The drag handle is 200px wide and centred, i.e. entirely inside the bezel:
