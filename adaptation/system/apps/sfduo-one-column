@@ -44,12 +44,16 @@ gnome-control-center)
     FROM='<condition>max-width: 550sp</condition>'
     PAGE=/org/gnome/Settings/gtk/cc-panel.ui   # the template every panel is built from
     STYLE=/org/gnome/Settings/gtk/style.css    # ... and the sheet it brings along
+    # its panels have pages of their own (Accessibility > Seeing): back has
+    # to reach them before it reaches the window
+    BACK_PHASE=bubble
     ;;
 phosh-mobile-settings)
     RESOURCE=/mobi/phosh/MobileSettings/ui/mobile-settings-window.ui
     FROM='<condition>max-width: 500sp</condition>'
     : "${GSK_RENDERER:=gl}"
     export GSK_RENDERER
+    BACK_PHASE=capture
     ;;
 *)
     echo "sfduo-one-column: run as gnome-control-center or phosh-mobile-settings" >&2
@@ -72,11 +76,11 @@ if [ "$(cat "$DIR/stamp" 2>/dev/null)" != "$stamp" ]; then
     rm -f "$UI" "$DIR/stamp"
     if gresource extract "$REAL" "$RESOURCE" > "$UI.new" 2>/dev/null \
        && grep -qF "$FROM" "$UI.new"; then
-        python3 - "$UI.new" "$UI" "$TO" <<'PY' || rm -f "$UI"
+        python3 - "$UI.new" "$UI" "$TO" "$BACK_PHASE" <<'PY' || rm -f "$UI"
 import sys
 import xml.etree.ElementTree as ET
 
-src, dst, width = sys.argv[1:4]
+src, dst, width, back_phase = sys.argv[1:5]
 tree = ET.parse(src)
 root = tree.getroot()
 
@@ -147,7 +151,12 @@ try:
         controller = ET.SubElement(ET.SubElement(template, "child"), "object",
                                    {"class": "GtkShortcutController"})
         ET.SubElement(controller, "property", name="scope").text = "local"
-        ET.SubElement(controller, "property", name="propagation-phase").text = "capture"
+        # Mobile Settings: in the capture phase, before its navigation - a
+        # page there has nothing under it but the first screen. GNOME
+        # Settings: in the bubble phase, after it - a panel's own pages
+        # (Accessibility > Seeing) pop one at a time, and only a panel's first
+        # page, which cannot pop (can-pop, below), lets it through to here.
+        ET.SubElement(controller, "property", name="propagation-phase").text = back_phase
         shortcut = ET.SubElement(ET.SubElement(controller, "child"), "object",
                                  {"class": "GtkShortcut"})
         ET.SubElement(shortcut, "property", name="trigger").text = "<Alt>Left"
@@ -183,8 +192,9 @@ PY
     # panel that arrow is against the hinge - the far reach of the other
     # hand - while the port's own sits in the corner under the thumb on
     # whichever panel the window is on. A page that cannot be popped has no
-    # arrow: `can-pop` on the template every panel is built from, one line.
-    # The panels' own inner pages keep theirs; this is only the way out.
+    # arrow: `can-pop` on the template every panel is built from. The
+    # panels' inner pages lose theirs through the stylesheet below, and the
+    # port's arrow steps back through them one at a time.
     if [ -n "$PAGE" ]; then
         rm -f "$PAGE_UI"
         if gresource extract "$REAL" "$PAGE" > "$PAGE_UI.new" 2>/dev/null \
@@ -200,6 +210,22 @@ if template is None or template.get("parent") != "AdwNavigationPage":
     print("sfduo-one-column: the panel template is not what this expects", file=sys.stderr)
     raise SystemExit(1)
 ET.SubElement(template, "property", name="can-pop").text = "False"
+# Back on a panel's first page puts the window away. A page that cannot pop
+# still takes Alt+Left in the split view's navigation and does nothing with
+# it, so the window's own shortcut never hears it; the page is asked first.
+# In the bubble phase it comes after the panel's own navigation, which steps
+# back through the panel's pages (Accessibility > Seeing) and lets Alt+Left
+# through only on the first one. Letting the page pop instead - to the
+# column the window keeps under it - put the window away on that column, and
+# the next page asked for showed it for most of a second before itself.
+controller = ET.SubElement(ET.SubElement(template, "child"), "object",
+                           {"class": "GtkShortcutController"})
+ET.SubElement(controller, "property", name="scope").text = "local"
+ET.SubElement(controller, "property", name="propagation-phase").text = "bubble"
+shortcut = ET.SubElement(ET.SubElement(controller, "child"), "object",
+                         {"class": "GtkShortcut"})
+ET.SubElement(shortcut, "property", name="trigger").text = "<Alt>Left"
+ET.SubElement(shortcut, "property", name="action").text = "action(window.minimize)"
 tree.write(dst, encoding="unicode", xml_declaration=True)
 PAGEPY
         fi
@@ -224,6 +250,18 @@ window.csd, window.background, window.solid-csd {
 }
 headerbar, .titlebar, .top-bar {
   box-shadow: none;
+}
+/* sfduo: one way back, the port's arrow in the corner under the thumb on
+   either panel (#88), which now also steps back through a panel's own
+   pages - so their arrows at the top go too, the right panel's against the
+   hinge. Sized away rather than hidden: CSS cannot hide a widget in GTK4. */
+headerbar button.back {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  border: none;
+  opacity: 0;
 }
 CSS
             } > "$STYLE_CSS"

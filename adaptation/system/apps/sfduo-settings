@@ -251,7 +251,10 @@ class DuoPage(Adw.NavigationPage):
             page.add(screen)
 
         view = Adw.ToolbarView()
-        view.add_top_bar(Adw.HeaderBar())
+        # no arrow at the top: the way back is the dock's, in the corner under
+        # the thumb on either panel (#88) - at the top of the right panel an
+        # arrow sits against the hinge
+        view.add_top_bar(Adw.HeaderBar(show_back_button=False))
         view.set_content(page)
         self.set_child(view)
 
@@ -529,7 +532,7 @@ class Window(Adw.ApplicationWindow):
         spinner.set_valign(Gtk.Align.CENTER)
         spinner.set_visible(False)
         view = Adw.ToolbarView()
-        view.add_top_bar(Adw.HeaderBar())
+        view.add_top_bar(Adw.HeaderBar(show_back_button=False))
         view.set_content(spinner)
         self.stand_in = Adw.NavigationPage(title=title, child=view)
         self.stand_in.connect("hidden", lambda page: self._stand_in_gone(page))
