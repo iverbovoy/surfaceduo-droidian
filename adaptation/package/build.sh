@@ -841,7 +841,7 @@ if [ -f "$PHOSH_BIN" ]; then
 else
     echo "NOTE: $PHOSH_BIN not found - building without the patched phosh"
 fi
-# The patched phoc (../shell/phoc-patches/0001-0008): tiled windows stop
+# The patched phoc (../shell/phoc-patches/0001-0012): tiled windows stop
 # short of the hinge named by `tiling-seam` in phoc.ini, a new window opens
 # on the panel touched last, a closed one fades away and a minimized one
 # drops to the bottom edge, a bar giving up its reservation gives it up at

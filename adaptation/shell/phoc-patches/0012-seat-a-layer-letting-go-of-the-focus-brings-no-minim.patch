@@ -1,0 +1,39 @@
+From 2a4c01274e95628901cb932ac65162a043872680 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Wed, 23 Sep 2026 02:20:42 +0300
+Subject: [PATCH] seat: a layer letting go of the focus brings no minimized
+ view back
+
+---
+ src/seat.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/src/seat.c b/src/seat.c
+index 77b086f..bb631fd 100644
+--- a/src/seat.c
++++ b/src/seat.c
+@@ -1548,7 +1548,20 @@ phoc_seat_set_focus_layer (PhocSeat                    *seat,
+   if (!layer) {
+     if (seat->focused_layer) {
+       PhocOutput *output = PHOC_OUTPUT (seat->focused_layer->output->data);
+-      PhocSeatView *seat_view = g_queue_peek_head (priv->views);
++      PhocSeatView *seat_view = NULL;
++
++      /* Back to the view focused last that is still on screen. A minimized
++       * one would be brought back by being focused (see
++       * phoc_seat_set_focus_view): a shade pulled down over a desktop with
++       * every window put away brought the last of them back as it closed. */
++      for (GList *l = priv->views->head; l; l = l->next) {
++        PhocSeatView *candidate = l->data;
++
++        if (!phoc_view_is_minimized (candidate->view)) {
++          seat_view = candidate;
++          break;
++        }
++      }
+ 
+       seat->focused_layer = NULL;
+       phoc_seat_set_focus_view (seat, seat_view ? seat_view->view : NULL);
+-- 
+2.43.0
+
