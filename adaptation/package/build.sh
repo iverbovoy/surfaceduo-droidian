@@ -906,13 +906,14 @@ if [ -f "$PHOSH_BIN" ]; then
 else
     echo "NOTE: $PHOSH_BIN not found - building without the patched phosh"
 fi
-# The patched phoc (../shell/phoc-patches/0001-0012): tiled windows stop
+# The patched phoc (../shell/phoc-patches/0001-0013): tiled windows stop
 # short of the hinge named by `tiling-seam` in phoc.ini, a new window opens
 # on the panel touched last, a closed one fades away and a minimized one
 # drops to the bottom edge, a bar giving up its reservation gives it up at
 # once, windows can be minimized at all, org.sfduo.Phoc.Tile puts windows on
 # a half directly and sliding, maximized means one panel, and a window too
-# wide for a panel is fitted into it. Version-locked like phosh:
+# wide for a panel is fitted into it; frame done goes to the clients before
+# the repaint, not after hwcomposer's swap. Version-locked like phosh:
 # see sfduo-phoc-install. Built per ../shell/README.md.
 install -m755 "$SHELLDIR/sfduo-phoc-install" "$PKG/usr/local/sbin/"
 PHOC_BIN="$ROOT/out/phoc/phoc-0.47.0-98211ea-sfduo"
