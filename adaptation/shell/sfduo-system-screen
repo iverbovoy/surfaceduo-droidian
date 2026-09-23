@@ -46,7 +46,8 @@ from gi.repository import Gtk4LayerShell  # noqa: E402
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 gi.require_version("Graphene", "1.0")
-from gi.repository import Gdk, Gio, GLib, Graphene, Gtk  # noqa: E402
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gtk  # noqa: E402
 
 BUS_NAME = "org.sfduo.SystemScreen"
 BUS_PATH = "/org/sfduo/SystemScreen"
@@ -65,7 +66,12 @@ CSS = b"""
    and not as the desktop's large clock, which slides away */
 .system-time { font-size: 17px; font-weight: bold; color: #1c1c1e; }
 .system-date { font-size: 15px; color: #3a3a3c; }
-.system-placeholder { font-size: 16px; color: #8e8e93; }
+.system-greeting { font-size: 24px; font-weight: 300; color: #1c1c1e; }
+.system-card { background-color: #ffffff; border-radius: 16px; padding: 14px 16px; }
+.system-card-title { font-size: 13px; font-weight: bold; color: #6e6e73; }
+.system-card-body { font-size: 15px; color: #1c1c1e; }
+.system-quiet { font-size: 13px; color: #8e8e93; }
+scrollbar { opacity: 0; }
 """
 
 INTROSPECTION = """
@@ -90,17 +96,25 @@ def ease_out(t):
 
 
 class Backdrop(Gtk.Widget):
-    """The background: one colour node, whatever the colour is now."""
+    """The background: one colour node, whatever the colour is now. Also the
+    veil over the content: the same colour at an alpha going from 1 to 0, so
+    the content comes out of the background - one more colour node a frame,
+    where an opacity over the content had GTK render the whole page into a
+    texture of its own each frame and halved the frame rate (16.6 -> 33 ms)."""
 
-    def __init__(self):
+    def __init__(self, alpha=1.0):
         super().__init__()
         self.rgb = DARK
+        self.alpha = alpha
         self.set_hexpand(True)
         self.set_vexpand(True)
+        self.set_can_target(False)
 
     def do_snapshot(self, snapshot):
+        if self.alpha <= 0.0:
+            return
         colour = Gdk.RGBA()
-        colour.red, colour.green, colour.blue, colour.alpha = (*self.rgb, 1.0)
+        colour.red, colour.green, colour.blue, colour.alpha = (*self.rgb, self.alpha)
         rect = Graphene.Rect().init(0, 0, self.get_width(), self.get_height())
         snapshot.append_color(colour, rect)
 
@@ -134,17 +148,23 @@ class SystemScreen:
         overlay = Gtk.Overlay()
         self.backdrop = Backdrop()
         overlay.set_child(self.backdrop)
-        self.content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
-                               halign=Gtk.Align.CENTER, valign=Gtk.Align.START)
-        self.content.set_margin_top(14)             # where the shade's head is
-        self.time = Gtk.Label(css_classes=["system-time"])
-        self.date = Gtk.Label(css_classes=["system-date"])
-        placeholder = Gtk.Label(label="The system screen", css_classes=["system-placeholder"])
-        placeholder.set_margin_top(48)
-        for w in (self.time, self.date, placeholder):
-            self.content.append(w)
-        self.content.set_opacity(0.0)
+        self.content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.content.append(self._build_head())
+        scroll = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for side in ("margin_start", "margin_end"):
+            column.set_property(side, 20)
+        column.set_margin_top(8)
+        column.set_margin_bottom(24)
+        self.cards = {}
+        for key, title in self.CARDS:
+            column.append(self._card(key, title))
+        scroll.set_child(column)
+        self.content.append(scroll)
+        self.content.set_child_visible(False)     # not drawn at all under a full veil
         overlay.add_overlay(self.content)
+        self.veil = Backdrop(alpha=1.0)
+        overlay.add_overlay(self.veil)
         self.window.set_child(overlay)
         # A swipe left on it closes it - the way the swipe right from the
         # desktop brought it, back (#111)
@@ -154,8 +174,124 @@ class SystemScreen:
         drag.connect("drag-update", self._on_drag_update)
         drag.connect("drag-end", self._on_drag_end)
         self.window.add_controller(drag)
+        self.refreshing = None
+        self.step = None
+        self.avatar_file = None                   # (path, mtime) of the picture shown
+        try:
+            self.interface = Gio.Settings.new("org.gnome.desktop.interface")
+        except (GLib.Error, TypeError):
+            self.interface = None
+
+    # ---- the page ---------------------------------------------------------------
+    #
+    # A head - the time and date where the shade shows them, then a greeting
+    # and the owner's picture - and a scrolling column of cards, one per
+    # subject, filled by the tickets of epic #109. Everything on it is read
+    # while the screen is open and not otherwise: on the way in, then every
+    # REFRESH_S; closed, nothing is asked of anyone.
+
+    CARDS = [("battery", "Battery"), ("load", "Load"), ("memory", "Memory"),
+             ("storage", "Storage"), ("network", "Network"), ("next", "Next up"),
+             ("device", "This device"), ("weather", "Weather"), ("screen-time", "Screen time")]
+    REFRESH_S = 5
+
+    def _build_head(self):
+        head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        head.set_margin_top(14)                   # where the shade's head is
+        self.time = Gtk.Label(css_classes=["system-time"])
+        self.date = Gtk.Label(css_classes=["system-date"])
+        head.append(self.time)
+        head.append(self.date)
+        hello = Gtk.Box(spacing=14)
+        hello.set_margin_top(22)
+        hello.set_margin_bottom(14)
+        hello.set_margin_start(20)
+        hello.set_margin_end(20)
+        self.avatar = Adw.Avatar(size=56, show_initials=True)
+        self.greeting = Gtk.Label(css_classes=["system-greeting"], xalign=0, hexpand=True,
+                                  wrap=True)
+        hello.append(self.avatar)
+        hello.append(self.greeting)
+        head.append(hello)
+        return head
+
+    def _card(self, key, title):
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, css_classes=["system-card"])
+        card.append(Gtk.Label(label=title.upper(), css_classes=["system-card-title"], xalign=0))
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        body.append(Gtk.Label(label="Coming", css_classes=["system-quiet"], xalign=0))
+        card.append(body)
+        self.cards[key] = body
+        return card
+
+    def _read_owner(self):
+        """Ask AccountsService for the system user's name as they gave it and
+        their picture - without waiting: the answer comes while the page is
+        sliding in, and a call waited for there costs frames."""
+        def got_props(bus, result):
+            try:
+                props = bus.call_finish(result).unpack()[0]
+            except GLib.Error:
+                return
+            self._show_owner(props.get("RealName"), props.get("UserName"), props.get("IconFile"))
+
+        def got_user(bus, result):
+            try:
+                path = bus.call_finish(result).unpack()[0]
+            except GLib.Error:
+                self._show_owner(None, None, None)
+                return
+            bus.call("org.freedesktop.Accounts", path, "org.freedesktop.DBus.Properties",
+                     "GetAll", GLib.Variant("(s)", ("org.freedesktop.Accounts.User",)),
+                     None, Gio.DBusCallFlags.NONE, 1000, None, got_props)
+
+        try:
+            bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        except GLib.Error:
+            return
+        bus.call("org.freedesktop.Accounts", "/org/freedesktop/Accounts",
+                 "org.freedesktop.Accounts", "FindUserById",
+                 GLib.Variant("(x)", (os.getuid(),)), None,
+                 Gio.DBusCallFlags.NONE, 1000, None, got_user)
+
+    def _show_owner(self, real, user, icon):
+        # a login is not a name: 'droidian' is greeted by the time of day alone
+        name = real.split()[0] if real and real != user else None
+        hour = GLib.DateTime.new_now_local().get_hour()
+        part = ("Good morning" if 5 <= hour < 12 else "Good afternoon" if 12 <= hour < 18
+                else "Good evening" if 18 <= hour < 23 else "Good night")
+        self.greeting.set_text(f"{part}, {name}" if name else part)
+        self.avatar.set_text(real or user or "")
+        # decoded again only when the picture changed
+        try:
+            key = (icon, os.path.getmtime(icon)) if icon else None
+        except OSError:
+            key = None
+        if key == self.avatar_file:
+            return
+        self.avatar_file = key
+        texture = None
+        if key:
+            try:
+                texture = Gdk.Texture.new_from_filename(icon)
+            except GLib.Error:
+                texture = None
+        self.avatar.set_custom_image(texture)
+
+    def _refresh(self):
+        """Read what changes while the page is open: the time. Called on the
+        way in and then every REFRESH_S while it is open."""
         self._show_time()
-        GLib.timeout_add_seconds(20, self._show_time)
+        return True
+
+    def _opened(self, is_open):
+        if is_open and self.refreshing is None:
+            self._refresh()
+            self._read_owner()                    # once a visit: it hardly changes
+            self.refreshing = GLib.timeout_add_seconds(self.REFRESH_S, self._refresh)
+        elif not is_open and self.refreshing is not None:
+            GLib.source_remove(self.refreshing)
+            self.refreshing = None
 
     # ---- geometry -------------------------------------------------------------
 
@@ -179,13 +315,9 @@ class SystemScreen:
 
     def _show_time(self):
         now = GLib.DateTime.new_now_local()
-        try:
-            twelve = Gio.Settings.new("org.gnome.desktop.interface").get_string("clock-format") == "12h"
-        except (GLib.Error, TypeError):
-            twelve = False
+        twelve = self.interface is not None and self.interface.get_string("clock-format") == "12h"
         self.time.set_text(now.format("%l:%M %p").strip() if twelve else now.format("%H:%M"))
         self.date.set_text(now.format("%A, %B %e").replace("  ", " "))
-        return True
 
     def apply(self, progress):
         """Everything a progress says: where the surface stands, its colour,
@@ -194,7 +326,9 @@ class SystemScreen:
         if self.progress <= 0.0:
             self.window.set_visible(False)
             self._say_progress()
+            self._opened(False)
             return
+        self._opened(True)
         if not self.window.get_visible():
             self.window.present()
         # One pixel stays on screen however little is open: a surface wholly
@@ -206,7 +340,11 @@ class SystemScreen:
         self.backdrop.rgb = mix(DARK, LIGHT, self.progress)
         self.backdrop.queue_draw()
         shown = max(0.0, (self.progress - CONTENT_FROM) / (1 - CONTENT_FROM))
-        self.content.set_opacity(shown)
+        if self.content.get_child_visible() != (shown > 0.0):
+            self.content.set_child_visible(shown > 0.0)
+        self.veil.rgb = self.backdrop.rgb
+        self.veil.alpha = 1.0 - shown
+        self.veil.queue_draw()
         self._say_progress()
 
     def _say_progress(self):
@@ -234,17 +372,14 @@ class SystemScreen:
         it went nowhere); a timer stands by for that, and takes over the steps
         when the frame clock has been silent for two frames. A timer alone
         missed the refresh a frame or two per slide (~20 ms a frame, max 50)."""
-        self._stop()
         self.chasing = False
         start, t0 = self.progress, GLib.get_monotonic_time()
         self.frames = []
-        self.last_step = t0
         if target > 0 and not self.window.get_visible():
             self.apply(0.001)
 
         def step():
             now = GLib.get_monotonic_time()
-            self.last_step = now
             t = min(1.0, (now - t0) / 1000.0 / SLIDE_MS)
             self.apply(start + (target - start) * ease_out(t))
             if t >= 1.0:
@@ -253,17 +388,40 @@ class SystemScreen:
                 return False
             return True
 
-        def tick(_widget, clock):
+        self._drive(step)
+
+    def _drive(self, step):
+        """Step `step` from now on: on the frame clock, with the watchdog.
+
+        One motion hands over to the next - a finger let go, its chase
+        becoming the slide that finishes the job - without the frame clock
+        stopping in between: a tick callback taken off and another put on
+        cost the first frame of the slide, 33-50 ms instead of 16.6 (#114)."""
+        self.step = step
+        self.last_step = GLib.get_monotonic_time()
+        if getattr(self, "ticking", None) is None:
+            self.ticking = self.window.add_tick_callback(self._on_tick)
+        if self.animation is None:
+            self.animation = GLib.timeout_add(self.FRAME_MS, self._on_watchdog)
+
+    def _on_tick(self, _widget, clock):
+        if self.step is None:                     # stopped since it was put on
+            self.ticking = None
+            return GLib.SOURCE_REMOVE
+        if self.frames is not None:
             self.frames.append(clock.get_frame_time())
-            return GLib.SOURCE_CONTINUE if step() else GLib.SOURCE_REMOVE
+        self.last_step = GLib.get_monotonic_time()
+        return GLib.SOURCE_CONTINUE if self.step() else GLib.SOURCE_REMOVE
 
-        def watchdog():
-            if GLib.get_monotonic_time() - self.last_step > 2 * self.FRAME_MS * 1000:
-                return step()
-            return True
-
-        self.ticking = self.window.add_tick_callback(tick)
-        self.animation = GLib.timeout_add(self.FRAME_MS, watchdog)
+    def _on_watchdog(self):
+        if self.step is None:
+            self.animation = None
+            return False
+        now = GLib.get_monotonic_time()
+        if now - self.last_step > 2 * self.FRAME_MS * 1000:
+            self.last_step = now
+            return self.step()
+        return True
 
     # ---- following a finger -------------------------------------------------------
     #
@@ -287,13 +445,12 @@ class SystemScreen:
         self.target = max(0.0, min(1.0, progress))
         if self.animation is not None and getattr(self, "chasing", False):
             return                            # the chase in progress takes it from here
-        self._stop()
         self.chasing = True
+        self.frames = None                    # a finger's pace is not the display's
         if self.target > 0 and not self.window.get_visible():
             self.apply(0.001)
 
         def step():
-            self.last_step = GLib.get_monotonic_time()
             left = self.target - self.progress
             if abs(left) * self.width < 0.5:
                 self.apply(self.target)
@@ -303,19 +460,10 @@ class SystemScreen:
             self.apply(self.progress + left * self.CHASE)
             return True
 
-        def tick(_widget, _clock):
-            return GLib.SOURCE_CONTINUE if step() else GLib.SOURCE_REMOVE
-
-        def watchdog():
-            if GLib.get_monotonic_time() - self.last_step > 2 * self.FRAME_MS * 1000:
-                return step()
-            return True
-
-        self.last_step = GLib.get_monotonic_time()
-        self.ticking = self.window.add_tick_callback(tick)
-        self.animation = GLib.timeout_add(self.FRAME_MS, watchdog)
+        self._drive(step)
 
     def _stop(self):
+        self.step = None
         if self.animation is not None:
             GLib.source_remove(self.animation)
             self.animation = None
@@ -409,6 +557,7 @@ def main():
     state = {}
 
     def activate(app):
+        Adw.init()                                # the avatar is libadwaita's
         screen = SystemScreen(app)
         state["screen"] = screen
         app.hold()
