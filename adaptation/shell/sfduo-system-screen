@@ -23,8 +23,10 @@ Driven by a progress 0..1 on the session bus - SetProgress(d), Open(), Close()
 surface is unmapped and draws nothing.
 """
 import ctypes
+import datetime
 import os
 import sys
+import threading
 import time
 
 # gtk4-layer-shell has to be in the process before libwayland-client is, or
@@ -789,6 +791,150 @@ class NetworkCard:
         self.rows["mobile"].set_text("No modem")
 
 
+EVENTS_AHEAD_S = 7 * 86400                # how far the calendar is looked into
+
+
+def clock_text(t, twelve):
+    lt = time.localtime(t)
+    return time.strftime("%l:%M %p", lt).strip() if twelve else time.strftime("%H:%M", lt)
+
+
+def day_text(t):
+    """today, tomorrow, or the weekday, for something within the week."""
+    days = (datetime.date.fromtimestamp(t) - datetime.date.today()).days
+    return "today" if days == 0 else "tomorrow" if days == 1 else time.strftime("%a", time.localtime(t))
+
+
+def until_text(t):
+    left = t - time.time()
+    if left < 60:
+        return "now"
+    if left < 3600:
+        return f"in {int(left // 60)} min"
+    if left < 86400:
+        hours, minutes = divmod(int(left // 60), 60)
+        return f"in {hours} h {minutes} min" if minutes else f"in {hours} h"
+    days = int(round(left / 86400))
+    return f"in {days} day" + ("s" if days > 1 else "")
+
+
+def next_alarm(alarms):
+    """The next time one of Clocks' alarms rings, and its name: each alarm
+    is a dict of hour, minute, active and days (0 Monday .. 6 Sunday, none
+    for once) - Clocks' own serialisation."""
+    now = time.time()
+    best = None
+    for alarm in alarms:
+        if not alarm.get("active", True):
+            continue
+        hour, minute = int(alarm.get("hour", 0)), int(alarm.get("minute", 0))
+        days = list(alarm.get("days", []))
+        for ahead in range(8):
+            lt = time.localtime(now + ahead * 86400)
+            at = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, hour, minute, 0, 0, 0, -1))
+            if at <= now or (days and lt.tm_wday not in days):
+                continue
+            if best is None or at < best[0]:
+                best = (at, str(alarm.get("name", "")))
+            break
+    return best
+
+
+class NextUpCard:
+    """What comes next (#118): Clocks' next alarm and the calendar's next
+    event, with how long until each. The calendar is evolution-data-server's,
+    asked from a thread of its own - its calls wait on the answer - once on
+    the way in and once a minute while the page is open; its clients are
+    made and kept in that thread, and only the answer comes back."""
+
+    def __init__(self, body, screen):
+        clear(body)
+        self.screen = screen
+        self.rows = {}
+        for key, name in (("alarm", "Alarm"), ("event", "Calendar")):
+            line = Gtk.Box(spacing=8)
+            line.append(Gtk.Label(label=name, css_classes=["system-row-name"], xalign=0))
+            text = Gtk.Label(css_classes=["system-card-body"], xalign=1, hexpand=True, ellipsize=3)
+            line.append(text)
+            body.append(line)
+            self.rows[key] = text
+        source = Gio.SettingsSchemaSource.get_default()
+        self.clocks = (Gio.Settings.new("org.gnome.clocks")
+                       if source and source.lookup("org.gnome.clocks", True) else None)
+        self.event = None                 # (start, all day, summary) or False: none
+        self.asking = False
+        self.eds = {}                     # the calendar thread's: registry and clients
+
+    def refresh(self, calendar=False):
+        twelve = self.screen.interface is not None and \
+            self.screen.interface.get_string("clock-format") == "12h"
+        alarm = next_alarm(self.clocks.get_value("alarms").unpack()) if self.clocks else None
+        if alarm:
+            at, name = alarm
+            text = f"{clock_text(at, twelve)} {day_text(at)} \u00b7 {until_text(at)}"
+            self.rows["alarm"].set_text(f"{name} \u00b7 {text}" if name and name != "Alarm" else text)
+        else:
+            self.rows["alarm"].set_text("No alarm set")
+        if calendar and not self.asking:
+            self.asking = True
+            threading.Thread(target=self._ask_calendar, daemon=True).start()
+        self._show_event(twelve)
+
+    def _show_event(self, twelve):
+        if self.event is None:
+            self.rows["event"].set_text("")
+        elif self.event is False:
+            self.rows["event"].set_text("Nothing in the next 7 days")
+        elif self.event == "unavailable":
+            self.rows["event"].set_text("Calendar unavailable")
+        else:
+            start, all_day, summary = self.event
+            when = day_text(start) if all_day else f"{day_text(start)} {clock_text(start, twelve)}"
+            self.rows["event"].set_text(f"{summary} \u00b7 {when} \u00b7 {until_text(start)}")
+
+    def _ask_calendar(self):
+        """In the calendar thread: the next event in any enabled calendar."""
+        found, failed = None, False
+        try:
+            gi.require_version("EDataServer", "1.2")
+            gi.require_version("ECal", "2.0")
+            from gi.repository import ECal, EDataServer
+            if "registry" not in self.eds:
+                self.eds["registry"] = EDataServer.SourceRegistry.new_sync(None)
+            registry = self.eds["registry"]
+            now = int(time.time())
+            for source in registry.list_sources(EDataServer.SOURCE_EXTENSION_CALENDAR):
+                if not source.get_enabled():
+                    continue
+                uid = source.get_uid()
+                if uid not in self.eds:
+                    self.eds[uid] = ECal.Client.connect_sync(
+                        source, ECal.ClientSourceType.EVENTS, 30, None)
+                client = self.eds[uid]
+                zone = client.get_default_timezone()
+
+                def instance(icomp, start, end, *_rest, zone=zone):
+                    nonlocal found
+                    t0 = start.as_timet_with_zone(zone)
+                    t1 = end.as_timet_with_zone(zone) if end else t0
+                    if t1 > now and (found is None or t0 < found[0]):
+                        found = (t0, bool(start.is_date()), icomp.get_summary() or "Event")
+                    return True
+                client.generate_instances_sync(now, now + EVENTS_AHEAD_S, None, instance)
+        except (GLib.Error, ValueError, ImportError) as e:
+            # no evolution-data-server introspection (gir1.2-ecal-2.0,
+            # installed by sfduo-shell-setup), or the server not answering
+            print(f"sfduo-system-screen: calendar: {e}", file=sys.stderr)
+            failed = True
+
+        def show():
+            self.asking = False
+            self.event = "unavailable" if failed and not found else (found or False)
+            self.refresh()
+            return False
+        GLib.idle_add(show)
+
+
 class SystemScreen:
     def __init__(self, app):
         self.app = app
@@ -837,6 +983,7 @@ class SystemScreen:
         self.ledger = TrafficLedger()
         self.sampler.listeners.append(self.ledger.sampled)
         self.network = NetworkCard(self.cards["network"], self.ledger)
+        self.next_up = NextUpCard(self.cards["next"], self)
         scroll.set_child(column)
         self.content.append(scroll)
         self.content.set_child_visible(False)     # not drawn at all under a full veil
@@ -992,6 +1139,7 @@ class SystemScreen:
         self.battery.refresh(history=self.refreshes % self.HISTORY_EVERY == 0)
         for card in (self.load, self.memory, self.storage, self.network):
             card.refresh()
+        self.next_up.refresh(calendar=self.refreshes % self.HISTORY_EVERY == 0)
         return True
 
     def _opened(self, is_open):
