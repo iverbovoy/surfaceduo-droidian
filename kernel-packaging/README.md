@@ -33,7 +33,8 @@ Apply the kernel patches once per fresh clone (what they do: see
 git -C ../surface-duo-oss-kernel.msm-4.14 apply \
   "$PWD"/patches/0001-dwc3-msm-force-suspend-when-not-in-lpm.patch \
   "$PWD"/patches/0002-adsprpc-ratelimit-bad-ioctl-log.patch \
-  "$PWD"/patches/0004-ext4-remove-android-umount_end-hook.patch
+  "$PWD"/patches/0004-ext4-remove-android-umount_end-hook.patch \
+  "$PWD"/patches/0006-sde-idle-power-collapse-off.patch
 # 0003 applies inside techpack/audio - see "Audio modules" below
 # 0005 applies to the boot ramdisk - tools/make-boot-image.sh does it
 ```
@@ -256,3 +257,15 @@ under `lib/modules/<release>/kernel/techpack/audio/`; `dpkg-deb -x` and a
   Mainline ext4 has no such hook; droidian does not need Android's
   skip-fsck-on-reboot semantics. Likely relevant to every
   Droidian/Halium port on an msm-4.14 kernel.
+- `sde_hw_catalog.c` (0006): display idle power collapse off, whatever
+  the device tree says (#127). The panels are command-mode: after 58 ms
+  without a frame the display pipeline powers down, and the first frame
+  after it takes 2-3 vsyncs to reach the panel. Every animation that
+  started without a touch - an app's window, the volume OSD, a
+  notification - began with a ~50 ms frame (14 of 14 animations of two
+  app launches and closes; 0 of 14 with it off). A touch woke the
+  pipeline ahead of time (the driver's `sde` input handler), nothing
+  else did. Battery current with the screen on and still, 4 x 10 min on
+  and off in turn: no cost - the median came out 7-11 mA lower with it
+  off. Turning it off through debugfs (`encoder*/idle_power_collapse`)
+  does not hold: `sde_crtc_disable` turns it back on at every blank.

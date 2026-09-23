@@ -1,0 +1,20 @@
+diff --git a/drivers/gpu/drm/msm/sde/sde_hw_catalog.c b/drivers/gpu/drm/msm/sde/sde_hw_catalog.c
+index fe0c22d09..8a5af2627 100644
+--- a/drivers/gpu/drm/msm/sde/sde_hw_catalog.c
++++ b/drivers/gpu/drm/msm/sde/sde_hw_catalog.c
+@@ -3257,7 +3257,14 @@ static int sde_parse_dt(struct device_node *np, struct sde_mdss_cfg *cfg)
+ 
+ 	cfg->has_src_split = PROP_VALUE_ACCESS(prop_value, SRC_SPLIT, 0);
+ 	cfg->has_dim_layer = PROP_VALUE_ACCESS(prop_value, DIM_LAYER, 0);
+-	cfg->has_idle_pc = PROP_VALUE_ACCESS(prop_value, IDLE_PC, 0);
++	/*
++	 * Idle power collapse stays off, whatever the device tree says. The
++	 * panels are command-mode: after 58 ms without a frame the pipeline
++	 * powers down, and the first frame after it takes 2-3 vsyncs - every
++	 * animation that starts without a touch began with a ~50 ms frame. With
++	 * the screen on and still it saved nothing measurable in battery current.
++	 */
++	cfg->has_idle_pc = false;
+ 	cfg->pipe_order_type = PROP_VALUE_ACCESS(prop_value,
+ 		PIPE_ORDER_VERSION, 0);
+ 	cfg->has_line_insertion = PROP_VALUE_ACCESS(prop_value,
