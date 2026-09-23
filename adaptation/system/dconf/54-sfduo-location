@@ -7,3 +7,11 @@
 # city. A default, not a lock - Clocks can turn it back on.
 [org/gnome/clocks]
 geolocation=false
+
+# Night Light (gsd-color) asked for the location at every session start to
+# find the sunset - with Night Light itself off - and GeoClue sent the Wi-Fi
+# networks around the phone to api.beacondb.net to answer it. Its schedule
+# is the fixed one instead (20:00-06:00 unless changed); "sunset to sunrise"
+# is one switch away in Settings.
+[org/gnome/settings-daemon/plugins/color]
+night-light-schedule-automatic=false
