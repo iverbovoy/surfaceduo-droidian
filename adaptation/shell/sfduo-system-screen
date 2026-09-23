@@ -39,6 +39,7 @@ except OSError:
     pass
 os.environ.setdefault("GSK_RENDERER", "gl")
 
+import cairo  # noqa: E402
 import gi  # noqa: E402
 
 gi.require_version("Gtk4LayerShell", "1.0")
@@ -71,6 +72,8 @@ CSS = b"""
 .system-card-title { font-size: 13px; font-weight: bold; color: #6e6e73; }
 .system-card-body { font-size: 15px; color: #1c1c1e; }
 .system-quiet { font-size: 13px; color: #8e8e93; }
+.system-card-lead { font-size: 20px; font-weight: bold; color: #1c1c1e; }
+.system-axis { font-size: 11px; color: #8e8e93; }
 scrollbar { opacity: 0; }
 """
 
@@ -119,6 +122,196 @@ class Backdrop(Gtk.Widget):
         snapshot.append_color(colour, rect)
 
 
+UPOWER = "org.freedesktop.UPower"
+UPOWER_DEVICE = "org.freedesktop.UPower.Device"
+# UPower's device states
+CHARGING, DISCHARGING, EMPTY, FULL = 1, 2, 3, 4
+HISTORY_S = 24 * 3600                     # the battery graph's span
+CHARGE_RGB = (0x34 / 255, 0xC7 / 255, 0x59 / 255)
+DRAIN_RGB = (0x3A / 255, 0x3A / 255, 0x3C / 255)
+
+
+def about(seconds):
+    """A duration as a person would say it: to 10 minutes, UPower's
+    estimate being no finer than that on battery - and from 5 hours on in
+    whole hours, a day ahead being no finer than that."""
+    if seconds >= 5 * 3600:
+        return f"{int(round(seconds / 3600.0))} h"
+    minutes = int(round(seconds / 600.0)) * 10
+    if minutes < 10:
+        return "under 10 min"
+    hours, minutes = divmod(minutes, 60)
+    if not hours:
+        return f"{minutes} min"
+    return f"{hours} h {minutes} min" if minutes else f"{hours} h"
+
+
+class ChargeGraph(Gtk.Widget):
+    """The charge over the last HISTORY_S, from UPower's history: charging
+    in green, draining in dark grey, broken where the history has a gap
+    (a restart).
+
+    Drawn into a texture when the data changes - the history once a minute,
+    the level when it moves - and not in the frame that shows it: a cairo
+    node drawn in the snapshot was drawn and uploaded again each time the
+    page's content came out, and that frame took 33-50 ms in half the opens.
+    A texture kept is uploaded once and shown from then on."""
+
+    HEIGHT = 64
+
+    def __init__(self):
+        super().__init__()
+        self.points = []                  # (unix time, percent, state), oldest first
+        self.last = None                  # the level now: the history adds a point a percent
+        self.texture = None
+        self.drawn_for = None             # (width, scale) the texture was drawn at
+        self.set_size_request(-1, self.HEIGHT)
+        self.set_hexpand(True)
+
+    def set_points(self, points):
+        if points != self.points:
+            self.points = points
+            self._draw()
+
+    def set_now(self, pct, state):
+        if self.last is None or self.last[1:] != (pct, state):
+            self.last = (time.time(), pct, state)
+            self._draw()
+
+    def _draw(self):
+        """Draw the graph into self.texture at the size it is shown at."""
+        w, scale = self.get_width(), self.get_scale_factor()
+        if w <= 0:
+            return                        # not laid out yet: the snapshot will ask
+        pw, ph = w * scale, self.HEIGHT * scale
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, pw, ph)
+        cr = cairo.Context(surface)
+        cr.scale(scale, scale)
+        h = self.HEIGHT
+        cr.set_line_width(1)
+        cr.set_source_rgba(0, 0, 0, 0.08)
+        for level in (0, 50, 100):            # the empty, half and full lines
+            y = round(h - 1 - (h - 2) * level / 100) + 0.5
+            cr.move_to(0, y)
+            cr.line_to(w, y)
+            cr.stroke()
+        points = list(self.points)
+        if self.last is not None and points and self.last[0] > points[-1][0]:
+            points.append((time.time(), *self.last[1:]))
+        now = time.time()
+
+        def at(t, pct):
+            return (w * (1 - (now - t) / HISTORY_S), h - 1 - (h - 2) * pct / 100.0)
+
+        cr.set_line_width(2)
+        for (t0, p0, s0), (t1, p1, s1) in zip(points, points[1:]):
+            # a point of unknown state is a gap (the phone restarting, the
+            # history saying 0 %); so is a long silence
+            if s0 == 0 or s1 == 0 or t1 - t0 > 3 * 3600:
+                continue
+            cr.set_source_rgb(*(CHARGE_RGB if s0 in (CHARGING, FULL) else DRAIN_RGB))
+            cr.move_to(*at(t0, p0))
+            cr.line_to(*at(t1, p1))
+            cr.stroke()
+        surface.flush()
+        data = GLib.Bytes.new(bytes(surface.get_data()))
+        self.texture = Gdk.MemoryTexture.new(pw, ph, Gdk.MemoryFormat.B8G8R8A8_PREMULTIPLIED,
+                                             data, surface.get_stride())
+        self.drawn_for = (w, scale)
+        self.queue_draw()
+
+    def do_snapshot(self, snapshot):
+        if self.drawn_for != (self.get_width(), self.get_scale_factor()):
+            self._draw()                  # first shown, or resized
+        if self.texture is not None:
+            snapshot.append_texture(self.texture,
+                                    Graphene.Rect().init(0, 0, self.get_width(), self.HEIGHT))
+
+
+class BatteryCard:
+    """The battery card (#115): the level and what it is doing, the power
+    and the temperature, and the charge over the last day. UPower is asked
+    without waiting, and only while the page is open."""
+
+    def __init__(self, body):
+        for child in list(body):
+            body.remove(child)
+        self.lead = Gtk.Label(css_classes=["system-card-lead"], xalign=0)
+        self.detail = Gtk.Label(css_classes=["system-quiet"], xalign=0)
+        self.graph = ChargeGraph()
+        self.graph.set_margin_top(8)
+        axis = Gtk.Box()
+        axis.append(Gtk.Label(label="24 h ago", css_classes=["system-axis"], xalign=0, hexpand=True))
+        axis.append(Gtk.Label(label="now", css_classes=["system-axis"], xalign=1))
+        for w in (self.lead, self.detail, self.graph, axis):
+            body.append(w)
+        self.path = None
+        self.bus = None
+
+    def refresh(self, history=False):
+        if self.bus is None:
+            try:
+                self.bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            except GLib.Error:
+                return
+        if self.path is None:
+            self.bus.call(UPOWER, "/org/freedesktop/UPower", UPOWER, "EnumerateDevices", None,
+                          None, Gio.DBusCallFlags.NONE, 1000, None, self._got_devices, history)
+            return
+        self.bus.call(UPOWER, self.path, "org.freedesktop.DBus.Properties", "GetAll",
+                      GLib.Variant("(s)", (UPOWER_DEVICE,)), None, Gio.DBusCallFlags.NONE, 1000,
+                      None, self._got_props)
+        if history:
+            self.bus.call(UPOWER, self.path, UPOWER_DEVICE, "GetHistory",
+                          GLib.Variant("(suu)", ("charge", HISTORY_S, 300)), None,
+                          Gio.DBusCallFlags.NONE, 1000, None, self._got_history)
+
+    def _got_devices(self, bus, result, history):
+        try:
+            paths = bus.call_finish(result).unpack()[0]
+        except GLib.Error:
+            return
+        batteries = [p for p in paths if "battery" in p.rsplit("/", 1)[-1]]
+        if batteries:
+            self.path = batteries[0]
+            self.refresh(history)
+
+    def _got_props(self, bus, result):
+        try:
+            props = bus.call_finish(result).unpack()[0]
+        except GLib.Error:
+            return
+        pct = float(props.get("Percentage", 0.0))
+        state = int(props.get("State", 0))
+        rate = float(props.get("EnergyRate", 0.0))
+        temp = float(props.get("Temperature", 0.0))
+        to_full, to_empty = int(props.get("TimeToFull", 0)), int(props.get("TimeToEmpty", 0))
+        if state == FULL or (state == CHARGING and pct >= 99.5):
+            doing = "Full"
+        elif state == CHARGING:
+            doing = f"full in about {about(to_full)}" if to_full > 0 else "Charging"
+        elif state in (DISCHARGING, EMPTY):
+            doing = f"about {about(to_empty)} left" if to_empty > 0 else "On battery"
+        else:
+            doing = "Plugged in"
+        self.lead.set_text(f"{pct:.0f}% \u00b7 {doing}")
+        self.graph.set_now(round(pct), state)
+        parts = []
+        if rate > 0.05 and state in (CHARGING, DISCHARGING):
+            parts.append(f"{rate:.1f} W {'in' if state == CHARGING else 'out'}")
+        if temp > 0:
+            parts.append(f"{temp:.0f} \u00b0C")
+        self.detail.set_text(" \u00b7 ".join(parts))
+        self.detail.set_visible(bool(parts))
+
+    def _got_history(self, bus, result):
+        try:
+            rows = bus.call_finish(result).unpack()[0]
+        except GLib.Error:
+            return
+        self.graph.set_points(sorted((int(t), float(v), int(s)) for t, v, s in rows))
+
+
 class SystemScreen:
     def __init__(self, app):
         self.app = app
@@ -159,6 +352,7 @@ class SystemScreen:
         self.cards = {}
         for key, title in self.CARDS:
             column.append(self._card(key, title))
+        self.battery = BatteryCard(self.cards["battery"])
         scroll.set_child(column)
         self.content.append(scroll)
         self.content.set_child_visible(False)     # not drawn at all under a full veil
@@ -194,6 +388,7 @@ class SystemScreen:
              ("storage", "Storage"), ("network", "Network"), ("next", "Next up"),
              ("device", "This device"), ("weather", "Weather"), ("screen-time", "Screen time")]
     REFRESH_S = 5
+    HISTORY_EVERY = 12                    # a minute: UPower adds a point a percent
 
     def _build_head(self):
         head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
@@ -279,13 +474,17 @@ class SystemScreen:
         self.avatar.set_custom_image(texture)
 
     def _refresh(self):
-        """Read what changes while the page is open: the time. Called on the
-        way in and then every REFRESH_S while it is open."""
+        """Read what changes while the page is open: the time, the battery.
+        Called on the way in and then every REFRESH_S while it is open; the
+        battery's history every HISTORY_EVERY of them."""
         self._show_time()
+        self.refreshes = getattr(self, "refreshes", -1) + 1
+        self.battery.refresh(history=self.refreshes % self.HISTORY_EVERY == 0)
         return True
 
     def _opened(self, is_open):
         if is_open and self.refreshing is None:
+            self.refreshes = -1                   # the history too, on the way in
             self._refresh()
             self._read_owner()                    # once a visit: it hardly changes
             self.refreshing = GLib.timeout_add_seconds(self.REFRESH_S, self._refresh)
