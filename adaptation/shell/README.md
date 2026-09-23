@@ -267,6 +267,34 @@ new height on a bar at rest was stored and ignored, and the window stayed
 32 px down. Now the commit that sets it applies it and the output
 rearranges, which re-tiles the tiled windows too.
 
+### No status bar (0.17)
+
+The one-window case turned out to be the whole answer. Since 0.17 both
+halves of the bar are folded to their handles whenever the dock is running
+and the phone is not locked, whatever is open (#95, #96): a strip of fixed
+icons lit in the same pixels all day is the classic OLED burn-in, and its
+height came out of every window. The lock screen keeps its bar - the screen
+is lit to be glanced at. What the bar said went where it belongs:
+
+- **The time**, the date and the weather stand on the free panel as a clock
+  of the dock's (`DesktopClock`, #98) - on the right panel when both are
+  free, gone when neither is. It is a top-layer surface, because phosh's
+  home, which is what the desktop's black actually is, is one too and hid a
+  clock on the bottom layer; it follows the dock's own panel, which already
+  counts launches in flight, the keyboard and a pulled shade. Grey and thin,
+  and each minute it steps up to 12 px from its place. The weather is GNOME
+  Weather's first city, through its library, with met.no switched on (the
+  library's default sources gave nothing for Kyiv). A design of its own: #101.
+- **Signal, Wi-Fi and battery** are in the right-hand shade's head, under
+  its clock and date (`phosh-patches/0015`) - indicators of their own, the
+  bar keeping its for the lock screen.
+- **A microphone or a camera in use** is a dot in the right panel's top
+  corner (`PrivacyDot`, #99): orange while PulseAudio has a source output,
+  green while the camera app's window is open (Android's camera service
+  tells no one). Location is left out while something holds it all the time
+  (#102). A low battery was already gsd-power's notification, at UPower's
+  20 % and 5 %.
+
 ### Back, from the edge
 
 A window's back arrow is at its top, far from a thumb. As on Android, a

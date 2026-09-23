@@ -11,7 +11,7 @@ ACCESS="$HERE/../access"
 SYSTEM="$HERE/../system"
 SHELLDIR="$HERE/../shell"
 BUSYBOX="$ROOT/out/busybox-arm64"
-VER="${1:-0.16.0}"
+VER="${1:-0.17.0}"
 OUT="$ROOT/out"
 PKG="$OUT/pkgroot"
 

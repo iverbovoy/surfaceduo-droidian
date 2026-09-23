@@ -22,18 +22,20 @@ Microsoft's debugging (`kernel-packaging/droidian/surfaceduo-perf.config`,
 ## What it looks like
 
 Screenshots of the one output both panels share (2784x1800; the 84 px column
-the hinge hides is in the middle), taken on 0.15.4 at the port's output scale
-of 2 (the first-run wizard on a from-scratch install of 0.14.2, at 2.5). The
-two-panel shell is **experimental and in development**.
+the hinge hides is in the middle), taken on 0.17.0 at the port's output scale
+of 2 - the lock screen on 0.15.4, which it still looks like. The two-panel
+shell is **experimental and in development**.
 
 | | |
 |---|---|
-| ![the first-run wizard on one panel](docs/img/shell-welcome.png) | ![the dock across both panels](docs/img/shell-desktop.png) |
-| A window on the panel it opened on: the dock tiles it there, and the patched phoc stops it at the hinge rather than half way into it. | The dock in two halves, one at each panel's outer edge, under the thumbs. |
-| ![the app grid](docs/img/shell-grid.png) | ![the lock screen](docs/img/shell-lockscreen.png) |
-| Swipe up on a panel: every app, on that panel, and the dock's halves join on the other. | The lock screen, kept off the hinge by CSS alone; 55-60 fps on the unlock swipe at scale 2. |
+| ![the desktop: the dock in two halves and the clock](docs/img/shell-desktop.png) | ![Settings on one panel, the clock on the other](docs/img/shell-window.png) |
+| Nothing open: the dock in two halves at the panels' outer edges, under the thumbs, and the time, the date and the weather on the right panel. No status bar - since 0.17 there is none outside the lock screen. | The port's Settings on the panel it was opened on, at its Surface Duo page - the two-panel shell, the output scale, idle blanking. Back is the arrow in the corner under the thumb; the clock and the dock move to the free panel. |
+| ![a window on each panel](docs/img/shell-two.png) | ![the right-hand shade](docs/img/shell-shade.png) |
+| A window on each panel, each at its panel's full height: with both panels taken the dock and the clock step aside. | The right-hand shade: the clock, the date, signal, Wi-Fi and battery, the open windows with the panel each is on, and the notifications. The left-hand one holds the settings. |
+| ![the lock screen](docs/img/shell-lockscreen.png) | |
+| The lock screen keeps its bar, kept off the hinge by CSS alone; 55-60 fps on the unlock swipe at scale 2. | |
 
-## Status (2026-09-17)
+## Status (2026-09-23)
 
 | Subsystem | Status | Notes |
 |---|---|---|
@@ -52,11 +54,11 @@ two-panel shell is **experimental and in development**.
 | Flashlight / vibration | ✅ | sysfs LEDs (video group via udev); da7280 (FF_CONSTANT only) |
 | Pen (stylus) | 🟡 | it inks, but it is not a stylus to applications. The digitizer sends graded pressure, both buttons and a tool type; libinput discards all of it, because the node has to be classified as a touchscreen or touch dies. Measurements and the fix: [docs/PEN.md](docs/PEN.md) |
 | Brightness | ✅ | the phosh slider drives both panels (udev change-event sync); auto-brightness pending (ALS already works) |
-| Fold-to-sleep | ✅ | hall sensor (GPIO 121) → SW_LID bridge → logind suspends on fold; WoWLAN keeps WiFi associated through sleep |
+| Fold | ✅ | hall sensor (GPIO 121) → SW_LID bridge → logind. Since 0.13 a fold locks rather than suspends (suspend is off in the session; to have it back see [adaptation/system](adaptation/system/README.md)); since 0.17 it also turns the display off - closed on battery 33-55 mA, about 10 % of the battery over a night, against 126-184 mA with the panels left lit |
 | GPS | ✅ | vendor GNSS + geoclue hybris source, ~4 m fixes; needs the geoclue keepalive drop-in from the adaptation (see traps below) |
 | Modem (calls/SMS/LTE) | 🟡 | LTE data works (70-90 ms pings) once the adaptation puts the modem online and on LTE at boot - it comes up offline and on 3G otherwise, see [adaptation/system](adaptation/system/README.md). Incoming SMS arrive; sending SMS and calls not tested yet |
 | Video out (USB-C DP) | ❓ | the whole DisplayPort path sits in the stock device tree and probes cleanly; whether the lanes reach the connector has never been tested - see below |
-| Dual-screen aware UI | 🧪 | experimental, in development: stock phosh spans both panels as one; the adaptation adds a dock across both that tiles each app onto the panel it was launched from, CSS that keeps the shell's own furniture off the hinge, and patched phosh and phoc binaries (focus after the app grid closes; tiled windows stop at the hinge) - see [adaptation/shell](adaptation/shell/README.md). Since 0.15 the on-screen keyboard takes one panel (a patched phosh-osk-stub). Since 0.16 each half has its own shade (settings on the left, the open windows and notifications on the right), a lone window gets its panel's full height with the bar moved to the free one, the port's own Settings groups the pages that apply here, a swipe in from the outer edge is back, and windows close, minimize and cross between panels with a motion (patched phoc) |
+| Dual-screen aware UI | 🧪 | experimental, in development: stock phosh spans both panels as one; the adaptation adds a dock across both that tiles each app onto the panel it was launched from, CSS that keeps the shell's own furniture off the hinge, and patched phosh and phoc binaries (focus after the app grid closes; tiled windows stop at the hinge) - see [adaptation/shell](adaptation/shell/README.md). Since 0.15 the on-screen keyboard takes one panel (a patched phosh-osk-stub). Since 0.16 each half has its own shade (settings on the left, the open windows and notifications on the right), a lone window gets its panel's full height with the bar moved to the free one, the port's own Settings groups the pages that apply here, a swipe in from the outer edge is back, and windows close, minimize and cross between panels with a motion (patched phoc). Since 0.17 there is no status bar outside the lock screen (it burned into the OLED panels and took height from every window): the time, the date and the weather stand on the free panel, the right-hand shade carries the signal, Wi-Fi and battery, and a dot in the corner shows the microphone or the camera in use; Settings' Surface Duo page switches the two-panel shell, the output scale and idle blanking; back is one arrow in the corner under the thumb, with no arrows or chevrons in the pages |
 
 ## Repository layout
 
