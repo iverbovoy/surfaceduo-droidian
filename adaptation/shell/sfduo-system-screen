@@ -52,6 +52,12 @@ gi.require_version("Graphene", "1.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gtk  # noqa: E402
 
+try:
+    gi.require_version("GWeather", "4.0")
+    from gi.repository import GWeather  # noqa: E402
+except (ValueError, ImportError):
+    GWeather = None
+
 BUS_NAME = "org.sfduo.SystemScreen"
 BUS_PATH = "/org/sfduo/SystemScreen"
 HINGE_FRACTION = 84 / 2784
@@ -76,6 +82,10 @@ CSS = b"""
 .system-quiet { font-size: 13px; color: #8e8e93; }
 .system-card-lead { font-size: 20px; font-weight: bold; color: #1c1c1e; }
 .system-axis { font-size: 11px; color: #8e8e93; }
+.system-hour { font-size: 13px; color: #1c1c1e; }
+/* symbolic icons take the text colour, and the session's is the dark
+   style's light one: on a white card they did not show */
+.system-card image { color: #3a3a3c; }
 .system-row-name { font-size: 15px; font-weight: bold; color: #1c1c1e; }
 .system-warn { color: #ff3b30; }
 levelbar trough { min-height: 6px; border-radius: 3px; }
@@ -1085,6 +1095,119 @@ class DeviceCard:
         self.rows["port"].set_text(text)
 
 
+WEATHER_EVERY_S = 1800                   # an answer older than this is asked again
+WEATHER_HOURS = [0, 2, 4, 6, 8, 10]      # the strip's hours from now
+
+
+class WeatherCard:
+    """The weather (#120) for the first city chosen in GNOME Weather - the
+    desktop clock's (#98) - from met.no through GWeather: now, the high and
+    low of the next 24 hours, and a strip of the next 12. Asked on the way
+    in when the last answer is over half an hour old; nothing while closed."""
+
+    def __init__(self, body):
+        clear(body)
+        top = Gtk.Box(spacing=10)
+        self.sky = Gtk.Image(pixel_size=28)
+        self.lead = Gtk.Label(css_classes=["system-card-lead"], xalign=0, ellipsize=3)
+        self.city = Gtk.Label(css_classes=["system-quiet"], xalign=1, hexpand=True)
+        for w in (self.sky, self.lead, self.city):
+            top.append(w)
+        self.detail = Gtk.Label(css_classes=["system-quiet"], xalign=0)
+        self.strip = Gtk.Box(homogeneous=True)
+        self.strip.set_margin_top(8)
+        self.hours = []
+        for _ in WEATHER_HOURS:
+            column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            when = Gtk.Label(css_classes=["system-axis"])
+            icon = Gtk.Image(pixel_size=20)
+            temp = Gtk.Label(css_classes=["system-hour"])
+            for w in (when, icon, temp):
+                column.append(w)
+            self.strip.append(column)
+            self.hours.append((when, icon, temp))
+        for w in (top, self.detail, self.strip):
+            body.append(w)
+        self.info = None
+        self.asked = 0.0
+        self.settings = None
+        if GWeather is None:
+            self._say("No weather library")
+            return
+        source = Gio.SettingsSchemaSource.get_default()
+        if source and source.lookup("org.gnome.Weather", True):
+            self.settings = Gio.Settings.new("org.gnome.Weather")
+            self.settings.connect("changed::locations", lambda *_a: self._city())
+        self._city()
+
+    def _say(self, text):
+        self.lead.set_text(text)
+        for w in (self.sky, self.detail, self.strip):
+            w.set_visible(False)
+
+    def _city(self):
+        cities = self.settings.get_value("locations") if self.settings else None
+        if not cities or cities.n_children() == 0:
+            self.info = None
+            self._say("Choose a city in Weather")
+            return
+        location = GWeather.Location.get_world().deserialize(cities.get_child_value(0).get_variant())
+        if location is None:
+            return
+        self.city.set_text(location.get_city_name() or location.get_name())
+        self.info = GWeather.Info.new(location)
+        self.info.set_application_id("org.sfduo.SystemScreen")
+        self.info.set_contact_info("https://github.com/iverbovoy/surfaceduo-droidian")
+        # as the desktop clock: met.no, not GWeather's default of an airport's
+        # report and a service for the United States
+        self.info.set_enabled_providers(GWeather.Provider.METAR | GWeather.Provider.MET_NO)
+        self.info.connect("updated", self._on_weather)
+        self.asked = 0.0
+
+    def refresh(self):
+        if self.info is not None and time.time() - self.asked > WEATHER_EVERY_S:
+            self.asked = time.time()
+            self.info.update()
+
+    def _on_weather(self, info):
+        if not info.is_valid():
+            self.asked = 0.0               # asked again next time
+            return
+        unit = GWeather.TemperatureUnit.DEFAULT
+        summary = info.get_weather_summary()
+        sky = summary.split(": ", 1)[-1] if summary else ""
+        ok, now_temp = info.get_value_temp(unit)
+        self.lead.set_text(f"{now_temp:.0f}\u00b0" + (f" \u00b7 {sky}" if sky else "")
+                           if ok else sky)
+        self.sky.set_from_icon_name(info.get_symbolic_icon_name())
+        now = time.time()
+        points = []
+        for f in info.get_forecast_list():
+            ok_t, t = f.get_value_update()
+            ok_v, v = f.get_value_temp(unit)
+            if ok_t and ok_v and t >= now - 1800:
+                points.append((t, v, f.get_symbolic_icon_name()))
+        day = [v for t, v, _i in points if t <= now + 86400]
+        if day:
+            self.detail.set_text(f"High {max(day):.0f}\u00b0 \u00b7 low {min(day):.0f}\u00b0 "
+                                 f"in the next 24 h")
+        twelve = False
+        try:
+            twelve = Gio.Settings.new("org.gnome.desktop.interface").get_string("clock-format") == "12h"
+        except (GLib.Error, TypeError):
+            pass
+        for (when, icon, temp), ahead in zip(self.hours, WEATHER_HOURS):
+            if not points:
+                break
+            t, v, name = min(points, key=lambda p: abs(p[0] - (now + ahead * 3600)))
+            when.set_text("Now" if ahead == 0 else
+                          time.strftime("%l %p" if twelve else "%H:00", time.localtime(t)).strip())
+            icon.set_from_icon_name(name)
+            temp.set_text(f"{v:.0f}\u00b0")
+        for w in (self.sky, self.detail, self.strip):
+            w.set_visible(bool(points) or w is self.sky)
+
+
 class SystemScreen:
     def __init__(self, app):
         self.app = app
@@ -1135,6 +1258,7 @@ class SystemScreen:
         self.network = NetworkCard(self.cards["network"], self.ledger)
         self.next_up = NextUpCard(self.cards["next"], self)
         self.device = DeviceCard(self.cards["device"], lambda: self.conn)
+        self.weather = WeatherCard(self.cards["weather"])
         scroll.set_child(column)
         self.content.append(scroll)
         self.content.set_child_visible(False)     # not drawn at all under a full veil
@@ -1292,6 +1416,7 @@ class SystemScreen:
             card.refresh()
         self.next_up.refresh(calendar=self.refreshes % self.HISTORY_EVERY == 0)
         self.device.refresh()
+        self.weather.refresh()
         return True
 
     def _opened(self, is_open):
