@@ -325,8 +325,34 @@ before the repaint (#123): every slide at 16.6 since, the dock following
 frame by frame. On the session bus as `org.sfduo.SystemScreen`: `Open`,
 `Close`, `Begin`, `SetProgress(d)` and a `Progress` it says as it moves,
 which the dock follows. The swipe is caught by a transparent surface of the
-dock's over the free left panel (`SwipeCatcher`), clear of the shades' strip
-along the top and the dock's along the bottom.
+dock's over a free panel (`SwipeCatcher`), clear of the shades' strip along
+the top and the dock's along the bottom.
+
+### Swipes from anywhere on an empty panel
+
+With no window on a panel there is no reason for its gestures to start at an
+edge (#135). The dock's catcher lies over every free panel's desktop, and the
+first 12 px of travel decide what a finger is doing:
+
+- **right:** the system screen, under the finger, from either panel. It
+  comes only while the left panel it takes is free, so it never covers a
+  window.
+- **up:** the app grid on that panel, under the finger. It is the same
+  drag the strip along the bottom starts.
+- **down:** that panel's shade, under the finger (#136). phoc drags the
+  shade, not the dock: `phoc-patches/0014` passes a drag that starts on a
+  surface of the `sfduo-catcher` namespace on to the folded shade above it.
+  Only the way that unfolds it counts; up or sideways the touch stays with
+  the catcher. Once it is a drag, the touch is cancelled on the catcher,
+  where it went.
+- **left**, while the system screen is out: it goes back under the finger,
+  from the right panel, as the swipe right there brought it.
+
+A panel with a window keeps the gestures it had. A catcher hidden while phoc
+took its touch for the shade could miss the cancel: its gesture kept the
+touch as its own, and the next one went nowhere. GTK names a touch by its
+slot, the same for every first finger. The gesture is reset whenever a
+catcher is shown or hidden.
 
 ### Back, from the edge
 

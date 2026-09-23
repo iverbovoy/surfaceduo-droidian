@@ -1,0 +1,229 @@
+From ec2c6976701152114f395944e94ab7f52e9cfe6d Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Wed, 23 Sep 2026 19:30:16 +0300
+Subject: [PATCH] cursor: a drag down on the desktop's catcher unfolds the
+ shade over it
+
+The port's dock puts a transparent layer surface, namespace
+sfduo-catcher, over an empty panel's desktop, so that the shade comes
+with a swipe down anywhere on it and not only from the top edge. A drag
+that starts on such a surface now drags the folded, top-anchored
+draggable surface whose width covers the touch - that half's shade -
+wherever its handle is.
+
+Such a drag takes only the way that unfolds it: once past the accept
+threshold, a drag up is rejected, as is one sideways, and the touch
+stays with the catcher - a swipe up there is the dock's app grid, one
+to the right the system screen.
+
+Once the drag is accepted the touch is cancelled on the surface it went
+to - the catcher here - rather than on the dragged surface; for a drag
+from the handle the two are the same.
+---
+ src/cursor.c              | 56 +++++++++++++++++++++++++++++++++-
+ src/layer-shell-effects.c | 64 +++++++++++++++++++++++++++++++++++++++
+ src/layer-shell-effects.h |  4 +++
+ 3 files changed, 123 insertions(+), 1 deletion(-)
+
+diff --git a/src/cursor.c b/src/cursor.c
+index f961c5d..a29d50f 100644
+--- a/src/cursor.c
++++ b/src/cursor.c
+@@ -1010,6 +1010,49 @@ phoc_cursor_class_init (PhocCursorClass *klass)
+ }
+ 
+ 
++/* A layer surface in this namespace passes a drag down on to the shade
++ * of its half: the dock puts one over an empty panel, so that the shade
++ * comes from anywhere on it and not only from the top edge. */
++#define PASS_DRAG_NAMESPACE "sfduo-catcher"
++
++/*
++ * The folded shade over the half of the output at @lx,@ly: the draggable
++ * layer surface dragged from the top, folded, whose width covers @lx.
++ */
++static PhocDraggableLayerSurface *
++shade_over (PhocDesktop *desktop, double lx, double ly)
++{
++  PhocOutput *output = phoc_desktop_layout_get_output (desktop, lx, ly);
++  PhocLayerSurface *layer_surface;
++  struct wlr_box output_box;
++  double x;
++
++  if (!output)
++    return NULL;
++
++  wlr_output_layout_get_box (desktop->layout, output->wlr_output, &output_box);
++  x = lx - output_box.x;
++
++  wl_list_for_each (layer_surface, &output->layer_surfaces, link) {
++    PhocDraggableLayerSurface *drag_surface;
++    struct wlr_box box;
++
++    drag_surface = phoc_desktop_get_draggable_layer_surface (desktop, layer_surface);
++    if (!drag_surface)
++      continue;
++
++    if (!phoc_draggable_layer_surface_is_folded_from_top (drag_surface))
++      continue;
++
++    box = layer_surface->geo;
++    if (x >= box.x && x < box.x + box.width)
++      return drag_surface;
++  }
++
++  return NULL;
++}
++
++
+ static void
+ on_drag_begin (PhocGesture *gesture, double lx, double ly, PhocCursor *self)
+ {
+@@ -1026,6 +1069,15 @@ on_drag_begin (PhocGesture *gesture, double lx, double ly, PhocCursor *self)
+   if (!layer_surface)
+     return;
+ 
++  if (g_strcmp0 (phoc_layer_surface_get_namespace (layer_surface), PASS_DRAG_NAMESPACE) == 0) {
++    drag_surface = shade_over (desktop, lx, ly);
++    if (drag_surface &&
++        phoc_draggable_layer_surface_drag_start_from_outside (drag_surface) !=
++        PHOC_DRAGGABLE_SURFACE_STATE_REJECTED)
++      priv->drag_surface = drag_surface;
++    return;
++  }
++
+   drag_surface = phoc_desktop_get_draggable_layer_surface (desktop, layer_surface);
+   if (!drag_surface)
+     return;
+@@ -1067,7 +1119,9 @@ on_drag_update (PhocGesture *gesture, double off_x, double off_y, PhocCursor *se
+ 
+       g_debug ("Cancelling drag gesture for %s",
+                phoc_layer_surface_get_namespace (layer_surface));
+-      send_touch_cancel (self->seat, layer_surface->layer_surface->surface);
++      /* The surface the touch went to: the dragged one, or the one that
++       * passed the drag on to it */
++      send_touch_cancel (self->seat, point->surface ?: layer_surface->layer_surface->surface);
+     }
+     break;
+   case PHOC_DRAGGABLE_SURFACE_STATE_REJECTED:
+diff --git a/src/layer-shell-effects.c b/src/layer-shell-effects.c
+index b146dc1..ad48674 100644
+--- a/src/layer-shell-effects.c
++++ b/src/layer-shell-effects.c
+@@ -69,6 +69,10 @@ struct _PhocDraggableLayerSurface {
+     int      pending_accept;
+     /* Threshold until drag is rejected */
+     int      pending_reject;
++    /* Started from outside the surface (a touch on the desktop): only a
++     * drag that unfolds it is taken, the rest is left to whoever has the
++     * touch */
++    gboolean unfold_only;
+     /* Slide in/out animation */
+     guint    anim_id;
+     float    anim_t;
+@@ -1452,6 +1456,7 @@ phoc_draggable_layer_surface_drag_start (PhocDraggableLayerSurface *drag_surface
+   g_return_val_if_fail (drag_surface->state == PHOC_DRAGGABLE_SURFACE_STATE_NONE, drag_surface->state);
+ 
+   drag_surface->drag.start_margin = start_margin;
++  drag_surface->drag.unfold_only = FALSE;
+ 
+   if (drag_surface->current.drag_mode == ZPHOC_DRAGGABLE_LAYER_SURFACE_V1_DRAG_MODE_HANDLE) {
+     if (!is_handle)
+@@ -1468,6 +1473,55 @@ phoc_draggable_layer_surface_drag_start (PhocDraggableLayerSurface *drag_surface
+ }
+ 
+ 
++/**
++ * phoc_draggable_layer_surface_is_folded_from_top:
++ * @drag_surface: A draggable surface
++ *
++ * Returns: Whether @drag_surface is dragged down from the top and is folded
++ * now, at rest
++ */
++gboolean
++phoc_draggable_layer_surface_is_folded_from_top (PhocDraggableLayerSurface *drag_surface)
++{
++  struct wlr_layer_surface_v1 *wlr_layer_surface = drag_surface->layer_surface->layer_surface;
++
++  return wlr_layer_surface->current.anchor == PHOC_LAYER_SHELL_EFFECT_DRAG_FROM_TOP &&
++    drag_surface->state == PHOC_DRAGGABLE_SURFACE_STATE_NONE &&
++    (int32_t)wlr_layer_surface->current.margin.top == drag_surface->current.folded;
++}
++
++
++/**
++ * phoc_draggable_layer_surface_drag_start_from_outside:
++ * @drag_surface: A folded surface dragged from the top
++ *
++ * Start a drag of @drag_surface with a touch that did not land on it - one
++ * on a surface that asked for its drags to be passed on (see
++ * `phoc_desktop_drag_target_for`). Only a folded, top-anchored surface is
++ * taken, wherever its handle is, and only a drag down unfolds it: up or
++ * sideways the drag is rejected and the touch stays where it landed.
++ *
++ * Returns: The state the drag is in
++ */
++PhocDraggableSurfaceState
++phoc_draggable_layer_surface_drag_start_from_outside (PhocDraggableLayerSurface *drag_surface)
++{
++  struct wlr_layer_surface_v1 *wlr_layer_surface = drag_surface->layer_surface->layer_surface;
++
++  if (drag_surface->current.drag_mode == ZPHOC_DRAGGABLE_LAYER_SURFACE_V1_DRAG_MODE_NONE ||
++      !phoc_draggable_layer_surface_is_folded_from_top (drag_surface))
++    return PHOC_DRAGGABLE_SURFACE_STATE_REJECTED;
++
++  drag_surface->drag.start_margin = (int32_t)wlr_layer_surface->current.margin.top;
++  drag_surface->drag.pending_accept = 0;
++  drag_surface->drag.pending_reject = 0;
++  drag_surface->drag.unfold_only = TRUE;
++
++  apply_state (drag_surface, PHOC_DRAGGABLE_SURFACE_STATE_PENDING);
++  return drag_surface->state;
++}
++
++
+ static gboolean
+ phoc_draggable_surface_is_vertical (PhocDraggableLayerSurface *drag_surface)
+ {
+@@ -1527,6 +1581,15 @@ phoc_draggable_layer_surface_drag_update (PhocDraggableLayerSurface *drag_surfac
+     return drag_surface->state;
+   }
+ 
++  /* From outside only the way that unfolds it: a swipe up on the desktop
++   * is somebody else's */
++  if (drag_surface->drag.unfold_only &&
++      drag_surface->state == PHOC_DRAGGABLE_SURFACE_STATE_PENDING &&
++      drag_surface->drag.pending_accept < 0) {
++    apply_state (drag_surface, PHOC_DRAGGABLE_SURFACE_STATE_REJECTED);
++    return drag_surface->state;
++  }
++
+   switch (wlr_layer_surface->current.anchor) {
+   case PHOC_LAYER_SHELL_EFFECT_DRAG_FROM_TOP:
+     accept = (wlr_layer_surface->current.margin.top == drag_surface->current.unfolded) ? off_y < 0 : true;
+@@ -1625,6 +1688,7 @@ phoc_draggable_layer_surface_drag_end (PhocDraggableLayerSurface *drag_surface,
+   phoc_layer_shell_arrange (output);
+   drag_surface->drag.pending_accept = 0;
+   drag_surface->drag.pending_reject = 0;
++  drag_surface->drag.unfold_only = FALSE;
+ 
+   phoc_draggable_layer_surface_slide (drag_surface, dir);
+ 
+diff --git a/src/layer-shell-effects.h b/src/layer-shell-effects.h
+index 4718b68..3ff3ed3 100644
+--- a/src/layer-shell-effects.h
++++ b/src/layer-shell-effects.h
+@@ -80,6 +80,10 @@ PhocLayerSurface        *phoc_draggable_layer_surface_get_layer_surface (PhocDra
+ PhocDraggableSurfaceState phoc_draggable_layer_surface_drag_start  (PhocDraggableLayerSurface *drag_surface,
+                                                                     double                     lx,
+                                                                     double                     ly);
++gboolean                 phoc_draggable_layer_surface_is_folded_from_top (
++  PhocDraggableLayerSurface *drag_surface);
++PhocDraggableSurfaceState phoc_draggable_layer_surface_drag_start_from_outside (
++  PhocDraggableLayerSurface *drag_surface);
+ PhocDraggableSurfaceState phoc_draggable_layer_surface_drag_update (PhocDraggableLayerSurface *drag_surface,
+                                                                     double                     lx,
+                                                                     double                     ly);
+-- 
+2.43.0
+
