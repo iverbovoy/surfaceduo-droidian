@@ -1459,13 +1459,19 @@ class Dock(Gtk.Window):
         (org.sfduo.Phoc.Present, phoc-patches/0009). Anywhere else the focus
         does it, which is what the dock did before there was anything to put
         a window away with."""
-        try:
-            shown = self.session_bus.call_sync(
-                "org.sfduo.Phoc", "/org/sfduo/Phoc", "org.sfduo.Phoc", "Present",
-                GLib.Variant("(s)", (app_id,)), GLib.VariantType("(u)"),
-                Gio.DBusCallFlags.NO_AUTO_START, 1000, None)[0]
-        except GLib.Error:
-            shown = 0
+        shown = 0
+        # Restore: back as it was put away, shown at its first frame; the
+        # port's phoc before it knew only Present, which waits for the
+        # client to go quiet - ~400 ms longer (#149)
+        for method in ("Restore", "Present"):
+            try:
+                shown = self.session_bus.call_sync(
+                    "org.sfduo.Phoc", "/org/sfduo/Phoc", "org.sfduo.Phoc", method,
+                    GLib.Variant("(s)", (app_id,)), GLib.VariantType("(u)"),
+                    Gio.DBusCallFlags.NO_AUTO_START, 1000, None)[0]
+                break
+            except GLib.Error:
+                continue
         if not shown:
             subprocess.run(["wlrctl", "toplevel", "focus", f"app_id:{app_id}"], check=False)
 
