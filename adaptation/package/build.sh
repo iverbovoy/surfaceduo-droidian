@@ -617,7 +617,7 @@ cat > "$PKG/usr/local/sbin/sfduo-lid-daemon" <<'LID'
 # edges are lost while the system sleeps, so state is reconciled, not
 # just edge-triggered (unfold-while-asleep used to leave the system
 # convinced the lid was still closed).
-import os, struct, fcntl, select, time
+import os, struct, fcntl, select, subprocess, time
 
 GPIO = "/sys/class/gpio/gpio121"
 UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_SWBIT = 0x40045564, 0x40045565, 0x4004556D
@@ -678,6 +678,39 @@ def restore_brightness():
         except OSError:
             pass
 
+def session_user():
+    """The user and uid of the session on the seat, or None."""
+    try:
+        run = lambda *a: subprocess.run(a, capture_output=True, text=True,
+                                        timeout=3).stdout.strip()
+        session = run("loginctl", "show-seat", "seat0", "-p", "ActiveSession", "--value")
+        user = run("loginctl", "show-session", session, "-p", "Name", "--value")
+        uid = run("loginctl", "show-session", session, "-p", "User", "--value")
+        return (user, uid) if user and uid else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+def display_power(mode):
+    """Turn the display off (3) or on (0) the way GNOME does: phosh's
+    org.gnome.Mutter.DisplayConfig PowerSaveMode, on the session's bus.
+    Blanked like this the panels go dark and Droidian's mobile-power-saver
+    starts saving; a fold that only locked left both panels lit behind the
+    lid all night on the lock screen - 126-184 mA against 33-55 mA (#103)."""
+    who = session_user()
+    if who is None:
+        return
+    user, uid = who
+    try:
+        subprocess.run(["runuser", "-u", user, "--", "env",
+                        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus" % uid,
+                        "gdbus", "call", "--session", "-d", "org.gnome.Mutter.DisplayConfig",
+                        "-o", "/org/gnome/Mutter/DisplayConfig",
+                        "-m", "org.freedesktop.DBus.Properties.Set",
+                        "org.gnome.Mutter.DisplayConfig", "PowerSaveMode", "<%d>" % mode],
+                       capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
 def screens_on(fd):
     ev(fd, EV_KEY, KEY_WAKEUP, 1); ev(fd, EV_SYN, 0, 0)
     ev(fd, EV_KEY, KEY_WAKEUP, 0); ev(fd, EV_SYN, 0, 0)
@@ -688,6 +721,7 @@ def screens_on(fd):
         except OSError:
             pass
     restore_brightness()
+    display_power(0)
 
 def main():
     setup_gpio()
@@ -711,6 +745,8 @@ def main():
             emit_lid(ufd, val == 0)
             if val == 1:
                 screens_on(ufd)
+            else:
+                display_power(3)
 
 if __name__ == "__main__":
     main()
