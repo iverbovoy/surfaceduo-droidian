@@ -309,7 +309,17 @@ light with the finger, the content appearing over the last third. It shows
 the time as the shade's head does; the desktop's large clock slides off the
 right edge as it comes, and the dock's left half moves to the right panel as
 it does for the grid. Only from the desktop: not over a window, not locked.
-What it holds is still to come.
+The page (#114): the time and date where the shade's head shows them, a
+greeting by the time of day with the owner's first name and picture from
+AccountsService (a login such as `droidian` is not taken for a name), and
+under them a scrolling column of cards, one per subject, filled by the
+tickets of epic #109. Nothing is read while it is closed. The time is read
+on the way in and every 5 s while it is open; the owner once per visit,
+without waiting for the answer. The content comes out of the background
+under a veil of its colour: an opacity over the whole page had GTK render it
+into a texture of its own each frame, 33 ms a frame. A finger's chase and
+the slide that finishes it share one tick callback, so the frame clock does
+not stop between them.
 
 It is a program of its own, `sfduo-system-screen`, because the colour change
 is a new frame every step: GTK4 draws through the GPU here, GTK3 (the dock)
