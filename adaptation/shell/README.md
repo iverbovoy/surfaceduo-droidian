@@ -365,6 +365,21 @@ The network card (#117):
   with the display off lands on the day it is next seen. Mobile is
   `rmnet_data*` only: `rmnet_ipa0` under them would count it twice.
 
+The next-up card (#118):
+
+- **Alarm:** the next alarm in Clocks, from its own settings
+  (`org.gnome.clocks alarms`, weekdays 0 = Monday, none for a one-off), with
+  how long until it rings.
+- **Calendar:** the next event within 7 days in any enabled
+  evolution-data-server calendar, repeating events unfolded. It is read
+  through libecal (`gir1.2-ecal-2.0`, `gir1.2-edataserver-1.2`, which
+  sfduo-shell-setup installs). Its calls wait for the answer, so they run in
+  a thread of their own, on the way in and once a minute while the page is
+  open.
+
+phosh's calendar server was not used: its one time range is the shade's,
+and asking it for a week would have moved the shade's.
+
 The dock reads the system screen's `Progress` when the bus name changes
 hands. A system screen that went away while open, and the one started after
 it, had left the dock believing the page was still out: its halves on the
