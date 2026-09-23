@@ -321,6 +321,21 @@ into a texture of its own each frame, 33 ms a frame. A finger's chase and
 the slide that finishes it share one tick callback, so the frame clock does
 not stop between them.
 
+The battery card (#115) reads UPower on the way in and every 5 s while the
+page is open, without waiting for the answer:
+- the level and what it is doing ("72% · about 5 h left", "45% · full in
+  about 50 min", "Full")
+- the power in or out, and the temperature
+- a graph of the charge over the last 24 hours from UPower's own history
+  (`GetHistory`, re-read once a minute): charging in green, draining in
+  dark grey, broken where the history has a gap such as a restart
+
+Estimates are rounded to 10 minutes, and from 5 hours on to whole hours.
+The graph is drawn into a texture when the data changes, not in the frame
+that shows it. A cairo node drawn in the snapshot was drawn and uploaded
+again each time the content came out, and that frame took 33-50 ms in half
+the opens.
+
 It is a program of its own, `sfduo-system-screen`, because the colour change
 is a new frame every step: GTK4 draws through the GPU here, GTK3 (the dock)
 does not. Measured: 16.6-16.8 ms a frame (median), with ~80 ms before the
