@@ -935,6 +935,156 @@ class NextUpCard:
         GLib.idle_add(show)
 
 
+RELEASES = "https://api.github.com/repos/iverbovoy/surfaceduo-droidian/releases/latest"
+UPDATE_EVERY_S = 86400                    # GitHub is asked at most once a day
+POSTURE_NAMES = {"closed": "closed", "laptop": "laptop", "flat": "flat", "folded": "folded back"}
+
+
+def uptime_text(seconds):
+    minutes = int(seconds // 60)
+    days, minutes = divmod(minutes, 1440)
+    hours, minutes = divmod(minutes, 60)
+    if days:
+        return f"{days} day{'s' if days > 1 else ''} {hours} h"
+    return f"{hours} h {minutes} min" if hours else f"{minutes} min"
+
+
+def version_tuple(text):
+    return tuple(int(p) for p in text.lstrip("v").split(".") if p.isdigit())
+
+
+class DeviceCard:
+    """This device (#119): the hinge live, the uptime, the port's version
+    and whether a newer one is out, and the system under it. GitHub is asked
+    about releases at most once a day, only while the page is open, from a
+    thread; the answer is kept in ~/.local/state/sfduo/update.json."""
+
+    STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+                         "sfduo", "update.json")
+
+    def __init__(self, body, session_bus_getter):
+        clear(body)
+        self.rows = {}
+        for key, name in (("hinge", "Hinge"), ("uptime", "Uptime"), ("port", "Port"),
+                          ("system", "System")):
+            line = Gtk.Box(spacing=8)
+            line.append(Gtk.Label(label=name, css_classes=["system-row-name"], xalign=0))
+            text = Gtk.Label(css_classes=["system-card-body"], xalign=1, hexpand=True, ellipsize=3)
+            line.append(text)
+            body.append(line)
+            self.rows[key] = text
+        self.bus = session_bus_getter
+        self.shown = False
+        self.subscribed = False
+        self.posture = None
+        self.version = None
+        self.latest = None
+        self.asking = False
+        os_release = dict(line.split("=", 1) for line in read_text("/etc/os-release").splitlines()
+                          if "=" in line)
+        name = os_release.get("NAME", "Linux").strip('"')
+        number = (os_release.get("VERSION_ID") or os_release.get("VERSION", "")).strip('"')
+        kernel = os.uname().release.split("-microsoft")[0]       # the device's name, again
+        self.rows["system"].set_text(f"{name} {number} \u00b7 kernel {kernel}".replace("  ", " "))
+
+    def show(self, shown):
+        self.shown = shown
+
+    def refresh(self):
+        self.show(True)
+        self.rows["uptime"].set_text(uptime_text(float(read_text("/proc/uptime").split()[0] or 0)))
+        conn = self.bus()
+        if conn is not None:
+            if not self.subscribed:
+                self.subscribed = True
+                conn.signal_subscribe("org.sfduo.Posture", "org.freedesktop.DBus.Properties",
+                                      "PropertiesChanged", "/org/sfduo/Posture", None,
+                                      Gio.DBusSignalFlags.NONE,
+                                      lambda _c, _s, _p, _i, _sig, params:
+                                      self._posture(params.unpack()[1]))
+            conn.call("org.sfduo.Posture", "/org/sfduo/Posture", "org.freedesktop.DBus.Properties",
+                      "GetAll", GLib.Variant("(s)", ("org.sfduo.Posture",)), None,
+                      Gio.DBusCallFlags.NO_AUTO_START, 1000, None, self._got_posture)
+        if not self.asking and (self.version is None or self._due()):
+            self.asking = True
+            threading.Thread(target=self._ask_versions, daemon=True).start()
+        self._show_port()
+
+    def _got_posture(self, conn, result):
+        try:
+            self._posture(conn.call_finish(result).unpack()[0], force=True)
+        except GLib.Error:
+            self.rows["hinge"].set_text("")
+
+    def _posture(self, changed, force=False):
+        self.posture = {**(self.posture or {}), **changed}
+        if not (self.shown or force):
+            return                         # the hinge moves all day; drawn when seen
+        angle = self.posture.get("Angle")
+        if angle is None:
+            return
+        name = POSTURE_NAMES.get(self.posture.get("Posture", ""))
+        self.rows["hinge"].set_text(f"{float(angle):.0f}\u00b0" + (f" \u00b7 {name}" if name else ""))
+
+    def _due(self):
+        state = self._load()
+        return not state or time.time() - state.get("checked", 0) > UPDATE_EVERY_S
+
+    def _load(self):
+        import json
+        try:
+            with open(self.STATE) as fp:
+                return json.load(fp)
+        except (OSError, ValueError):
+            return None
+
+    def _ask_versions(self):
+        """In a thread: the installed version, and GitHub's latest when due."""
+        import json
+        import urllib.request
+        version = read_text("/usr/share/sfduo/version").strip()
+        if not version:                    # a package from before it said so
+            block = None
+            for chunk in read_text("/var/lib/dpkg/status").split("\n\n"):
+                if chunk.startswith("Package: adaptation-droidian-surfaceduo\n"):
+                    block = chunk
+                    break
+            for line in (block or "").splitlines():
+                if line.startswith("Version: "):
+                    version = line[9:].strip()
+        state = self._load() or {}
+        if time.time() - state.get("checked", 0) > UPDATE_EVERY_S:
+            try:
+                request = urllib.request.Request(RELEASES, headers={
+                    "Accept": "application/vnd.github+json", "User-Agent": "sfduo-system-screen"})
+                with urllib.request.urlopen(request, timeout=10) as reply:
+                    tag = json.load(reply).get("tag_name", "")
+                state = {"checked": time.time(), "latest": tag}
+                os.makedirs(os.path.dirname(self.STATE), exist_ok=True)
+                with open(self.STATE, "w") as fp:
+                    json.dump(state, fp)
+            except (OSError, ValueError) as e:
+                print(f"sfduo-system-screen: releases: {e}", file=sys.stderr)
+
+        def show():
+            self.asking = False
+            self.version = version or "?"
+            self.latest = state.get("latest")
+            self._show_port()
+            return False
+        GLib.idle_add(show)
+
+    def _show_port(self):
+        if self.version is None:
+            return
+        text = self.version
+        if self.latest and version_tuple(self.latest) > version_tuple(self.version):
+            text += f" \u00b7 {self.latest.lstrip('v')} is out"
+        elif self.latest:
+            text += " \u00b7 up to date"
+        self.rows["port"].set_text(text)
+
+
 class SystemScreen:
     def __init__(self, app):
         self.app = app
@@ -984,6 +1134,7 @@ class SystemScreen:
         self.sampler.listeners.append(self.ledger.sampled)
         self.network = NetworkCard(self.cards["network"], self.ledger)
         self.next_up = NextUpCard(self.cards["next"], self)
+        self.device = DeviceCard(self.cards["device"], lambda: self.conn)
         scroll.set_child(column)
         self.content.append(scroll)
         self.content.set_child_visible(False)     # not drawn at all under a full veil
@@ -1140,6 +1291,7 @@ class SystemScreen:
         for card in (self.load, self.memory, self.storage, self.network):
             card.refresh()
         self.next_up.refresh(calendar=self.refreshes % self.HISTORY_EVERY == 0)
+        self.device.refresh()
         return True
 
     def _opened(self, is_open):
@@ -1150,6 +1302,7 @@ class SystemScreen:
             self.refreshing = GLib.timeout_add_seconds(self.REFRESH_S, self._refresh)
         elif not is_open and self.refreshing is not None:
             self.load.graph.show(False)
+            self.device.show(False)
             GLib.source_remove(self.refreshing)
             self.refreshing = None
 

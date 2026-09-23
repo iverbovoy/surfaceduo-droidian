@@ -380,6 +380,18 @@ The next-up card (#118):
 phosh's calendar server was not used: its one time range is the shade's,
 and asking it for a week would have moved the shade's.
 
+The device card (#119):
+
+- **Hinge:** the angle and posture, live from `org.sfduo.Posture`. It is
+  written only while the page is open; the hinge moves all day.
+- **Uptime.**
+- **Port:** the port's version, from `/usr/share/sfduo/version`, which the
+  package writes (older packages: from dpkg's status), and whether a newer
+  release is on GitHub. GitHub is asked at most once a day, only while the
+  page is open, from a thread. The answer is kept in
+  `~/.local/state/sfduo/update.json`.
+- **System:** Droidian's version and the kernel.
+
 The dock reads the system screen's `Progress` when the bus name changes
 hands. A system screen that went away while open, and the one started after
 it, had left the dock believing the page was still out: its halves on the

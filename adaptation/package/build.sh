@@ -964,6 +964,9 @@ install -Dm644 "$SHELLDIR/sfduo-fingerprint.desktop" "$PKG/etc/xdg/autostart/sfd
 mkdir -p "$PKG/etc/systemd/user"
 ln -s /dev/null "$PKG/etc/systemd/user/fpd-unlockd.service"
 install -Dm644 "$SHELLDIR/dock.json" "$PKG/usr/share/sfduo/dock.json.example"
+# the port's version, for the system screen's device card (#119): dpkg's
+# status is a 1.6 MB file to look it up in
+echo "$VER" > "$PKG/usr/share/sfduo/version"
 # The output scale (2026-09-18): Droidian's generic phoc.ini says 3, which
 # makes the panels 928x600 logical - a phone's worth of space, in which GNOME
 # Calculator does not fit. 2 gives 1392x900 and, GTK3 drawing at integer
