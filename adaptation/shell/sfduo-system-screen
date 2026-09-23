@@ -1,0 +1,366 @@
+#!/usr/bin/python3
+"""sfduo-system-screen: the page left of the left panel (#109) - a prototype.
+
+    sfduo-system-screen          run, on the session bus as org.sfduo.SystemScreen
+    sfduo-system-screen --demo   open and close it N times (SFDUO_DEMO, 10),
+                                 logging each animation's frames
+
+The Surface Duo 2 has a page left of its home screens, reached by a swipe from
+the desktop; this is the port's. It takes the left panel, slides in from the
+left edge, and its background goes from the desktop's black to a soft light
+tone as it comes, the content appearing towards the end - the user is there
+briefly, and the light breaks the black.
+
+The colour change is a new frame on every step, which GTK3 - the dock -
+draws on the CPU here: a panel repainted each frame once held the grid to
+8 fps. GTK4 draws through the GPU here, so this is a program of its own: the
+background is one colour node per frame, the content's fade an opacity node,
+the slide the surface's margin. What it costs is measured, not assumed: each
+animation leaves a line in $XDG_RUNTIME_DIR/sfduo-system-screen.perf.
+
+Driven by a progress 0..1 on the session bus - SetProgress(d), Open(), Close()
+- so that the dock's swipe can hold it under the finger (#111). Closed, the
+surface is unmapped and draws nothing.
+"""
+import ctypes
+import os
+import sys
+import time
+
+# gtk4-layer-shell has to be in the process before libwayland-client is, or
+# GTK's windows are plain toplevels (see sfduo-fold)
+_LAYER_SHELL = "libgtk4-layer-shell.so.0"
+if _LAYER_SHELL not in os.environ.get("LD_PRELOAD", ""):
+    os.environ["LD_PRELOAD"] = (_LAYER_SHELL + " " + os.environ.get("LD_PRELOAD", "")).strip()
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+try:
+    ctypes.CDLL("libc.so.6").prctl(15, b"sfduo-system", 0, 0, 0)     # PR_SET_NAME
+except OSError:
+    pass
+os.environ.setdefault("GSK_RENDERER", "gl")
+
+import gi  # noqa: E402
+
+gi.require_version("Gtk4LayerShell", "1.0")
+from gi.repository import Gtk4LayerShell  # noqa: E402
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("Graphene", "1.0")
+from gi.repository import Gdk, Gio, GLib, Graphene, Gtk  # noqa: E402
+
+BUS_NAME = "org.sfduo.SystemScreen"
+BUS_PATH = "/org/sfduo/SystemScreen"
+HINGE_FRACTION = 84 / 2784
+DARK = (0.0, 0.0, 0.0)                    # the desktop
+LIGHT = (0xF2 / 255, 0xF2 / 255, 0xF2 / 255)
+SLIDE_MS = 300                            # Open / Close on their own
+CONTENT_FROM = 2 / 3                      # the content fades in over the last third
+PERF_LOG = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-system-screen.perf")
+
+CSS = b"""
+/* the time as the shade's head shows it - small and bold, the date under it -
+   and not as the desktop's large clock, which slides away */
+.system-time { font-size: 17px; font-weight: bold; color: #1c1c1e; }
+.system-date { font-size: 15px; color: #3a3a3c; }
+.system-placeholder { font-size: 16px; color: #8e8e93; }
+"""
+
+INTROSPECTION = """
+<node>
+  <interface name="org.sfduo.SystemScreen">
+    <method name="Open"/>
+    <method name="Close"/>
+    <method name="Begin"/>
+    <method name="SetProgress"><arg type="d" name="progress" direction="in"/></method>
+    <property name="Progress" type="d" access="read"/>
+  </interface>
+</node>
+"""
+
+
+def mix(a, b, t):
+    return tuple(x + (y - x) * t for x, y in zip(a, b))
+
+
+def ease_out(t):
+    return 1 - (1 - t) ** 3
+
+
+class Backdrop(Gtk.Widget):
+    """The background: one colour node, whatever the colour is now."""
+
+    def __init__(self):
+        super().__init__()
+        self.rgb = DARK
+        self.set_hexpand(True)
+        self.set_vexpand(True)
+
+    def do_snapshot(self, snapshot):
+        colour = Gdk.RGBA()
+        colour.red, colour.green, colour.blue, colour.alpha = (*self.rgb, 1.0)
+        rect = Graphene.Rect().init(0, 0, self.get_width(), self.get_height())
+        snapshot.append_color(colour, rect)
+
+
+class SystemScreen:
+    def __init__(self, app):
+        self.app = app
+        self.progress = 0.0
+        self.animation = None
+        self.frames = []
+        self.width = self._panel_width()
+
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        self.window = Gtk.Window(application=app)
+        self.window.set_decorated(False)
+        self.window.set_default_size(self.width, -1)
+        Gtk4LayerShell.init_for_window(self.window)
+        Gtk4LayerShell.set_namespace(self.window, "sfduo-system")
+        Gtk4LayerShell.set_layer(self.window, Gtk4LayerShell.Layer.TOP)
+        for edge in (Gtk4LayerShell.Edge.LEFT, Gtk4LayerShell.Edge.TOP, Gtk4LayerShell.Edge.BOTTOM):
+            Gtk4LayerShell.set_anchor(self.window, edge, True)
+        Gtk4LayerShell.set_exclusive_zone(self.window, -1)
+        Gtk4LayerShell.set_keyboard_mode(self.window, Gtk4LayerShell.KeyboardMode.NONE)
+
+        overlay = Gtk.Overlay()
+        self.backdrop = Backdrop()
+        overlay.set_child(self.backdrop)
+        self.content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                               halign=Gtk.Align.CENTER, valign=Gtk.Align.START)
+        self.content.set_margin_top(14)             # where the shade's head is
+        self.time = Gtk.Label(css_classes=["system-time"])
+        self.date = Gtk.Label(css_classes=["system-date"])
+        placeholder = Gtk.Label(label="The system screen", css_classes=["system-placeholder"])
+        placeholder.set_margin_top(48)
+        for w in (self.time, self.date, placeholder):
+            self.content.append(w)
+        self.content.set_opacity(0.0)
+        overlay.add_overlay(self.content)
+        self.window.set_child(overlay)
+        self._show_time()
+        GLib.timeout_add_seconds(20, self._show_time)
+
+    # ---- geometry -------------------------------------------------------------
+
+    @staticmethod
+    def _monitor():
+        display = Gdk.Display.get_default()
+        monitors = display.get_monitors()
+        return monitors.get_item(0) if monitors.get_n_items() else None
+
+    def _panel_width(self):
+        monitor = self._monitor()
+        width = monitor.get_geometry().width if monitor else 1392
+        gap = max(1, round(width * HINGE_FRACTION))
+        return (width - gap) // 2
+
+    def _screen_height(self):
+        monitor = self._monitor()
+        return monitor.get_geometry().height if monitor else 900
+
+    # ---- what it shows ----------------------------------------------------------
+
+    def _show_time(self):
+        now = GLib.DateTime.new_now_local()
+        try:
+            twelve = Gio.Settings.new("org.gnome.desktop.interface").get_string("clock-format") == "12h"
+        except (GLib.Error, TypeError):
+            twelve = False
+        self.time.set_text(now.format("%l:%M %p").strip() if twelve else now.format("%H:%M"))
+        self.date.set_text(now.format("%A, %B %e").replace("  ", " "))
+        return True
+
+    def apply(self, progress):
+        """Everything a progress says: where the surface stands, its colour,
+        how much of the content shows."""
+        self.progress = max(0.0, min(1.0, progress))
+        if self.progress <= 0.0:
+            self.window.set_visible(False)
+            return
+        if not self.window.get_visible():
+            self.window.present()
+        Gtk4LayerShell.set_margin(self.window, Gtk4LayerShell.Edge.LEFT,
+                                  -int(round(self.width * (1 - self.progress))))
+        self.backdrop.rgb = mix(DARK, LIGHT, self.progress)
+        self.backdrop.queue_draw()
+        shown = max(0.0, (self.progress - CONTENT_FROM) / (1 - CONTENT_FROM))
+        self.content.set_opacity(shown)
+
+    # ---- animation --------------------------------------------------------------
+
+    FRAME_MS = 16
+
+    def animate_to(self, target, why):
+        """Slide to `target`, easing out, over SLIDE_MS.
+
+        Stepped on the frame clock - in step with the display's refresh - while
+        the surface is on the screen. A surface slid off the screen is not
+        drawn and gets no frame callbacks, and an animation on the frame clock
+        alone stalled there for good (the close never ended, every open after
+        it went nowhere); a timer stands by for that, and takes over the steps
+        when the frame clock has been silent for two frames. A timer alone
+        missed the refresh a frame or two per slide (~20 ms a frame, max 50)."""
+        self._stop()
+        self.chasing = False
+        start, t0 = self.progress, GLib.get_monotonic_time()
+        self.frames = []
+        self.last_step = t0
+        if target > 0 and not self.window.get_visible():
+            self.apply(0.001)
+
+        def step():
+            now = GLib.get_monotonic_time()
+            self.last_step = now
+            t = min(1.0, (now - t0) / 1000.0 / SLIDE_MS)
+            self.apply(start + (target - start) * ease_out(t))
+            if t >= 1.0:
+                self._log(why)
+                self._stop()
+                return False
+            return True
+
+        def tick(_widget, clock):
+            self.frames.append(clock.get_frame_time())
+            return GLib.SOURCE_CONTINUE if step() else GLib.SOURCE_REMOVE
+
+        def watchdog():
+            if GLib.get_monotonic_time() - self.last_step > 2 * self.FRAME_MS * 1000:
+                return step()
+            return True
+
+        self.ticking = self.window.add_tick_callback(tick)
+        self.animation = GLib.timeout_add(self.FRAME_MS, watchdog)
+
+    # ---- following a finger -------------------------------------------------------
+    #
+    # SetProgress sets a target, and the surface chases it frame by frame - half
+    # the way that is left each frame, snapping on at the end - on the same
+    # frame-clock-and-watchdog stepping the animations use. A progress applied
+    # once and left to draw on its own did not reach the screen: gtk4-layer-shell
+    # sends a new margin with the window's next frame, and GTK draws no frame for
+    # a picture that has not changed - the window was configured and never
+    # committed a buffer. Chasing, every frame is a new picture until it is there,
+    # and a finger's steps come out smoothed.
+
+    CHASE = 0.5                               # the share of what is left, per frame
+
+    def begin(self):
+        """A finger is down: have the surface ready before it moves."""
+        if self.progress <= 0.0:
+            self.set_progress(0.001)
+
+    def set_progress(self, progress):
+        self.target = max(0.0, min(1.0, progress))
+        if self.animation is not None and getattr(self, "chasing", False):
+            return                            # the chase in progress takes it from here
+        self._stop()
+        self.chasing = True
+        if self.target > 0 and not self.window.get_visible():
+            self.apply(0.001)
+
+        def step():
+            self.last_step = GLib.get_monotonic_time()
+            left = self.target - self.progress
+            if abs(left) * self.width < 0.5:
+                self.apply(self.target)
+                self.chasing = False
+                self._stop()
+                return False
+            self.apply(self.progress + left * self.CHASE)
+            return True
+
+        def tick(_widget, _clock):
+            return GLib.SOURCE_CONTINUE if step() else GLib.SOURCE_REMOVE
+
+        def watchdog():
+            if GLib.get_monotonic_time() - self.last_step > 2 * self.FRAME_MS * 1000:
+                return step()
+            return True
+
+        self.last_step = GLib.get_monotonic_time()
+        self.ticking = self.window.add_tick_callback(tick)
+        self.animation = GLib.timeout_add(self.FRAME_MS, watchdog)
+
+    def _stop(self):
+        if self.animation is not None:
+            GLib.source_remove(self.animation)
+            self.animation = None
+        if getattr(self, "ticking", None) is not None:
+            self.window.remove_tick_callback(self.ticking)
+            self.ticking = None
+
+    def _log(self, why):
+        gaps = [(b - a) / 1000.0 for a, b in zip(self.frames, self.frames[1:])]
+        if not gaps:
+            return
+        steady = sorted(gaps)[len(gaps) // 2]
+        line = "%s %s: %d frames over %.0f ms, %.1f ms/frame (median %.1f, max %.0f) [%s]" % (
+            time.strftime("%H:%M:%S"), why, len(gaps), sum(gaps),
+            sum(gaps) / len(gaps), steady, max(gaps), " ".join("%.0f" % g for g in gaps))
+        print("sfduo-system-screen: " + line, file=sys.stderr, flush=True)
+        try:
+            with open(PERF_LOG, "a") as fp:
+                fp.write(line + "\n")
+        except OSError:
+            pass
+
+    # ---- the bus ----------------------------------------------------------------
+
+    def on_method(self, _conn, _sender, _path, _iface, method, params, invocation):
+        if method == "Open":
+            self.animate_to(1.0, "open")
+        elif method == "Close":
+            self.animate_to(0.0, "close")
+        elif method == "Begin":
+            self.begin()
+        elif method == "SetProgress":
+            self.set_progress(params.unpack()[0])
+        invocation.return_value(None)
+
+    def on_property(self, _conn, _sender, _path, _iface, name):
+        return GLib.Variant("d", self.progress) if name == "Progress" else None
+
+
+def main():
+    demo = "--demo" in sys.argv
+    app = Gtk.Application(application_id="org.sfduo.SystemScreenApp",
+                          flags=Gio.ApplicationFlags.NON_UNIQUE)
+    state = {}
+
+    def activate(app):
+        screen = SystemScreen(app)
+        state["screen"] = screen
+        app.hold()
+        node = Gio.DBusNodeInfo.new_for_xml(INTROSPECTION)
+
+        def acquired(conn, _name):
+            conn.register_object(BUS_PATH, node.interfaces[0],
+                                 screen.on_method, screen.on_property, None)
+        Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.NONE,
+                         acquired, None, None)
+        if demo:
+            rounds = int(os.environ.get("SFDUO_DEMO", "10"))
+            steps = []
+            for _ in range(rounds):
+                steps += [("open", 1.0), ("close", 0.0)]
+
+            def next_step():
+                if not steps:
+                    app.quit()
+                    return False
+                why, target = steps.pop(0)
+                screen.animate_to(target, why)
+                GLib.timeout_add(SLIDE_MS + 700, next_step)
+                return False
+            GLib.timeout_add(1000, next_step)
+
+    app.connect("activate", activate)
+    app.run([sys.argv[0]])
+
+
+if __name__ == "__main__":
+    main()
