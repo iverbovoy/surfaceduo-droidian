@@ -352,6 +352,25 @@ Load, memory and storage (#116):
 - **Storage:** the system image and /userdata apart, each with the free
   space. The system image is the smaller, and turns red under 1 GB free.
 
+The network card (#117):
+
+- **Wi-Fi:** the network, its signal, band and speed, from NetworkManager.
+- **Mobile:** the operator, the technology and the signal from ModemManager,
+  and whether mobile data is on.
+- **Today:** the data used today, Wi-Fi and mobile apart. The interfaces
+  count from boot and know nothing of midnight, so
+  `~/.local/state/sfduo/traffic.json` keeps the counts the day started with,
+  carried over restarts. It is brought up to date with the load samples
+  (while the display is on) and written once a minute. Data that went by
+  with the display off lands on the day it is next seen. Mobile is
+  `rmnet_data*` only: `rmnet_ipa0` under them would count it twice.
+
+The dock reads the system screen's `Progress` when the bus name changes
+hands. A system screen that went away while open, and the one started after
+it, had left the dock believing the page was still out: its halves on the
+right panel and the left panel's swipes switched off. The new instance's
+first word came before the dock knew who owned the name.
+
 A second instance that does not get the bus name leaves. The autostarted
 one keeps the name, and a copy started beside it went on sampling behind
 its back.

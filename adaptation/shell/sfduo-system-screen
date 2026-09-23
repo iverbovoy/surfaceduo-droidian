@@ -324,13 +324,15 @@ BIG_RGB = (0x0A / 255, 0x84 / 255, 0xFF / 255)
 
 
 def size(n):
-    """Bytes as a person reads them: 1.7 GB, 72 GB, 640 MB."""
+    """Bytes as a person reads them: 1.7 GB, 72 GB, 640 MB, 12 kB."""
     gb = n / 1e9
     if gb >= 10:
         return f"{gb:.0f} GB"
     if gb >= 1:
         return f"{gb:.1f} GB"
-    return f"{n / 1e6:.0f} MB"
+    if n >= 1e6:
+        return f"{n / 1e6:.0f} MB"
+    return f"{n / 1e3:.0f} kB"
 
 
 def read_text(path):
@@ -566,6 +568,227 @@ class StorageCard:
                 text.remove_css_class("system-warn")
 
 
+class TrafficLedger:
+    """Today's data, Wi-Fi and mobile apart (#117). The interfaces count from
+    boot and know nothing of midnight, so a small ledger keeps the counts
+    the day started with, carried over restarts, in
+    ~/.local/state/sfduo/traffic.json. It is brought up to date with the
+    load samples, while the display is on, and written once a minute: data
+    that went by with the display off lands on the day it is next seen."""
+
+    PATH = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+                        "sfduo", "traffic.json")
+    SAVE_EVERY = 6                        # load samples: a minute
+
+    def __init__(self):
+        self.ledger = None
+        self.samples = 0
+
+    @staticmethod
+    def counters():
+        """Bytes in and out since boot: (Wi-Fi, mobile). The mobile data is
+        rmnet_data*; rmnet_ipa0 under them would count it twice."""
+        wifi = mobile = 0
+        for line in read_text("/proc/net/dev").splitlines()[2:]:
+            name, _, rest = line.partition(":")
+            name, fields = name.strip(), rest.split()
+            if len(fields) < 9:
+                continue
+            both = int(fields[0]) + int(fields[8])
+            if name.startswith("wlan"):
+                wifi += both
+            elif name.startswith("rmnet_data"):
+                mobile += both
+        return wifi, mobile
+
+    def _load(self):
+        import json
+        try:
+            with open(self.PATH) as fp:
+                return json.load(fp)
+        except (OSError, ValueError):
+            return None
+
+    def _save(self):
+        import json
+        try:
+            os.makedirs(os.path.dirname(self.PATH), exist_ok=True)
+            with open(self.PATH + ".new", "w") as fp:
+                json.dump(self.ledger, fp)
+            os.replace(self.PATH + ".new", self.PATH)
+        except OSError:
+            pass
+
+    def tally(self, save=False):
+        """Bring the ledger up to now and give today's (Wi-Fi, mobile)."""
+        day = time.strftime("%Y-%m-%d")
+        boot = read_text("/proc/sys/kernel/random/boot_id").strip()
+        now = list(self.counters())
+        if self.ledger is None:
+            self.ledger = self._load()
+        led = self.ledger
+        if not led or led.get("day") != day:
+            # a new day starts from what the counters say now
+            led = {"day": day, "boot": boot, "base": now, "carried": [0, 0], "last": now}
+        elif led.get("boot") != boot:
+            # restarted today: what the old boot counted since the base is kept
+            led["carried"] = [c + max(0, last - base) for c, last, base
+                              in zip(led["carried"], led["last"], led["base"])]
+            led.update(boot=boot, base=[0, 0])
+        led["last"] = now
+        self.ledger = led
+        if save:
+            self._save()
+        return tuple(c + max(0, n - b) for c, n, b in zip(led["carried"], now, led["base"]))
+
+    def sampled(self):
+        """A load sample came: keep up, and write it down once a minute."""
+        self.samples += 1
+        self.tally(save=self.samples % self.SAVE_EVERY == 0)
+
+
+NM = "org.freedesktop.NetworkManager"
+MM = "org.freedesktop.ModemManager1"
+# ModemManager's access technologies, the newest first
+TECH = [(1 << 15, "5G"), (1 << 14, "LTE"), (0x3E0, "3G"), (0x1E, "2G")]
+
+
+class NetworkCard:
+    """Wi-Fi and the mobile network (#117): the Wi-Fi network, its signal,
+    band and speed; the operator, the technology and the signal; and today's
+    data, each apart. NetworkManager and ModemManager are asked without
+    waiting, only while the page is open."""
+
+    def __init__(self, body, ledger):
+        clear(body)
+        self.ledger = ledger
+        self.rows = {}
+        for key, name in (("wifi", "Wi-Fi"), ("mobile", "Mobile"), ("today", "Today")):
+            line = Gtk.Box(spacing=8)
+            line.append(Gtk.Label(label=name, css_classes=["system-row-name"], xalign=0))
+            text = Gtk.Label(css_classes=["system-card-body"], xalign=1, hexpand=True,
+                             ellipsize=3)             # Pango.EllipsizeMode.END
+            line.append(text)
+            body.append(line)
+            self.rows[key] = text
+        self.bus = None
+        self.wifi_device = None
+        self.modem_device = None
+        self.wifi = "Off"
+        self.data = None
+
+    def refresh(self):
+        wifi, mobile = self.ledger.tally()
+        self.rows["today"].set_text(f"Wi-Fi {size(wifi)} \u00b7 mobile {size(mobile)}")
+        if self.bus is None:
+            try:
+                self.bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            except GLib.Error:
+                return
+        if self.wifi_device is None:
+            self.bus.call(NM, "/org/freedesktop/NetworkManager", NM, "GetDevices", None, None,
+                          Gio.DBusCallFlags.NONE, 1000, None, self._got_devices)
+        else:
+            self._ask_wifi()
+            self._ask_data()
+        self.bus.call(MM, "/org/freedesktop/ModemManager1", "org.freedesktop.DBus.ObjectManager",
+                      "GetManagedObjects", None, None, Gio.DBusCallFlags.NONE, 1000, None,
+                      self._got_modems)
+
+    def _props(self, path, iface, done):
+        def got(bus, result):
+            try:
+                done(bus.call_finish(result).unpack()[0])
+            except GLib.Error:
+                done(None)
+        self.bus.call(NM, path, "org.freedesktop.DBus.Properties", "GetAll",
+                      GLib.Variant("(s)", (iface,)), None, Gio.DBusCallFlags.NONE, 1000, None, got)
+
+    def _got_devices(self, bus, result):
+        try:
+            paths = bus.call_finish(result).unpack()[0]
+        except GLib.Error:
+            return
+        for path in paths:
+            def seen(props, path=path):
+                if not props:
+                    return
+                kind = int(props.get("DeviceType", 0))
+                if kind == 2 and self.wifi_device is None:     # Wi-Fi
+                    self.wifi_device = path
+                    self._ask_wifi()
+                elif kind == 8 and self.modem_device is None:  # the modem's data
+                    self.modem_device = path
+                    self._ask_data()
+            self._props(path, NM + ".Device", seen)
+
+    def _ask_wifi(self):
+        def device(props):
+            if not props or int(props.get("State", 0)) != 100:
+                self.wifi = "Off" if props and int(props.get("State", 0)) <= 20 else "Not connected"
+                self._show_wifi()
+                return
+            self._props(self.wifi_device, NM + ".Device.Wireless",
+                        lambda w: wireless(w) if w else None)
+
+        def wireless(w):
+            ap, rate = w.get("ActiveAccessPoint", "/"), int(w.get("Bitrate", 0))
+            if ap == "/":
+                self.wifi = "Not connected"
+                self._show_wifi()
+                return
+            self._props(ap, NM + ".AccessPoint", lambda a: point(a, rate) if a else None)
+
+        def point(a, rate):
+            ssid = bytes(a.get("Ssid", b"")).decode("utf-8", "replace") or "Hidden network"
+            band = "5 GHz" if int(a.get("Frequency", 0)) >= 4900 else "2.4 GHz"
+            parts = [ssid, f"{int(a.get('Strength', 0))}%", band]
+            if rate:
+                parts.append(f"{rate // 1000} Mb/s")
+            self.wifi = " \u00b7 ".join(parts)
+            self._show_wifi()
+        self._props(self.wifi_device, NM + ".Device", device)
+
+    def _show_wifi(self):
+        self.rows["wifi"].set_text(self.wifi)
+
+    def _ask_data(self):
+        def device(props):
+            if not props:
+                return
+            state = int(props.get("State", 0))
+            self.data = "data on" if state == 100 else (
+                "data off" if state <= 30 else "data connecting")
+        if self.modem_device:
+            self._props(self.modem_device, NM + ".Device", device)
+
+    def _got_modems(self, bus, result):
+        try:
+            objects = bus.call_finish(result).unpack()[0]
+        except GLib.Error:
+            self.rows["mobile"].set_text("No modem")
+            return
+        for _path, ifaces in objects.items():
+            modem = ifaces.get(MM + ".Modem", {})
+            gsm = ifaces.get(MM + ".Modem.Modem3gpp", {})
+            if not modem:
+                continue
+            state = int(modem.get("State", 0))
+            if state < 7:                 # locked, disabled, searching and the like
+                self.rows["mobile"].set_text("No service")
+                return
+            quality = modem.get("SignalQuality", (0, False))[0]
+            tech = int(modem.get("AccessTechnologies", 0))
+            parts = [gsm.get("OperatorName") or "Mobile network"]
+            parts += [name for bit, name in TECH if tech & bit][:1]
+            parts.append(f"{quality}%")
+            if self.data:
+                parts.append(self.data)
+            self.rows["mobile"].set_text(" \u00b7 ".join(parts))
+            return
+        self.rows["mobile"].set_text("No modem")
+
+
 class SystemScreen:
     def __init__(self, app):
         self.app = app
@@ -611,6 +834,9 @@ class SystemScreen:
         self.load = LoadCard(self.cards["load"], self.sampler)
         self.memory = MemoryCard(self.cards["memory"])
         self.storage = StorageCard(self.cards["storage"])
+        self.ledger = TrafficLedger()
+        self.sampler.listeners.append(self.ledger.sampled)
+        self.network = NetworkCard(self.cards["network"], self.ledger)
         scroll.set_child(column)
         self.content.append(scroll)
         self.content.set_child_visible(False)     # not drawn at all under a full veil
@@ -764,7 +990,7 @@ class SystemScreen:
         self._show_time()
         self.refreshes = getattr(self, "refreshes", -1) + 1
         self.battery.refresh(history=self.refreshes % self.HISTORY_EVERY == 0)
-        for card in (self.load, self.memory, self.storage):
+        for card in (self.load, self.memory, self.storage, self.network):
             card.refresh()
         return True
 
@@ -1054,6 +1280,9 @@ def main():
                                  screen.on_method, screen.on_property, None)
             screen.conn = conn
             screen.follow_display(conn)
+            # said at once: a system screen that went away open left the
+            # dock thinking it still was, its left panel's swipes switched off
+            screen._say_progress()
 
         def lost(_conn, _name):
             # another one has the name: the dock talks to that one, and this

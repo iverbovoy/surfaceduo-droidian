@@ -2448,6 +2448,24 @@ class Dock(Gtk.Window):
             self.SYSTEM_NAME, "org.freedesktop.DBus.Properties", "PropertiesChanged",
             self.SYSTEM_PATH, None, Gio.DBusSignalFlags.NONE,
             lambda _c, _s, _p, _i, _sig, params: self._on_system_changed(params.unpack()[1]))
+        # and when it comes or goes: a system screen that went away open, and
+        # the one started after it, left the dock thinking it still was - the
+        # new one's first word came before the dock knew it was the owner
+        self.session_bus.signal_subscribe(
+            "org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
+            "/org/freedesktop/DBus", self.SYSTEM_NAME, Gio.DBusSignalFlags.NONE,
+            lambda *_a: self._read_system())
+
+    def _read_system(self):
+        def got(bus, result):
+            try:
+                progress = bus.call_finish(result).unpack()[0]
+            except GLib.Error:
+                progress = 0.0                    # nobody: nothing is out
+            self._on_system_changed({"Progress": float(progress)})
+        self.session_bus.call(self.SYSTEM_NAME, self.SYSTEM_PATH, "org.freedesktop.DBus.Properties",
+                              "Get", GLib.Variant("(ss)", (self.SYSTEM_NAME, "Progress")), None,
+                              Gio.DBusCallFlags.NO_AUTO_START, 1000, None, got)
 
     def _on_system_changed(self, changed):
         if "Progress" in changed:
