@@ -832,6 +832,7 @@ install -Dm644 "$SYSTEM/dconf/profile-user"        "$PKG/etc/dconf/profile/user"
 install -Dm644 "$SYSTEM/dconf/51-sfduo-background" "$PKG/etc/dconf/db/local.d/51-sfduo-background"
 install -Dm644 "$SYSTEM/dconf/52-sfduo-idle"       "$PKG/etc/dconf/db/local.d/52-sfduo-idle"
 install -Dm644 "$SYSTEM/dconf/53-sfduo-apps"       "$PKG/etc/dconf/db/local.d/53-sfduo-apps"
+install -Dm644 "$SYSTEM/dconf/54-sfduo-location"   "$PKG/etc/dconf/db/local.d/54-sfduo-location"
 # Applications (2026-09-18): the grid hides what the port does not want
 # (../system/apps/hidden.list - an override per desktop id in
 # /usr/local/share/applications, which XDG_DATA_DIRS lists first; the
