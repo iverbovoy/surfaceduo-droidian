@@ -29,6 +29,7 @@ jobs:
 
       - name: boot-image self-test
         run: |
+          sudo apt-get update -qq
           sudo apt-get install -y -qq fakeroot cpio
           ./tools/test-make-boot-image.sh
 
@@ -37,6 +38,7 @@ jobs:
 
       - name: running-apps grouping tests
         run: |
+          sudo apt-get update -qq
           sudo apt-get install -y -qq libglib2.0-dev python3-gi
           bash tools/test-running-apps-filter.sh
           /usr/bin/python3 tools/test-dock-follows.py
