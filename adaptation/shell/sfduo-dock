@@ -443,7 +443,10 @@ class GridPanel(Gtk.Window):
 
     Anchored to the bottom and to its panel's outer edge, one panel wide and
     the stage tall; parked below the screen with a negative margin when
-    closed, and unmapped once it has stopped there.
+    closed. It stays mapped there once it has been shown: unmapped, every
+    opening drew it whole again and uploaded 1350x1736 in its first frame,
+    and the end of each slide, set through gtk-layer-shell, redrew it whole
+    too - both inside the slide, frames lost to them (#148).
     """
 
     def __init__(self, dock, side, pane):
@@ -483,27 +486,33 @@ class GridPanel(Gtk.Window):
         self.drag.connect("drag-end", dock._on_drag_end)
         self.drag.connect("cancel", dock._on_drag_cancel)
 
+    SETTLE_MS = 600                     # after the last step: every motion is over
+
     def place(self, progress):
         """Where the grid is: 0 parked below the screen, 1 all the way up.
 
-        The ends go through gtk-layer-shell, so that what it believes about
-        the margin is true whenever it next commits on its own; every step
-        between goes straight to the compositor and repaints nothing.
+        Every step goes straight to the compositor and repaints nothing. What
+        gtk-layer-shell believes about the margin is set a few frames after a
+        slide stops at an end - so that it is true whenever it next commits on
+        its own - and not at the end itself: setting it redraws the window.
         """
         margin = -round(STAGE_HEIGHT * (1.0 - progress))
-        if progress > 0.0 and not self.get_visible():
+        settle = getattr(self, "settle", None)
+        if settle is not None:
+            GLib.source_remove(settle)          # still moving: not yet
+            self.settle = None
+        if not self.get_mapped():
             GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, margin)
-            self.show_all()
-            return
-        if progress <= 0.0:
-            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, margin)
-            if self.get_visible():
-                self.hide()
-            return
-        if progress >= 1.0 or not self.get_mapped():
-            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, margin)
+            if progress > 0.0 and not self.get_visible():
+                self.show_all()                 # the first time only; parked after
             return
         raw_margin_bottom(self, margin)
+        if progress <= 0.0 or progress >= 1.0:
+            def settle_now():
+                self.settle = None
+                GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, margin)
+                return False
+            self.settle = GLib.timeout_add(self.SETTLE_MS, settle_now)
 
 
 class CurtainPanel(Gtk.Window):
@@ -601,12 +610,21 @@ class BackStrip(Gtk.Window):
         self.drag.connect("drag-update", lambda g, dx, dy: dock._back_update(self, dx))
         self.drag.connect("drag-end", lambda g, dx, dy: dock._back_end(self))
         self.drag.connect("cancel", lambda g, s: dock._back_cancel(self))
-        self.connect("map", lambda *_a: self.set_active(bool(self.active)))
+        self.connect("map", lambda *_a: self._apply())
         self.show_all()
 
     def set_active(self, on):
         """Take touches, or let every one through to the window beneath."""
+        # Dock._shape asks at every turn of the dock; a strip told what it
+        # already was sent a frame all the same, both strips together, and
+        # the grid's slide lost a frame each time the dock crossed (#148)
+        if on == self.active:
+            return
         self.active = on
+        self._apply()
+
+    def _apply(self):
+        on = bool(self.active)
         win = self.get_window()
         if win is None:
             return
@@ -615,7 +633,7 @@ class BackStrip(Gtk.Window):
         else:
             region = cairo.Region()
         win.input_shape_combine_region(region, 0, 0)
-        self.queue_draw()           # the region travels with a commit - see Dock._shape
+        self.queue_draw_area(0, 0, 1, 1)   # the region travels with a commit - see Dock._shape
 
 
 class BackArrow(Gtk.Window):
@@ -2131,14 +2149,19 @@ class Dock(Gtk.Window):
         win.input_shape_combine_region(region, 0, 0)
         # GTK hands the region to the compositor with the next commit, and
         # this window draws nothing to commit: without a frame the strip kept
-        # its old region, and an open shade lost its bottom 84 px to it.
-        self.queue_draw()
+        # its old region, and an open shade lost its bottom 84 px to it. One
+        # pixel's frame carries it: the whole strip redrawn, 2784x168, was
+        # drawn in software and uploaded again inside a step of the grid's
+        # slide, which lost a frame to it (#148).
+        self.queue_draw_area(0, 0, 1, 1)
         # the outer edges swipe back where the bottom band swipes the window,
         # and the outer corner of the same panel carries the arrow for it
         for side, strip in getattr(self, "back_strips", {}).items():
+            # by the windows alone: the grid rising over a panel took it busy
+            # and back, and each strip shown again uploaded its buffer inside
+            # the grid's slide (#148); under the grid it takes no touch anyway
             on = (not self.locked and not self._shade_over(side)
-                  and not (self.progress > 0.0 and side == self.grid_side)
-                  and self.mode not in ("both", side))
+                  and self._mode_for(False, system=False) not in ("both", side))
             strip.set_active(on)
             button = getattr(self, "back_buttons", {}).get(side)
             if button is not None:
@@ -2151,8 +2174,11 @@ class Dock(Gtk.Window):
         # swipe left there takes back, as a swipe right there brought it
         system = getattr(self, "system_progress", 0.0)
         for side, catcher in getattr(self, "catchers", {}).items():
+            # Not taken away for the grid: it lies above them and takes the
+            # touches itself, and a catcher shown again uploaded its whole
+            # 1350x1584 buffer as the grid came down (#148).
             catcher.set_active(getattr(self, "catching", None) == side or (
-                not self.locked and self.progress <= 0.0 and not self._shade_over(side)
+                not self.locked and not self._shade_over(side)
                 and self._mode_for(False, system=False) in ("both", side)
                 and (system <= 0.0 or (side == "right" and system >= 1.0))))
 
