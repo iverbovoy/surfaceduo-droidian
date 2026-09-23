@@ -253,6 +253,7 @@ scrollbar { opacity: 0; }
 .privacy-dot { min-width: 10px; min-height: 10px; border-radius: 5px; }
 .privacy-dot.mic { background-color: #ff9f0a; }
 .privacy-dot.camera { background-color: #30d158; }
+.privacy-dot.location { background-color: #0a84ff; }
 """
 
 
@@ -1000,8 +1001,8 @@ class PrivacyDot(Gtk.Window):
     recording, and `pactl subscribe` says when one comes or goes. The camera
     goes through Android's camera service, which says nothing to anyone, so
     it is the camera app's window being open (Dock._set_running). Location
-    is left out: something holds it all the time here, and a dot always lit
-    says nothing.
+    is GeoClue's InUse, blue: honest since GNOME Clocks stopped following
+    the location all day (#102). Camera over microphone over location.
 
     On the overlay layer, so it is seen over windows and on the lock screen;
     it takes no touches.
@@ -1031,7 +1032,9 @@ class PrivacyDot(Gtk.Window):
             cairo.Region(), 0, 0))
         self.mic = False
         self.camera = False
+        self.location = False
         self._follow_mic()
+        self._follow_location()
 
     def _follow_mic(self):
         try:
@@ -1066,6 +1069,38 @@ class PrivacyDot(Gtk.Window):
         self.mic = bool(out.strip())
         self._show()
 
+    GEOCLUE = "org.freedesktop.GeoClue2"
+    GEOCLUE_MANAGER = "/org/freedesktop/GeoClue2/Manager"
+
+    def _follow_location(self):
+        try:
+            self.system_bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        except GLib.Error:
+            return
+        self.system_bus.signal_subscribe(
+            self.GEOCLUE, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+            self.GEOCLUE_MANAGER, None, Gio.DBusSignalFlags.NONE,
+            lambda _c, _s, _p, _i, _sig, params: self._on_geoclue(params.unpack()[1]))
+        # GeoClue restarting starts with nobody using it
+        Gio.bus_watch_name_on_connection(self.system_bus, self.GEOCLUE, Gio.BusNameWatcherFlags.NONE,
+                                         lambda *_a: self._read_location(),
+                                         lambda *_a: self._on_geoclue({"InUse": False}))
+
+    def _read_location(self):
+        try:
+            value = self.system_bus.call_sync(
+                self.GEOCLUE, self.GEOCLUE_MANAGER, "org.freedesktop.DBus.Properties", "Get",
+                GLib.Variant("(ss)", ("org.freedesktop.GeoClue2.Manager", "InUse")),
+                None, Gio.DBusCallFlags.NO_AUTO_START, 1000, None)
+            self._on_geoclue({"InUse": value.unpack()[0]})
+        except GLib.Error:
+            self._on_geoclue({"InUse": False})
+
+    def _on_geoclue(self, changed):
+        if "InUse" in changed and bool(changed["InUse"]) != self.location:
+            self.location = bool(changed["InUse"])
+            self._show()
+
     def set_camera(self, on):
         if on != self.camera:
             self.camera = on
@@ -1073,10 +1108,11 @@ class PrivacyDot(Gtk.Window):
 
     def _show(self):
         style = self.dot.get_style_context()
-        for name, on in (("camera", self.camera), ("mic", self.mic and not self.camera)):
+        for name, on in (("camera", self.camera), ("mic", self.mic and not self.camera),
+                         ("location", self.location and not (self.mic or self.camera))):
             (style.add_class if on else style.remove_class)(name)
-        debug(f"privacy dot: mic {self.mic}, camera {self.camera}")
-        if self.mic or self.camera:
+        debug(f"privacy dot: mic {self.mic}, camera {self.camera}, location {self.location}")
+        if self.mic or self.camera or self.location:
             self.show_all()
         else:
             self.hide()

@@ -1,0 +1,9 @@
+# Location on request, not all day (#102). GNOME Clocks' background process
+# (gnome-clocks --hidden, autostarted for the alarms) follows the location
+# for its world clocks' "current location" whenever it runs, and it runs
+# always: GeoClue reported InUse at every moment, which made a location mark
+# meaningless and kept the modem and Wi-Fi sources busy. Alarms and timers
+# need no location. The desktop clock's weather is GNOME Weather's chosen
+# city. A default, not a lock - Clocks can turn it back on.
+[org/gnome/clocks]
+geolocation=false

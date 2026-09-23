@@ -291,8 +291,12 @@ is lit to be glanced at. What the bar said went where it belongs:
 - **A microphone or a camera in use** is a dot in the right panel's top
   corner (`PrivacyDot`, #99): orange while PulseAudio has a source output,
   green while the camera app's window is open (Android's camera service
-  tells no one). Location is left out while something holds it all the time
-  (#102). A low battery was already gsd-power's notification, at UPower's
+  tells no one), blue while something asks for the location (GeoClue's
+  `InUse`). The blue one only became possible once GNOME Clocks stopped
+  following the location all day - its background process, running for the
+  alarms, held GeoClue in use at every moment for its world clocks' "current
+  location"; the port's dconf default turns that off (`54-sfduo-location`,
+  #102). A low battery was already gsd-power's notification, at UPower's
   20 % and 5 %.
 
 ### Back, from the edge
