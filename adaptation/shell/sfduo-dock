@@ -1801,6 +1801,17 @@ class Dock(Gtk.Window):
                 x, y = targets[side]
                 pane.move(x=x, y=y)
                 pane.move(settle=True)
+            GLib.timeout_add(250, self._repaint_panes)
+        return False
+
+    def _repaint_panes(self):
+        """One more frame of each half, once everything has stopped: phoc
+        damages a moved layer surface and asks for a frame, and now and then
+        that frame was not drawn until something else on the screen changed -
+        the halves stood where the last driven frame had put them, a gap
+        between them, for seconds (#104). A commit with a buffer asks again."""
+        for pane in self.panes.values():
+            pane.queue_draw()
         return False
 
     def _pane_targets(self, mode):
