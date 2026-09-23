@@ -74,6 +74,11 @@ CSS = b"""
 .system-quiet { font-size: 13px; color: #8e8e93; }
 .system-card-lead { font-size: 20px; font-weight: bold; color: #1c1c1e; }
 .system-axis { font-size: 11px; color: #8e8e93; }
+.system-row-name { font-size: 15px; font-weight: bold; color: #1c1c1e; }
+.system-warn { color: #ff3b30; }
+levelbar trough { min-height: 6px; border-radius: 3px; }
+levelbar block.filled { background-color: #0a84ff; border-radius: 3px; }
+levelbar block.empty { background-color: #e5e5ea; border-radius: 3px; }
 scrollbar { opacity: 0; }
 """
 
@@ -312,6 +317,255 @@ class BatteryCard:
         self.graph.set_points(sorted((int(t), float(v), int(s)) for t, v, s in rows))
 
 
+LOAD_EVERY_S = 10                         # a load sample
+LOAD_SPAN_S = 600                         # the load histogram's span
+LITTLE_RGB = (0x8E / 255, 0x8E / 255, 0x93 / 255)
+BIG_RGB = (0x0A / 255, 0x84 / 255, 0xFF / 255)
+
+
+def size(n):
+    """Bytes as a person reads them: 1.7 GB, 72 GB, 640 MB."""
+    gb = n / 1e9
+    if gb >= 10:
+        return f"{gb:.0f} GB"
+    if gb >= 1:
+        return f"{gb:.1f} GB"
+    return f"{n / 1e6:.0f} MB"
+
+
+def read_text(path):
+    try:
+        with open(path) as fp:
+            return fp.read()
+    except OSError:
+        return ""
+
+
+class LoadSampler:
+    """The CPU's use, a sample every LOAD_EVERY_S, the little cores and the
+    big ones apart, kept for LOAD_SPAN_S so that the load card has a past
+    when the page opens (#116). One read of /proc/stat a sample, and none
+    while the display is off: a timer waking a folded phone every 10 s is
+    not worth a histogram nobody can see - the past it keeps is the last
+    minutes the phone was in use."""
+
+    def __init__(self):
+        self.clusters = []                # (name, [cpu numbers]), little first
+        for policy in sorted(os.listdir("/sys/devices/system/cpu/cpufreq")
+                             if os.path.isdir("/sys/devices/system/cpu/cpufreq") else []):
+            cpus = [int(c) for c in read_text(
+                f"/sys/devices/system/cpu/cpufreq/{policy}/related_cpus").split()]
+            if cpus:
+                self.clusters.append((policy, cpus))
+        self.clusters.sort(key=lambda c: c[1][0])
+        self.samples = []                 # (monotonic s, little 0..1, big 0..1)
+        self.last = None                  # per-cpu (busy, total) at the last read
+        self.timer = None
+        self.listeners = []
+
+    def _read(self):
+        stat = {}
+        for line in read_text("/proc/stat").splitlines():
+            if line.startswith("cpu") and line[3:4].isdigit():
+                name, *fields = line.split()
+                values = [int(v) for v in fields]
+                idle = values[3] + (values[4] if len(values) > 4 else 0)
+                stat[int(name[3:])] = (sum(values) - idle, sum(values))
+        return stat
+
+    def sample(self):
+        now, stat = time.monotonic(), self._read()
+        if self.last is not None and self.clusters:
+            def use(cpus):
+                busy = sum(stat[c][0] - self.last[c][0] for c in cpus if c in stat and c in self.last)
+                total = sum(stat[c][1] - self.last[c][1] for c in cpus if c in stat and c in self.last)
+                return busy / total if total > 0 else 0.0
+            little = self.clusters[0][1]
+            big = [c for _name, cpus in self.clusters[1:] for c in cpus]
+            self.samples.append((now, use(little), use(big)))
+            self.samples = [x for x in self.samples if now - x[0] <= LOAD_SPAN_S]
+            for listener in self.listeners:
+                listener()
+        self.last = stat
+        return True
+
+    def run(self, on):
+        """Sample while the display is on, and not while it is off."""
+        if on and self.timer is None:
+            self.last = None              # a span of darkness is not one long sample
+            self.sample()
+            self.timer = GLib.timeout_add_seconds(LOAD_EVERY_S, self.sample)
+        elif not on and self.timer is not None:
+            GLib.source_remove(self.timer)
+            self.timer = None
+
+
+class LoadGraph(Gtk.Widget):
+    """The load over the last LOAD_SPAN_S: a bar a sample, the little
+    cores' in grey above the big cores' in blue.
+
+    Plain colour rectangles, one node a bar: the GPU draws them for nothing,
+    and GTK keeps them until a new sample asks for a new drawing. Drawn with
+    cairo into a texture, as the charge graph is, the redrawing and the
+    upload with every sample showed: a long frame in 34% of the slides
+    against 19% without the sampler."""
+
+    ROW = 28
+    GAP = 6
+
+    def __init__(self, sampler):
+        super().__init__()
+        self.sampler = sampler
+        self.shown = False                # the page is open
+        self.set_size_request(-1, 2 * self.ROW + self.GAP)
+        self.set_hexpand(True)
+
+    def redraw(self):
+        """A sample came: drawn now if the page is open; otherwise the next
+        time it is shown, GTK having thrown the old drawing away then."""
+        if self.shown:
+            self.queue_draw()
+
+    def show(self, shown):
+        if shown and not self.shown:
+            self.queue_draw()
+        self.shown = shown
+
+    def do_snapshot(self, snapshot):
+        w = self.get_width()
+        bg = Gdk.RGBA()
+        bg.red = bg.green = bg.blue = 0.0
+        bg.alpha = 0.05
+        rows = ((0, 1, LITTLE_RGB), (self.ROW + self.GAP, 2, BIG_RGB))
+        for top, _i, _rgb in rows:
+            snapshot.append_color(bg, Graphene.Rect().init(0, top, w, self.ROW))
+        now = time.monotonic()
+        bar = w / (LOAD_SPAN_S / LOAD_EVERY_S)
+        colours = {}
+        for top, i, rgb in rows:
+            c = Gdk.RGBA()
+            c.red, c.green, c.blue, c.alpha = (*rgb, 1.0)
+            colours[i] = c
+        for sample in self.sampler.samples:
+            x = w * (1 - (now - sample[0]) / LOAD_SPAN_S) - bar
+            for top, i, _rgb in rows:
+                height = max(1.0, self.ROW * sample[i])
+                snapshot.append_color(colours[i], Graphene.Rect().init(
+                    x + 0.5, top + self.ROW - height, max(1.0, bar - 1), height))
+
+
+def clear(body):
+    for child in list(body):
+        body.remove(child)
+
+
+class LoadCard:
+    """The CPU (#116): the last ten minutes of use, the clusters' clocks
+    now and the hottest core's temperature."""
+
+    def __init__(self, body, sampler):
+        clear(body)
+        self.sampler = sampler
+        self.detail = Gtk.Label(css_classes=["system-card-body"], xalign=0, wrap=True)
+        self.graph = LoadGraph(sampler)
+        self.graph.set_margin_top(6)
+        axis = Gtk.Box()
+        axis.append(Gtk.Label(label="10 min ago \u00b7 little above, big below",
+                              css_classes=["system-axis"], xalign=0, hexpand=True))
+        axis.append(Gtk.Label(label="now", css_classes=["system-axis"], xalign=1))
+        for w in (self.detail, self.graph, axis):
+            body.append(w)
+        self.temps = [f"/sys/class/thermal/{z}/temp" for z in sorted(os.listdir("/sys/class/thermal"))
+                      if z.startswith("thermal_zone")
+                      and read_text(f"/sys/class/thermal/{z}/type").strip().endswith("-usr")
+                      and read_text(f"/sys/class/thermal/{z}/type").startswith("cpu")] \
+            if os.path.isdir("/sys/class/thermal") else []
+        sampler.listeners.append(self.graph.redraw)
+
+    def refresh(self):
+        self.graph.show(True)
+        names = ["Little", "Big", "Prime"]
+        parts = []
+        for i, (policy, _cpus) in enumerate(self.sampler.clusters):
+            khz = read_text(f"/sys/devices/system/cpu/cpufreq/{policy}/scaling_cur_freq").strip()
+            if khz.isdigit():
+                parts.append(f"{names[i] if i < len(names) else policy} {int(khz) / 1e6:.1f} GHz")
+        temps = [int(t) for t in (read_text(p).strip() for p in self.temps) if t.lstrip("-").isdigit()]
+        if temps:
+            parts.append(f"{max(temps) / 1000:.0f} \u00b0C")
+        self.detail.set_text(" \u00b7 ".join(parts))
+
+
+class MemoryCard:
+    """The RAM (#116): used and total, and the swap if any is in use."""
+
+    def __init__(self, body):
+        clear(body)
+        self.lead = Gtk.Label(css_classes=["system-card-lead"], xalign=0)
+        self.bar = Gtk.LevelBar(min_value=0.0, max_value=1.0)
+        self.bar.set_margin_top(6)
+        self.detail = Gtk.Label(css_classes=["system-quiet"], xalign=0)
+        for w in (self.lead, self.bar, self.detail):
+            body.append(w)
+
+    def refresh(self):
+        info = {}
+        for line in read_text("/proc/meminfo").splitlines():
+            key, _, rest = line.partition(":")
+            if rest.strip().split()[:1]:
+                info[key] = int(rest.split()[0]) * 1024
+        total, free = info.get("MemTotal", 0), info.get("MemAvailable", 0)
+        if not total:
+            return
+        self.lead.set_text(f"{size(total - free)} used of {size(total)}")
+        self.bar.set_value((total - free) / total)
+        swap = info.get("SwapTotal", 0) - info.get("SwapFree", 0)
+        self.detail.set_text(f"Swap {size(swap)} in use" if swap >= 50e6 else "")
+        self.detail.set_visible(swap >= 50e6)
+
+
+class StorageCard:
+    """The space (#116): the system image and the user data apart - the
+    root is an image of its own on /userdata, much the smaller of the two."""
+
+    LOW = 1e9                              # free space under this on a row is red
+
+    PLACES = [("System", "/"), ("Data", "/userdata")]
+
+    def __init__(self, body):
+        clear(body)
+        self.rows = []
+        for name, path in self.PLACES:
+            row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            line = Gtk.Box(spacing=8)
+            line.append(Gtk.Label(label=name, css_classes=["system-row-name"], xalign=0))
+            text = Gtk.Label(css_classes=["system-card-body"], xalign=1, hexpand=True)
+            line.append(text)
+            bar = Gtk.LevelBar(min_value=0.0, max_value=1.0)
+            row.append(line)
+            row.append(bar)
+            body.append(row)
+            self.rows.append((path, row, text, bar))
+
+    def refresh(self):
+        for path, row, text, bar in self.rows:
+            try:
+                st = os.statvfs(path)
+            except OSError:
+                row.set_visible(False)
+                continue
+            total, free = st.f_blocks * st.f_frsize, st.f_bavail * st.f_frsize
+            row.set_visible(total > 0)
+            if total <= 0:
+                continue
+            text.set_text(f"{size(free)} free of {size(total)}")
+            bar.set_value(1 - free / total)
+            if free < self.LOW:
+                text.add_css_class("system-warn")
+            else:
+                text.remove_css_class("system-warn")
+
+
 class SystemScreen:
     def __init__(self, app):
         self.app = app
@@ -353,6 +607,10 @@ class SystemScreen:
         for key, title in self.CARDS:
             column.append(self._card(key, title))
         self.battery = BatteryCard(self.cards["battery"])
+        self.sampler = LoadSampler()
+        self.load = LoadCard(self.cards["load"], self.sampler)
+        self.memory = MemoryCard(self.cards["memory"])
+        self.storage = StorageCard(self.cards["storage"])
         scroll.set_child(column)
         self.content.append(scroll)
         self.content.set_child_visible(False)     # not drawn at all under a full veil
@@ -473,6 +731,32 @@ class SystemScreen:
                 texture = None
         self.avatar.set_custom_image(texture)
 
+    DISPLAY = "org.gnome.Mutter.DisplayConfig"
+    DISPLAY_PATH = "/org/gnome/Mutter/DisplayConfig"
+
+    def follow_display(self, conn):
+        """Sample the load while the display is on: phosh says it as
+        PowerSaveMode, 0 on and 3 off. A shell that does not answer leaves
+        the sampler on."""
+        conn.signal_subscribe(self.DISPLAY, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                              self.DISPLAY_PATH, None, Gio.DBusSignalFlags.NONE,
+                              lambda _c, _s, _p, _i, _sig, params:
+                              self._display_changed(params.unpack()[1]))
+
+        def got(conn_, result):
+            try:
+                mode = conn_.call_finish(result).unpack()[0]
+            except GLib.Error:
+                mode = 0
+            self.sampler.run(int(mode) == 0)
+        conn.call(self.DISPLAY, self.DISPLAY_PATH, "org.freedesktop.DBus.Properties", "Get",
+                  GLib.Variant("(ss)", (self.DISPLAY, "PowerSaveMode")), None,
+                  Gio.DBusCallFlags.NONE, 1000, None, got)
+
+    def _display_changed(self, changed):
+        if "PowerSaveMode" in changed:
+            self.sampler.run(int(changed["PowerSaveMode"]) == 0)
+
     def _refresh(self):
         """Read what changes while the page is open: the time, the battery.
         Called on the way in and then every REFRESH_S while it is open; the
@@ -480,6 +764,8 @@ class SystemScreen:
         self._show_time()
         self.refreshes = getattr(self, "refreshes", -1) + 1
         self.battery.refresh(history=self.refreshes % self.HISTORY_EVERY == 0)
+        for card in (self.load, self.memory, self.storage):
+            card.refresh()
         return True
 
     def _opened(self, is_open):
@@ -489,6 +775,7 @@ class SystemScreen:
             self._read_owner()                    # once a visit: it hardly changes
             self.refreshing = GLib.timeout_add_seconds(self.REFRESH_S, self._refresh)
         elif not is_open and self.refreshing is not None:
+            self.load.graph.show(False)
             GLib.source_remove(self.refreshing)
             self.refreshing = None
 
@@ -766,8 +1053,15 @@ def main():
             conn.register_object(BUS_PATH, node.interfaces[0],
                                  screen.on_method, screen.on_property, None)
             screen.conn = conn
+            screen.follow_display(conn)
+
+        def lost(_conn, _name):
+            # another one has the name: the dock talks to that one, and this
+            # one would only sample the load behind its back
+            print("sfduo-system-screen: the name is taken - leaving", file=sys.stderr)
+            app.quit()
         Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.NONE,
-                         acquired, None, None)
+                         acquired, None, lost)
         if demo:
             rounds = int(os.environ.get("SFDUO_DEMO", "10"))
             steps = []

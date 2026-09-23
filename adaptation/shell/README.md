@@ -336,6 +336,26 @@ that shows it. A cairo node drawn in the snapshot was drawn and uploaded
 again each time the content came out, and that frame took 33-50 ms in half
 the opens.
 
+Load, memory and storage (#116):
+
+- **Load:** the clock of each CPU cluster (little, big, prime), the hottest
+  core's temperature, and a histogram of the last 10 minutes: the little
+  cores above, the big and prime below.
+  - It is sampled every 10 s from /proc/stat while the display is on
+    (phosh's `PowerSaveMode`), and not while it is off: a timer waking a
+    folded phone is not worth a histogram nobody can see.
+  - The bars are plain colour nodes. Drawn with cairo into a texture at
+    every sample, the redrawing and upload showed: a long frame in 34% of
+    the slides, against 19% for the page without it and 22% with the
+    colour nodes.
+- **Memory:** used of total, and the swap if any is in use.
+- **Storage:** the system image and /userdata apart, each with the free
+  space. The system image is the smaller, and turns red under 1 GB free.
+
+A second instance that does not get the bus name leaves. The autostarted
+one keeps the name, and a copy started beside it went on sampling behind
+its back.
+
 It is a program of its own, `sfduo-system-screen`, because the colour change
 is a new frame every step: GTK4 draws through the GPU here, GTK3 (the dock)
 does not. Measured: 16.6-16.8 ms a frame (median), with ~80 ms before the
