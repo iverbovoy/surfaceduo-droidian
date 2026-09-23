@@ -1,0 +1,55 @@
+From: The Surface Duo port <none@invalid>
+Subject: [PATCH 17/17] running-apps: only Placed and Follows redo the rows
+
+The port's dock publishes more than where windows are: Busy changes with
+every panel the app grid or a window takes. The far shade's list of windows
+(patch 0009) redid all of its rows on any of the dock's properties changing,
+and redrew itself - hidden, folded - each time the grid rose or fell:
+414x1472 and 552x1670 of the shade uploaded inside the grid's slide, on this
+phone's GPU the slow path for a partial upload, and the slide lost frames to
+it.
+
+The rows are redone when Placed or Follows change, or the dock's properties
+are invalidated; the dock coming or going still redoes them as before.
+---
+--- a/src/running-apps.c
++++ b/src/running-apps.c
+@@ -281,6 +281,27 @@
+ }
+ 
+ 
++/*
++ * The dock says more than where windows are: Busy changes with every panel
++ * the grid or a window takes. Only Placed and Follows change a row, and
++ * redoing every row for the rest redrew the shade's list - hidden, folded -
++ * each time the grid rose or fell: 414x1472 and 552x1670 of the shade uploaded
++ * inside the grid's slide, which lost frames to it (#148).
++ */
++static void
++on_dock_properties_changed (PhoshRunningApps *self,
++                            GVariant         *changed,
++                            GStrv             invalidated,
++                            GDBusProxy       *proxy)
++{
++  g_autoptr (GVariant) placed = g_variant_lookup_value (changed, "Placed", NULL);
++  g_autoptr (GVariant) follows = g_variant_lookup_value (changed, "Follows", NULL);
++
++  if (placed || follows || (invalidated && invalidated[0]))
++    update_all_rows (self);
++}
++
++
+ static void
+ on_dock_proxy_ready (GObject *source, GAsyncResult *res, gpointer data)
+ {
+@@ -294,8 +315,8 @@
+   }
+   self = PHOSH_RUNNING_APPS (data);
+   self->dock = proxy;
+-  g_signal_connect_object (proxy, "g-properties-changed", G_CALLBACK (update_all_rows), self,
+-                           G_CONNECT_SWAPPED);
++  g_signal_connect_object (proxy, "g-properties-changed", G_CALLBACK (on_dock_properties_changed),
++                           self, G_CONNECT_SWAPPED);
+   /* the dock coming or going changes what is known */
+   g_signal_connect_object (proxy, "notify::g-name-owner", G_CALLBACK (update_all_rows), self,
+                            G_CONNECT_SWAPPED);

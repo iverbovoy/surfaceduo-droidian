@@ -886,7 +886,7 @@ install -m755 "$SHELLDIR/sfduo-dock"       "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-brightness" "$PKG/usr/local/bin/"
 install -m755 "$SHELLDIR/sfduo-shell-setup" "$PKG/usr/local/sbin/"
 install -m755 "$SHELLDIR/sfduo-phosh-install" "$PKG/usr/local/sbin/"
-# The patched phosh (../shell/phosh-patches 0001-0016), built per
+# The patched phosh (../shell/phosh-patches 0001-0017), built per
 # ../shell/README.md. Version-locked: see sfduo-phosh-install.
 PHOSH_BIN="$ROOT/out/phosh/phosh-0.49.0-cf38ab5-sfduo"
 if [ -f "$PHOSH_BIN" ]; then
