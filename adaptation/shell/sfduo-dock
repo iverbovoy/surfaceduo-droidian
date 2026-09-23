@@ -839,13 +839,16 @@ class DesktopClock(Gtk.Window):
     panel - the right one, under the thumb as on the lock screen, when both
     are free - and is gone when neither is (Dock._place_clock).
 
-    A layer surface on the top layer: phosh's home, which is what the
-    desktop's black actually is, is a top-layer surface too, and a clock on
-    the bottom layer stood under it unseen. The top layer is also above every
-    window, so the clock goes where the dock goes - the dock's own panel is by
-    definition the free one, with a launch in flight, the keyboard and a
-    pulled-down shade already taken into account - and the grid and the
-    curtains on the overlay layer cover it. It takes no touches. It changes panels by its margin - the compositor moves the same
+    A layer surface on the bottom layer: under the windows, over the
+    wallpaper. It was on the top layer while phosh's home - a top-layer
+    surface as large as the display - was the desktop's black, and a clock
+    under it stood unseen; the home is not shown on a display with a seam
+    any more (phosh-patches/0016). Above the windows, the clock was drawn
+    over one for the 100-300 ms the dock took to learn a window had come to
+    its panel, and it blinked there (#154). Under them, a window simply
+    covers it until it moves. It goes where the dock goes - the dock's own
+    panel is by definition the free one, with a launch in flight, the
+    keyboard and a pulled-down shade already taken into account. It takes no touches. It changes panels by its margin - the compositor moves the same
     pixels - and redraws once a minute, when the figures change; each time it
     also steps a few pixels from its place, so no pixel of it is lit in the
     same spot for long.
@@ -863,7 +866,7 @@ class DesktopClock(Gtk.Window):
         self.set_app_paintable(True)
         GtkLayerShell.init_for_window(self)
         GtkLayerShell.set_namespace(self, "sfduo-clock")
-        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.BOTTOM)
         GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.TOP, True)
         GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, True)
         GtkLayerShell.set_exclusive_zone(self, -1)
