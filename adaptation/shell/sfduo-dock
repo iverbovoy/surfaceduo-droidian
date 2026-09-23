@@ -127,6 +127,9 @@ BACK_SIZE = 56            # the round arrow that comes out of the edge with the 
 BACK_ARM = 64             # how far in the finger goes before letting go means back
 BACK_TOP = 48             # the strip starts below the bar, clear of the shade's handle
 BACK_BUTTON = 36          # the resting back button at a busy panel's outer corner (#88)
+SYSTEM_COMMIT = 1 / 3     # a slow release past this much of the way opens the system screen
+SHADE_TOP = 24            # the strip along the top left to the shade's handle
+SYSTEM_BUSY = 0.02        # the system screen this far out takes the left panel
 BACK_BUTTON_UP = 90       # ... a tenth of the panel above the bottom edge, clear of the band
 # The shell's own accent, as GNOME 47 named them: the button wears the colour
 # chosen in Settings rather than one of its own.
@@ -984,8 +987,18 @@ class DesktopClock(Gtk.Window):
         self._move()
         self.show_all()
 
+    def slide(self, p):
+        """Slide off the right edge as the system screen comes in over the
+        left panel (#111): at p=1 the clock is gone, the system screen shows
+        the time itself. On the left panel it stays where it is and the
+        system screen covers it."""
+        dx = int(round(p * (SCREEN_WIDTH - self.x))) if self.x > 0 else 0
+        if dx != getattr(self, "slide_dx", 0):
+            self.slide_dx = dx
+            self._move()
+
     def _move(self):
-        x, y = self.x + self.dx, max(0, self.y + self.dy)
+        x, y = self.x + self.dx + getattr(self, "slide_dx", 0), max(0, self.y + self.dy)
         if not raw_margins(self, top=y, left=x):
             GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, y)
             GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, x)
@@ -1118,6 +1131,56 @@ class PrivacyDot(Gtk.Window):
             self.hide()
 
 
+class SwipeCatcher(Gtk.Window):
+    """Where the swipe right that brings the system screen is caught (#111).
+
+    The left panel's desktop is phosh's home, a top-layer surface of its own,
+    and nothing on it answers a finger. This is a transparent top-layer
+    surface over it - clear of the strip along the top the shades are pulled
+    by and of the dock's strip along the bottom - there only while the left
+    panel is free, and it hands the finger to the dock: a swipe right drives
+    the system screen out, anything else it lets go.
+    """
+
+    def __init__(self, dock):
+        super().__init__()
+        self.dock = dock
+        self.active = False
+        self.get_style_context().add_class("sfduo-catcher")
+        screen = Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+        self.set_app_paintable(True)
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_namespace(self, "sfduo-catcher")
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)
+        for edge in (GtkLayerShell.Edge.LEFT, GtkLayerShell.Edge.TOP, GtkLayerShell.Edge.BOTTOM):
+            GtkLayerShell.set_anchor(self, edge, True)
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, SHADE_TOP)
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, DOCK_HEIGHT)
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        self.drag = Gtk.GestureDrag.new(self)
+        self.drag.set_touch_only(True)
+        self.drag.connect("drag-begin", dock._on_system_drag_begin)
+        self.drag.connect("drag-update", dock._on_system_drag_update)
+        self.drag.connect("drag-end", dock._on_system_drag_end)
+        self.drag.connect("cancel", lambda *_a: dock._on_system_drag_end(None, 0, 0))
+        self.connect("draw", lambda _w, cr: (cr.set_source_rgba(0, 0, 0, 0),
+                                             cr.set_operator(cairo.OPERATOR_SOURCE),
+                                             cr.paint()) and False)
+
+    def set_active(self, on):
+        if on == self.active:
+            return
+        self.active = on
+        if on:
+            self.show_all()
+        else:
+            self.hide()
+
+
 class Dock(Gtk.Window):
     def __init__(self):
         super().__init__()
@@ -1185,6 +1248,9 @@ class Dock(Gtk.Window):
         self.back_arrows = {side: BackArrow(side) for side in ("left", "right")}
         self.back_buttons = {side: BackButton(self, side) for side in ("left", "right")}
         self.clock = DesktopClock()
+        self.system_progress = 0.0    # the system screen's, as it says (#111)
+        self.system_dragging = False
+        self.catcher = SwipeCatcher(self)
         self.privacy = PrivacyDot()
         self._follow_accent()
         strip = Gtk.Box()
@@ -1211,6 +1277,7 @@ class Dock(Gtk.Window):
         self._follow_lockscreen()
         self._follow_keyboard()
         self._follow_shade()
+        self._follow_system()
         self._publish_placement()
         self.watch_wake = threading.Event()
         self._follow_windows()
@@ -1752,7 +1819,7 @@ class Dock(Gtk.Window):
         self.placed.pop(app_id, None)
         self._save_placed()
 
-    def _mode_for(self, grid_open):
+    def _mode_for(self, grid_open, system=None):
         """Where the dock goes: the panel with nothing on it. A window the
         dock placed takes its panel, one it did not takes both - and the
         open grid takes the panel it is on, so the dock crosses to the other
@@ -1767,6 +1834,12 @@ class Dock(Gtk.Window):
         busy = set(getattr(self, "window_busy", set()))
         if grid_open:
             busy.add(self.grid_side)
+        # the system screen takes the left panel as the grid takes its own -
+        # from a little way out: a touch wakes it at a sliver (#111)
+        if system is None:
+            system = getattr(self, "system_progress", 0.0) >= SYSTEM_BUSY
+        if system:
+            busy.add("left")
         # the keyboard is a layer surface, not a window, and takes a panel
         # of its own (osk-patches/0001): while it is up that panel is taken
         if getattr(self, "osk_panel", None):
@@ -1797,6 +1870,13 @@ class Dock(Gtk.Window):
         them across, parking with the grid's own ease-out. Only once the
         grid is all the way up or down does the mode settle.
         """
+        sp = getattr(self, "system_progress", 0.0)
+        if SYSTEM_BUSY <= sp < 1.0 and self.progress <= 0.0:
+            # the halves go with the system screen, a step per step, as they
+            # go with the grid's finger
+            self._place_clock()
+            self._drive(self._mode_for(False, system=False), self._mode_for(False, system=True), sp)
+            return False
         closed = self._mode_for(False)
         opened = self._mode_for(True)
         self._place_clock()
@@ -2042,6 +2122,14 @@ class Dock(Gtk.Window):
                 button.set_active(on and self._back_offered(side))
         for pane in self.panes.values():
             pane.passthrough(self._shade_over(self._panel_of_pane(pane)))
+        # the swipe for the system screen: over a free left panel's desktop,
+        # and kept under a finger that is already bringing it
+        catcher = getattr(self, "catcher", None)
+        if catcher is not None:
+            catcher.set_active(getattr(self, "system_dragging", False) or (
+                not self.locked and self.progress <= 0.0 and not self._shade_over("left")
+                and self._mode_for(False, system=False) in ("both", "left")
+                and getattr(self, "system_progress", 0.0) <= 0.0))
 
     def _animate_to(self, target):
         """Finish the journey from wherever the grid is, easing out."""
@@ -2328,6 +2416,79 @@ class Dock(Gtk.Window):
             target = 1.0 if self.progress >= GRID_COMMIT else 0.0
         self._animate_to(target)
 
+    # ---- the system screen (#109, #111) ------------------------------------------
+
+    SYSTEM_NAME = "org.sfduo.SystemScreen"
+    SYSTEM_PATH = "/org/sfduo/SystemScreen"
+
+    def _system_call(self, method, args=None):
+        self.session_bus.call(self.SYSTEM_NAME, self.SYSTEM_PATH, self.SYSTEM_NAME, method, args,
+                              None, Gio.DBusCallFlags.NO_AUTO_START, 1000, None, None)
+
+    def _follow_system(self):
+        """The system screen says its progress as it moves; the clock and the
+        dock's left half move with it."""
+        self.session_bus.signal_subscribe(
+            self.SYSTEM_NAME, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+            self.SYSTEM_PATH, None, Gio.DBusSignalFlags.NONE,
+            lambda _c, _s, _p, _i, _sig, params: self._on_system_changed(params.unpack()[1]))
+
+    def _on_system_changed(self, changed):
+        if "Progress" in changed:
+            self.system_progress = float(changed["Progress"])
+            self.clock.slide(self.system_progress if self.system_progress >= SYSTEM_BUSY else 0.0)
+            self._apply_mode()
+            self._shape()
+
+    def _on_system_drag_begin(self, _gesture, _x, _y):
+        """A finger on the free left panel: wake the system screen now, so
+        that its first frames - ~80 ms after idle - are ready by the time
+        the finger has moved (#110)."""
+        self.system_dragging = True
+        self.sys_claimed = False
+        self.sys_last = (GLib.get_monotonic_time(), 0.0)
+        self.sys_velocity = 0.0
+        self._system_call("Begin")
+
+    def _on_system_drag_update(self, gesture, dx, dy):
+        if not self.sys_claimed:
+            if abs(dy) >= SWIPE_PX and abs(dy) > abs(dx):
+                gesture.set_state(Gtk.EventSequenceState.DENIED)
+                self._on_system_drag_end(None, 0, 0)
+                return
+            if dx < SWIPE_PX:
+                return
+            self.sys_claimed = True
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            debug("system screen: swipe claimed")
+        now = GLib.get_monotonic_time()
+        then, last = self.sys_last
+        if now > then:
+            self.sys_velocity = (dx - last) / ((now - then) / 1000.0)      # px/ms
+        self.sys_last = (now, dx)
+        p = max(0.001, min(1.0, dx / max(1, self.half)))
+        self._system_call("SetProgress", GLib.Variant("(d)", (p,)))
+
+    def _on_system_drag_end(self, _gesture, dx, _dy):
+        claimed = getattr(self, "sys_claimed", False)
+        self.sys_claimed = False
+        self.system_dragging = False
+        if not claimed:
+            # a touch that was not the swipe: the wake-up sliver goes again
+            self._system_call("SetProgress", GLib.Variant("(d)", (0.0,)))
+            self._shape()
+            return
+        p = dx / max(1, self.half)
+        if self.sys_velocity > FLICK:
+            method = "Open"
+        elif self.sys_velocity < -FLICK:
+            method = "Close"
+        else:
+            method = "Open" if p >= SYSTEM_COMMIT else "Close"
+        debug("system screen: release at %.2f, %.2f px/ms: %s" % (p, self.sys_velocity, method))
+        self._system_call(method)
+        self._shape()
+
     def _follow_lockscreen(self):
         """Get out of the way while the phone is locked.
 
@@ -2544,6 +2705,8 @@ class Dock(Gtk.Window):
             if self.progress > 0.0:
                 self._stop_animation()
                 self._set_progress(0.0)
+            if getattr(self, "system_progress", 0.0) > 0.0:
+                self._system_call("SetProgress", GLib.Variant("(d)", (0.0,)))
             for w in self._windows():
                 GtkLayerShell.set_layer(w, GtkLayerShell.Layer.TOP)
             self._cover_strangers()
@@ -2861,6 +3024,7 @@ class Dock(Gtk.Window):
         self._place_clock()
         for grid in self.grids.values():
             grid.set_size_request(half, STAGE_HEIGHT)
+        self.catcher.set_size_request(half, -1)
         for curtain in self.curtains.values():
             curtain.set_size_request(half, STAGE_HEIGHT)
         if self.move is None:

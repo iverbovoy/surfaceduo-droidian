@@ -939,6 +939,10 @@ fi
 install -m755  "$SHELLDIR/sfduo-shell"               "$PKG/usr/local/sbin/"
 install -Dm644 "$SHELLDIR/org.sfduo.shell.policy"    "$PKG/usr/share/polkit-1/actions/org.sfduo.shell.policy"
 install -Dm644 "$SHELLDIR/sfduo-dock.desktop"       "$PKG/etc/xdg/autostart/sfduo-dock.desktop"
+# The system screen (#109): the page left of the left panel, brought by a
+# swipe right on its desktop (the dock catches it). GTK4, a program of its own.
+install -m755  "$SHELLDIR/sfduo-system-screen"         "$PKG/usr/local/bin/"
+install -Dm644 "$SHELLDIR/sfduo-system-screen.desktop" "$PKG/etc/xdg/autostart/sfduo-system-screen.desktop"
 # The hinge, read once and told to everyone: org.sfduo.Posture on the
 # session bus - the smoothed angle, the posture, whether it is moving (#55)
 install -m755  "$SHELLDIR/sfduo-posture"            "$PKG/usr/local/bin/"
