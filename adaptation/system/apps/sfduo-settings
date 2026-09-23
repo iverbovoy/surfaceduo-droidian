@@ -272,7 +272,7 @@ class DuoPage(Adw.NavigationPage):
 
         self._duo = Adw.SwitchRow(
             title="Two-panel shell",
-            subtitle="The dock, a top bar per panel, a window on each. "
+            subtitle="The dock, a shade per panel, a window on each. "
                      "Off: Droidian's own phone shell.")
         self._duo.set_active(state.get("shell") != "stock")
         self._duo.connect("notify::active", self._on_duo)

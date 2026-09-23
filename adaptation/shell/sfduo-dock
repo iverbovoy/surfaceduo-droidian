@@ -1462,6 +1462,11 @@ class Dock(Gtk.Window):
             "PropertiesChanged",
             GLib.Variant("(sa{sv}as)", ("org.sfduo.Dock",
                                         {"Placed": self._placed_variant()}, [])))
+        # The corner back button is offered for the window placed on its
+        # panel: a launch lands on its panel after the window list has come
+        # in, and without this the button stayed off until something else
+        # reshaped the dock - Settings came up with no way back, now and then.
+        self._shape()
         return False
 
     # ---- where the dock is ------------------------------------------------
