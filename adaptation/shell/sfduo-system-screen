@@ -1292,7 +1292,7 @@ class SystemScreen:
 
     CARDS = [("battery", "Battery"), ("load", "Load"), ("memory", "Memory"),
              ("storage", "Storage"), ("network", "Network"), ("next", "Next up"),
-             ("device", "This device"), ("weather", "Weather"), ("screen-time", "Screen time")]
+             ("device", "This device"), ("weather", "Weather")]
     REFRESH_S = 5
     HISTORY_EVERY = 12                    # a minute: UPower adds a point a percent
 
