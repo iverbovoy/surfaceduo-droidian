@@ -83,8 +83,14 @@ screen. So the lid daemon also blanks the display when the phone closes and
 turns it back on when it opens - phosh's `PowerSaveMode` on
 `org.gnome.Mutter.DisplayConfig`, which is what GNOME blanks with and what
 Droidian's `mobile-power-saver` follows (#103). Measured closed on battery:
-126-184 mA with the display on, 33-55 mA blanked - an 8-hour night costs
-8-14 % of the battery instead of 30-45 %.
+126-184 mA with the display on, 33-55 mA blanked - 4-6 % of the battery an
+hour against 1-1.7 %. A 4-hour measurement closed on battery (2026-09-23,
+4 h 14 min, display blanked): 97 % to 89 %, 53-57 mA, about 2 % an hour.
+
+A closed phone whose display something turns back on - a call, a critical
+notification, the power key - has it turned off again after ~4 s (#105):
+in that same measurement an unanswered call lit the panels behind the lid,
+and they stayed lit at 163 mA until the phone was looked at.
 
 Two things worth knowing about the mechanics:
 
