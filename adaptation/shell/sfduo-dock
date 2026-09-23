@@ -968,7 +968,13 @@ class DesktopClock(Gtk.Window):
         return False
 
     def place(self, left, width):
-        """Stand on the panel starting at `left`, `width` wide; None: nowhere."""
+        """Stand on the panel starting at `left`, `width` wide; None: nowhere.
+        Asked on every change the dock sees - twice a second while it polls
+        the windows - so it does something only when the place changes: each
+        move is a commit, and the compositor has work of its own to do."""
+        if (left, width) == getattr(self, "placed_at", None):
+            return
+        self.placed_at = (left, width)
         if left is None:
             self.hide()
             return
@@ -1787,6 +1793,16 @@ class Dock(Gtk.Window):
             pane.move(x=x0 + (x1 - x0) * k, y=y0 + (y1 - y0) * k)
         self.driven = True
 
+    def _settle_panes(self, mode):
+        """Stand the halves where the mode puts them, if it still does."""
+        if mode == self.mode and not getattr(self, "driven", False):
+            targets = self._pane_targets(mode)
+            for side, pane in self.panes.items():
+                x, y = targets[side]
+                pane.move(x=x, y=y)
+                pane.move(settle=True)
+        return False
+
     def _pane_targets(self, mode):
         """Where each half stands in a mode: its left margin on the screen.
 
@@ -1842,10 +1858,19 @@ class Dock(Gtk.Window):
         """
         if mode == self.mode:
             if getattr(self, "driven", False):
-                # the grid's finger brought the halves here; let gtk-layer-shell know
+                # The grid's finger brought the halves here, and they stay
+                # here: let gtk-layer-shell know. Here is where the mode
+                # puts them, not where the last driven frame left them - that
+                # frame comes a little before the grid is all the way up, and
+                # the halves stood ~50 px apart on the other panel (#104).
+                # Moved as a motion moves them, straight to the compositor -
+                # gtk-layer-shell's margins reach it only with a repaint,
+                # and a half is never repainted - then settled. Two frames
+                # later, not now: this comes ~16 ms after the last driven
+                # frame, and phoc, handed two positions within one frame,
+                # now and then showed the first of them for seconds.
                 self.driven = False
-                for pane in self.panes.values():
-                    pane.move(settle=True)
+                GLib.timeout_add(2 * FRAME_MS + 2, self._settle_panes, mode)
             return False
         self.driven = False
         was_hidden = self.mode == "hidden"
