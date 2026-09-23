@@ -197,8 +197,12 @@ class SystemScreen:
             return
         if not self.window.get_visible():
             self.window.present()
-        Gtk4LayerShell.set_margin(self.window, Gtk4LayerShell.Edge.LEFT,
-                                  -int(round(self.width * (1 - self.progress))))
+        # One pixel stays on screen however little is open: a surface wholly
+        # off it gets no frame callbacks, GTK then draws no frame, and the
+        # margins that would bring it in are sent with a frame - it stayed
+        # out for good, saying it was open (#133).
+        hidden = min(self.width - 1, int(round(self.width * (1 - self.progress))))
+        Gtk4LayerShell.set_margin(self.window, Gtk4LayerShell.Edge.LEFT, -hidden)
         self.backdrop.rgb = mix(DARK, LIGHT, self.progress)
         self.backdrop.queue_draw()
         shown = max(0.0, (self.progress - CONTENT_FROM) / (1 - CONTENT_FROM))
