@@ -507,6 +507,15 @@ still the surface's rectangle - shadow and all, and for anything that
 travels the whole path between its ends, or a slice of the window stays
 behind in the seam.
 
+A window brought back from the dock shows at its first frame (#149,
+phoc-patches/0015). `org.sfduo.Phoc.Present` wakes a minimized window for a
+page it is about to show, so it waits until the client has stopped drawing
+for 200 ms: GNOME Settings building the page the port's Settings asked for.
+A tap on the dock asks for no new page, and the wait cost the window ~400 ms.
+The dock calls `Restore` instead, which wakes the window the same way and
+shows it, fading in, at the first frame its client draws. A minimized
+Calculator: 640-653 ms from the call before, 248-271 ms after.
+
 ### A window that fills a panel has no edge to draw
 
 libadwaita outlines a window with a pale hairline and lights the top of its

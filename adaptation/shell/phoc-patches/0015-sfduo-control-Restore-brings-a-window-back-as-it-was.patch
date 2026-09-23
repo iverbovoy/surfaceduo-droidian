@@ -1,0 +1,117 @@
+From 8830519c7f33338a5176c0b96321281fa012c564 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Thu, 24 Sep 2026 00:43:49 +0300
+Subject: [PATCH] sfduo-control: Restore brings a window back as it was, at its
+ first frame
+
+Present wakes a minimized window for a page it is about to show, and
+shows it once its client has stopped drawing for 200 ms: GNOME Settings
+building the page asked for. A window brought back from the dock is not
+getting a new page - it comes back as it was put away - and the wait
+cost it ~400 ms: a Calculator showed 640-653 ms after the call.
+
+Restore(app_id) wakes it the same way and shows it at the first frame
+its client draws, fading in: 248-271 ms after the call, of which ~180 ms
+is the client waking and ~70 ms the measuring busctl. It is let go from
+an idle after the commit, not from inside the commit's signal.
+---
+ src/sfduo-control.c | 31 ++++++++++++++++++++++++++-----
+ 1 file changed, 26 insertions(+), 5 deletions(-)
+
+diff --git a/src/sfduo-control.c b/src/sfduo-control.c
+index abdd3f7..21a34c1 100644
+--- a/src/sfduo-control.c
++++ b/src/sfduo-control.c
+@@ -82,6 +82,10 @@ static const char introspection_xml[] =
+   "      <arg name='app_id' type='s' direction='in'/>"
+   "      <arg name='presented' type='u' direction='out'/>"
+   "    </method>"
++  "    <method name='Restore'>"
++  "      <arg name='app_id' type='s' direction='in'/>"
++  "      <arg name='restored' type='u' direction='out'/>"
++  "    </method>"
+   "  </interface>"
+   "</node>";
+ 
+@@ -97,6 +101,7 @@ typedef struct {
+   gint64             started;
+   guint              commits;
+   gboolean           focus_at_end;   /* woken: it is what the hand asked for */
++  gboolean           at_first;       /* restored: shown at its first frame */
+   gboolean           wait_placed;    /* new: shown once placed and drawn there */
+   gboolean           placed;
+   guint32            want_width;     /* ... at this size, which is the panel's */
+@@ -336,6 +341,15 @@ on_wake_commit (struct wl_listener *listener, void *data)
+     wake->wait_placed = FALSE;
+   }
+ 
++  /* Restored as it was put away: nothing new is coming, and its first
++   * frame is the window as it was. Shown after this commit's signal is
++   * through, not from inside it. */
++  if (wake->at_first) {
++    g_clear_handle_id (&wake->quiet_id, g_source_remove);
++    wake->quiet_id = g_idle_add (on_wake_quiet, wake);
++    return;
++  }
++
+   /* one woken for a page: still drawing, the page is on its way */
+   g_clear_handle_id (&wake->quiet_id, g_source_remove);
+   wake->quiet_id = g_timeout_add (SFDUO_WAKE_QUIET_MS, on_wake_quiet, wake);
+@@ -360,7 +374,7 @@ hold_view (PhocView *view, guint cap_ms)
+ 
+ 
+ static void
+-wake_view (PhocView *view)
++wake_view (PhocView *view, gboolean at_first)
+ {
+   PhocWake *wake;
+ 
+@@ -369,9 +383,11 @@ wake_view (PhocView *view)
+     return;
+   }
+ 
+-  g_debug ("waking %s", phoc_view_get_app_id (view));
++  g_debug ("waking %s%s", phoc_view_get_app_id (view), at_first ? " (restore)" : "");
+   wake = hold_view (view, SFDUO_WAKE_CAP_MS);
+   wake->focus_at_end = TRUE;
++  wake->at_first = at_first;
++  wake->fade = at_first;
+   /* awake - its client starts drawing again - but with nothing to see yet */
+   phoc_view_set_minimized (view, FALSE);
+ }
+@@ -448,10 +464,15 @@ handle_method_call (GDBusConnection       *connection,
+   PhocViewTileDirection dir;
+   guint tiled = 0;
+ 
+-  if (g_strcmp0 (method_name, "Present") == 0) {
++  /* Present: woken for a page it is about to show, and shown once it has
++   * stopped drawing. Restore: brought back as it was put away - a tap on
++   * the dock - and shown at its first frame, fading in: waiting for the
++   * quiet cost a restored window ~400 ms it had no use for (#149). */
++  if (g_strcmp0 (method_name, "Present") == 0 || g_strcmp0 (method_name, "Restore") == 0) {
+     GSList *views;
+     PhocSeat *seat = phoc_server_get_last_active_seat (phoc_server_get_default ());
+     guint presented = 0;
++    gboolean restore = g_strcmp0 (method_name, "Restore") == 0;
+ 
+     g_variant_get (parameters, "(&s)", &app_id);
+     views = views_of (app_id);
+@@ -459,13 +480,13 @@ handle_method_call (GDBusConnection       *connection,
+       PhocView *view = PHOC_VIEW (l->data);
+ 
+       if (phoc_view_is_minimized (view))
+-        wake_view (view);                 /* shown once it has caught up */
++        wake_view (view, restore);        /* shown once it has caught up */
+       else
+         phoc_seat_set_focus_view (seat, view);
+       presented++;
+     }
+     g_slist_free (views);
+-    g_debug ("Present %s: %u", app_id, presented);
++    g_debug ("%s %s: %u", method_name, app_id, presented);
+     g_dbus_method_invocation_return_value (invocation, g_variant_new ("(u)", presented));
+     return;
+   }
+-- 
+2.43.0
+
