@@ -392,6 +392,18 @@ The device card (#119):
   `~/.local/state/sfduo/update.json`.
 - **System:** Droidian's version and the kernel.
 
+The weather card (#120) is for the first city chosen in GNOME Weather, the
+desktop clock's (#98), from met.no through GWeather:
+- the sky and temperature now
+- the high and low of the next 24 hours (in the evening little of today is
+  left)
+- a strip of the next 12 hours, every 2 hours
+
+It is asked on the way in when the last answer is over half an hour old,
+and not while the page is closed. Symbolic icons take the text colour, and
+the session's dark style makes that a light one, so the cards set their
+icons' colour themselves.
+
 The dock reads the system screen's `Progress` when the bus name changes
 hands. A system screen that went away while open, and the one started after
 it, had left the dock believing the page was still out: its halves on the
