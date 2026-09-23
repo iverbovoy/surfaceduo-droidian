@@ -248,6 +248,11 @@ scrollbar { opacity: 0; }
 .sfduo-clock-time { color: rgba(255,255,255,0.62); font-size: 88px; font-weight: 200; }
 .sfduo-clock-date { color: rgba(255,255,255,0.45); font-size: 20px; }
 .sfduo-clock-weather { color: rgba(255,255,255,0.45); font-size: 18px; }
+/* The privacy dot (#99): Android's colours - orange for the microphone,
+   green for the camera. */
+.privacy-dot { min-width: 10px; min-height: 10px; border-radius: 5px; }
+.privacy-dot.mic { background-color: #ff9f0a; }
+.privacy-dot.camera { background-color: #30d158; }
 """
 
 
@@ -979,6 +984,98 @@ class DesktopClock(Gtk.Window):
             GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, x)
 
 
+class PrivacyDot(Gtk.Window):
+    """A dot in the right panel's top corner while the microphone or the
+    camera is in use (#99). The bar showed nothing of the kind, but with the
+    bar gone (#95) nothing on screen is always there to say it, and this is
+    the one thing that cannot wait for a swipe.
+
+    The microphone is PulseAudio's to say: a source output is something
+    recording, and `pactl subscribe` says when one comes or goes. The camera
+    goes through Android's camera service, which says nothing to anyone, so
+    it is the camera app's window being open (Dock._set_running). Location
+    is left out: something holds it all the time here, and a dot always lit
+    says nothing.
+
+    On the overlay layer, so it is seen over windows and on the lock screen;
+    it takes no touches.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.get_style_context().add_class("sfduo-privacy")
+        screen = Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+        self.set_app_paintable(True)
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_namespace(self, "sfduo-privacy")
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.TOP, True)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, True)
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, 8)
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.RIGHT, 10)
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        self.dot = Gtk.Box()
+        self.dot.get_style_context().add_class("privacy-dot")
+        self.add(self.dot)
+        self.connect("map", lambda *_a: self.get_window().input_shape_combine_region(
+            cairo.Region(), 0, 0))
+        self.mic = False
+        self.camera = False
+        self._follow_mic()
+
+    def _follow_mic(self):
+        try:
+            # line-buffered: into a pipe pactl holds its events back in a
+            # block, and the dot came on after the recording had ended
+            self.pactl = Gio.Subprocess.new(["stdbuf", "-oL", "pactl", "subscribe"],
+                                            Gio.SubprocessFlags.STDOUT_PIPE)
+        except GLib.Error as err:
+            print(f"sfduo-dock: no microphone dot: {err.message}", file=sys.stderr)
+            return
+        self.events = Gio.DataInputStream.new(self.pactl.get_stdout_pipe())
+        self._count_recording()
+        self.events.read_line_async(GLib.PRIORITY_DEFAULT, None, self._on_event)
+
+    def _on_event(self, stream, result):
+        try:
+            line, _length = stream.read_line_finish_utf8(result)
+        except GLib.Error:
+            line = None
+        if line is None:
+            return                  # PulseAudio went away; the dot stays as it was
+        if "source-output" in line:
+            self._count_recording()
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self._on_event)
+
+    def _count_recording(self):
+        try:
+            out = subprocess.run(["pactl", "list", "short", "source-outputs"],
+                                 capture_output=True, text=True, timeout=2).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        self.mic = bool(out.strip())
+        self._show()
+
+    def set_camera(self, on):
+        if on != self.camera:
+            self.camera = on
+            self._show()
+
+    def _show(self):
+        style = self.dot.get_style_context()
+        for name, on in (("camera", self.camera), ("mic", self.mic and not self.camera)):
+            (style.add_class if on else style.remove_class)(name)
+        debug(f"privacy dot: mic {self.mic}, camera {self.camera}")
+        if self.mic or self.camera:
+            self.show_all()
+        else:
+            self.hide()
+
+
 class Dock(Gtk.Window):
     def __init__(self):
         super().__init__()
@@ -1046,6 +1143,7 @@ class Dock(Gtk.Window):
         self.back_arrows = {side: BackArrow(side) for side in ("left", "right")}
         self.back_buttons = {side: BackButton(self, side) for side in ("left", "right")}
         self.clock = DesktopClock()
+        self.privacy = PrivacyDot()
         self._follow_accent()
         strip = Gtk.Box()
         strip.set_size_request(-1, DOCK_HEIGHT)
@@ -1539,6 +1637,7 @@ class Dock(Gtk.Window):
         if running == getattr(self, "running", None):
             return False
         self.running = running
+        self.privacy.set_camera(any("camera" in app_id.lower() for app_id in running))
         favourites_ = set()
         for pane in self.panes.values():
             favourites_.update(pane.slab.buttons)
