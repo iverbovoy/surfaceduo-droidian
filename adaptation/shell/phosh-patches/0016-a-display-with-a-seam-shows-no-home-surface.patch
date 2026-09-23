@@ -1,0 +1,35 @@
+From: The Surface Duo port <none@invalid>
+Subject: [PATCH 16/16] shell: a display with a seam shows no home surface
+
+On a display with a seam the home surface is never seen: it has no home bar
+there (patch 0013) and the port's dock holds the applications. Shown anyway,
+it answered the last window closing by redrawing all of itself - 2784x5952 on
+the Surface Duo - two or three times, as the overview gave up its running
+activities and the home's handle was resized. On this phone's GPU every such
+partial upload of a shared-memory buffer takes the slow path, ~20 ms, and the
+closing window's own fade lost 3-4 frames to it: 7.3% of its frames against
+1.9% with this.
+
+The shell's overview-visible property, bound to the home's visibility, is set
+false on such a display.
+---
+--- a/src/shell.c
++++ b/src/shell.c
+@@ -711,6 +711,17 @@
+                                                    phosh_wayland_get_zphoc_layer_shell_effects_v1 (wl),
+                                                    monitor));
+   g_object_bind_property (self, "overview-visible", priv->home, "visible", G_BINDING_SYNC_CREATE);
++  /* On a display with a seam the home surface is never seen: it has no home
++   * bar there (home.c) and the shell's dock holds the applications. Shown
++   * anyway, it redrew the whole of itself - 2784x5952 on this phone - two
++   * or three times as the last window closed, ~20 ms of upload each, and
++   * the window's own fade lost 3-4 frames to it (#147). */
++  {
++    GdkRectangle seam;
++
++    if (phosh_layout_manager_get_seam (priv->layout_manager, &seam))
++      g_object_set (self, "overview-visible", FALSE, NULL);
++  }
+ 
+   g_signal_connect_swapped (priv->top_panel,
+                             "activated",
