@@ -507,6 +507,16 @@ still the surface's rectangle - shadow and all, and for anything that
 travels the whole path between its ends, or a slice of the window stays
 behind in the seam.
 
+On a display with a seam, phosh's home surface (its overview and home bar)
+is not shown at all (#147, phosh-patches/0016). It is never seen there:
+patch 0013 took its bar away, and the dock holds the applications. Shown
+anyway, it redrew all of itself, 2784x5952, two or three times as the last
+window closed. On this GPU a partial upload of a shared-memory buffer takes
+the slow path, ~20 ms each, and the closing window's fade lost 3-4 frames to
+it. Counted in phoc, dropped frames per close: 3.3 before, 0.5 after. A
+keyboard's overview key no longer brings phosh's overview; the dock's grid is
+the one.
+
 A window brought back from the dock shows at its first frame (#149,
 phoc-patches/0015). `org.sfduo.Phoc.Present` wakes a minimized window for a
 page it is about to show, so it waits until the client has stopped drawing
