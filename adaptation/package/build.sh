@@ -711,6 +711,17 @@ def display_power(mode):
     except (OSError, subprocess.SubprocessError):
         pass
 
+def panels_lit():
+    """Whether either panel's backlight is powered."""
+    for p in ("panel0-backlight", "panel1-backlight"):
+        try:
+            with open("/sys/class/backlight/%s/bl_power" % p) as f:
+                if f.read().strip() == "0":
+                    return True
+        except OSError:
+            pass
+    return False
+
 def screens_on(fd):
     ev(fd, EV_KEY, KEY_WAKEUP, 1); ev(fd, EV_SYN, 0, 0)
     ev(fd, EV_KEY, KEY_WAKEUP, 0); ev(fd, EV_SYN, 0, 0)
@@ -736,17 +747,33 @@ def main():
     emit_lid(ufd, last == 0)
     po = select.poll()
     po.register(vfd, select.POLLPRI | select.POLLERR)
+    lit = 0                    # ticks the panels have been lit while closed
     while True:
         po.poll(2000)          # edge OR 2s reconcile tick
         time.sleep(0.05)       # debounce the magnet bounce
         val = read_val()
         if val != last:
             last = val
+            lit = 0
             emit_lid(ufd, val == 0)
             if val == 1:
                 screens_on(ufd)
             else:
                 display_power(3)
+        elif val == 0:
+            # Closed, and something lit the display anyway - a call, a
+            # critical notification, the power key - and with idle blanking
+            # off nothing would turn it off again: a call at dawn left both
+            # panels lit behind the lid (#105). Nobody can see them: two
+            # ticks lit (~4 s) and they go off again. Should that not take,
+            # the next try is ~30 s later, not every tick.
+            if panels_lit() or lit < 0:
+                lit += 1       # lit, or waiting out a try that did not take
+            else:
+                lit = 0
+            if lit >= 2:
+                display_power(3)
+                lit = -15
 
 if __name__ == "__main__":
     main()
