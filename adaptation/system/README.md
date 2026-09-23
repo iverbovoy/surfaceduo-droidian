@@ -77,6 +77,15 @@ off in the session (`sm.puri.phosh enable-suspend` is `false`), so the policy
 here is lock - on battery, on power and docked alike. To have the fold
 suspend again, turn that setting on and set the three keys to `suspend`.
 
+Locking alone left the display on: with idle blanking off nothing ever
+turned it off, and behind the closed lid both panels stayed lit on the lock
+screen. So the lid daemon also blanks the display when the phone closes and
+turns it back on when it opens - phosh's `PowerSaveMode` on
+`org.gnome.Mutter.DisplayConfig`, which is what GNOME blanks with and what
+Droidian's `mobile-power-saver` follows (#103). Measured closed on battery:
+126-184 mA with the display on, 33-55 mA blanked - an 8-hour night costs
+8-14 % of the battery instead of 30-45 %.
+
 Two things worth knowing about the mechanics:
 
 - Drop-ins in `logind.conf.d` apply in name order and the last one wins. A
