@@ -27,6 +27,7 @@ import ctypes
 import filecmp
 import json
 import os
+import random
 import signal
 import socket
 import subprocess
@@ -235,6 +236,10 @@ viewport { background-color: transparent; }
 .grid-app:active, .grid-app:hover { background-color: rgba(255,255,255,0.12); }
 .grid-app label { color: #e8e4d9; font-size: 12px; }
 scrollbar { opacity: 0; }
+/* The desktop's clock (#98): not full white, and thin - a large figure held
+   in the same place is what burns into an AMOLED panel. */
+.sfduo-clock-time { color: rgba(255,255,255,0.62); font-size: 88px; font-weight: 200; }
+.sfduo-clock-date { color: rgba(255,255,255,0.45); font-size: 20px; }
 """
 
 
@@ -808,6 +813,99 @@ class PaneWindow(Gtk.Window):
         raw_margins(self, bottom=self.y, left=self.x)
 
 
+class DesktopClock(Gtk.Window):
+    """The time on the desktop, with no status bar to carry it (#96, #98).
+
+    One clock, not one per panel: two alike a hinge apart read as one thing
+    said twice, as the bar did before it was split. It stands on the free
+    panel - the right one, under the thumb as on the lock screen, when both
+    are free - and is gone when neither is (Dock._place_clock).
+
+    A layer surface on the top layer: phosh's home, which is what the
+    desktop's black actually is, is a top-layer surface too, and a clock on
+    the bottom layer stood under it unseen. The top layer is also above every
+    window, so the clock goes where the dock goes - the dock's own panel is by
+    definition the free one, with a launch in flight, the keyboard and a
+    pulled-down shade already taken into account - and the grid and the
+    curtains on the overlay layer cover it. It takes no touches. It changes panels by its margin - the compositor moves the same
+    pixels - and redraws once a minute, when the figures change; each time it
+    also steps a few pixels from its place, so no pixel of it is lit in the
+    same spot for long.
+    """
+    SHIFT = 12                # px: the furthest it strays from its place
+    TOP = 0.2                 # its place: this far down the panel
+
+    def __init__(self):
+        super().__init__()
+        self.get_style_context().add_class("sfduo-clock")
+        screen = Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self.set_visual(visual)
+        self.set_app_paintable(True)
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_namespace(self, "sfduo-clock")
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.TOP, True)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, True)
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.time = Gtk.Label()
+        self.time.get_style_context().add_class("sfduo-clock-time")
+        self.date = Gtk.Label()
+        self.date.get_style_context().add_class("sfduo-clock-date")
+        box.add(self.time)
+        box.add(self.date)
+        self.add(box)
+        self.connect("map", lambda *_a: self.get_window().input_shape_combine_region(
+            cairo.Region(), 0, 0))
+        try:
+            self.interface = Gio.Settings.new("org.gnome.desktop.interface")
+            self.interface.connect("changed::clock-format", lambda *_a: self._show())
+        except (GLib.Error, TypeError):
+            self.interface = None
+        self.x = self.y = 0       # where it stands, before the step aside
+        self.dx = self.dy = 0     # the step aside
+        self._show()
+        self._tick_at_minute()
+
+    def _show(self):
+        now = GLib.DateTime.new_now_local()
+        twelve = self.interface is not None and self.interface.get_string("clock-format") == "12h"
+        self.time.set_text(now.format("%l:%M").strip() if twelve else now.format("%H:%M"))
+        self.date.set_text(now.format("%A, %B %e").replace("  ", " "))
+
+    def _tick_at_minute(self):
+        now = GLib.DateTime.new_now_local()
+        ms = (60 - now.get_second()) * 1000 - now.get_microsecond() // 1000
+        GLib.timeout_add(max(ms, 50), self._tick)
+
+    def _tick(self):
+        self._show()
+        self.dx = random.randint(-self.SHIFT, self.SHIFT)
+        self.dy = random.randint(-self.SHIFT, self.SHIFT)
+        self._move()
+        self._tick_at_minute()
+        return False
+
+    def place(self, left, width):
+        """Stand on the panel starting at `left`, `width` wide; None: nowhere."""
+        if left is None:
+            self.hide()
+            return
+        self.set_size_request(width, -1)
+        self.x, self.y = left, int(SCREEN_HEIGHT * self.TOP)
+        self._move()
+        self.show_all()
+
+    def _move(self):
+        x, y = self.x + self.dx, max(0, self.y + self.dy)
+        if not raw_margins(self, top=y, left=x):
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, y)
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, x)
+
+
 class Dock(Gtk.Window):
     def __init__(self):
         super().__init__()
@@ -874,6 +972,7 @@ class Dock(Gtk.Window):
         self.back_strips = {side: BackStrip(self, side) for side in ("left", "right")}
         self.back_arrows = {side: BackArrow(side) for side in ("left", "right")}
         self.back_buttons = {side: BackButton(self, side) for side in ("left", "right")}
+        self.clock = DesktopClock()
         self._follow_accent()
         strip = Gtk.Box()
         strip.set_size_request(-1, DOCK_HEIGHT)
@@ -1165,12 +1264,22 @@ class Dock(Gtk.Window):
             return False
         self.busy_said = busy
         debug(f"busy: {busy}")
+        self._place_clock()
         self.session_bus.emit_signal(
             None, self.DOCK_PATH, "org.freedesktop.DBus.Properties",
             "PropertiesChanged",
             GLib.Variant("(sa{sv}as)", ("org.sfduo.Dock",
                                         {"Busy": GLib.Variant("s", busy)}, [])))
         return False
+
+    def _place_clock(self):
+        """The desktop's clock where the dock is: the free panel, the right
+        one when both are, none when the dock is hidden (see DesktopClock)."""
+        if not hasattr(self, "clock") or self.half <= 1:
+            return
+        side = {"both": "right", "left": "left", "right": "right"}.get(self._mode_for(False))
+        left = None if side is None else (0 if side == "left" else self.half + self.gap)
+        self.clock.place(left, self.half)
 
     def _placed_variant(self):
         return GLib.Variant("a{ss}", {k: v for k, v in self.placed.items()
@@ -1471,6 +1580,7 @@ class Dock(Gtk.Window):
         """
         closed = self._mode_for(False)
         opened = self._mode_for(True)
+        self._place_clock()
         closing = getattr(self, "grid_closing", False)
         in_motion = 0.0 < self.progress < 1.0 or (self.progress >= 1.0 and closing)
         if in_motion and closed != opened and closed != "hidden":
@@ -2499,6 +2609,7 @@ class Dock(Gtk.Window):
         if (half, gap) == (self.half, self.gap):
             return
         self.half, self.gap = half, gap
+        self._place_clock()
         for grid in self.grids.values():
             grid.set_size_request(half, STAGE_HEIGHT)
         for curtain in self.curtains.values():
