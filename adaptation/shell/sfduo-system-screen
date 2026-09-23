@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""sfduo-system-screen: the page left of the left panel (#109) - a prototype.
+"""sfduo-system-screen: the page left of the left panel (#109).
 
     sfduo-system-screen          run, on the session bus as org.sfduo.SystemScreen
     sfduo-system-screen --demo   open and close it N times (SFDUO_DEMO, 10),
@@ -54,6 +54,9 @@ HINGE_FRACTION = 84 / 2784
 DARK = (0.0, 0.0, 0.0)                    # the desktop
 LIGHT = (0xF2 / 255, 0xF2 / 255, 0xF2 / 255)
 SLIDE_MS = 300                            # Open / Close on their own
+SWIPE_PX = 12                             # a finger's travel before it is a swipe
+FLICK = 0.3                               # px/ms: faster and the direction decides
+CLOSE_BELOW = 2 / 3                       # a slow release left under this closes
 CONTENT_FROM = 2 / 3                      # the content fades in over the last third
 PERF_LOG = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "sfduo-system-screen.perf")
 
@@ -105,6 +108,8 @@ class Backdrop(Gtk.Widget):
 class SystemScreen:
     def __init__(self, app):
         self.app = app
+        self.conn = None                          # the session bus, once the name is ours
+        self.said = None                          # the progress last said on it
         self.progress = 0.0
         self.animation = None
         self.frames = []
@@ -141,6 +146,14 @@ class SystemScreen:
         self.content.set_opacity(0.0)
         overlay.add_overlay(self.content)
         self.window.set_child(overlay)
+        # A swipe left on it closes it - the way the swipe right from the
+        # desktop brought it, back (#111)
+        drag = Gtk.GestureDrag()
+        drag.set_touch_only(True)
+        drag.connect("drag-begin", self._on_drag_begin)
+        drag.connect("drag-update", self._on_drag_update)
+        drag.connect("drag-end", self._on_drag_end)
+        self.window.add_controller(drag)
         self._show_time()
         GLib.timeout_add_seconds(20, self._show_time)
 
@@ -180,6 +193,7 @@ class SystemScreen:
         self.progress = max(0.0, min(1.0, progress))
         if self.progress <= 0.0:
             self.window.set_visible(False)
+            self._say_progress()
             return
         if not self.window.get_visible():
             self.window.present()
@@ -189,6 +203,18 @@ class SystemScreen:
         self.backdrop.queue_draw()
         shown = max(0.0, (self.progress - CONTENT_FROM) / (1 - CONTENT_FROM))
         self.content.set_opacity(shown)
+        self._say_progress()
+
+    def _say_progress(self):
+        """Progress on the bus, for the dock to move the clock and its left
+        half with: every step it can see, and always the ends."""
+        p = self.progress
+        if self.conn is None or (self.said is not None and abs(p - self.said) < 0.004
+                                 and p not in (0.0, 1.0)) or p == self.said:
+            return
+        self.said = p
+        self.conn.emit_signal(None, BUS_PATH, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                              GLib.Variant("(sa{sv}as)", (BUS_NAME, {"Progress": GLib.Variant("d", p)}, [])))
 
     # ---- animation --------------------------------------------------------------
 
@@ -308,6 +334,48 @@ class SystemScreen:
         except OSError:
             pass
 
+    # ---- the swipe that closes it ---------------------------------------------------
+
+    def _on_drag_begin(self, _gesture, _x, _y):
+        self._stop()
+        self.chasing = False
+        self.drag_start = self.progress
+        self.drag_claimed = False
+        self.drag_last = (GLib.get_monotonic_time(), 0.0)
+        self.drag_velocity = 0.0
+
+    def _on_drag_update(self, gesture, dx, dy):
+        # GTK's offset is in the window's own coordinates, and the window
+        # slides under the finger as the finger drives it: add back what it
+        # has travelled, or a slow swipe comes out as a wobble on the spot
+        # (the dock's grid learned this, #47)
+        dx += self.width * (self.progress - self.drag_start)
+        if not self.drag_claimed:
+            if abs(dy) >= SWIPE_PX and abs(dy) > abs(dx):
+                gesture.set_state(Gtk.EventSequenceState.DENIED)   # the content's, later
+                return
+            if dx > -SWIPE_PX:
+                return
+            self.drag_claimed = True
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        now = GLib.get_monotonic_time()
+        then, last = self.drag_last
+        if now > then:
+            self.drag_velocity = (dx - last) / ((now - then) / 1000.0)
+        self.drag_last = (now, dx)
+        self.apply(max(0.001, min(1.0, self.drag_start + dx / self.width)))
+
+    def _on_drag_end(self, _gesture, _dx, _dy):
+        if not getattr(self, "drag_claimed", False):
+            return
+        if self.drag_velocity < -FLICK:
+            target = 0.0
+        elif self.drag_velocity > FLICK:
+            target = 1.0
+        else:
+            target = 0.0 if self.progress < CLOSE_BELOW else 1.0
+        self.animate_to(target, "close by swipe" if target == 0.0 else "stay by swipe")
+
     # ---- the bus ----------------------------------------------------------------
 
     def on_method(self, _conn, _sender, _path, _iface, method, params, invocation):
@@ -326,6 +394,11 @@ class SystemScreen:
 
 
 def main():
+    # `sfduo-shell --stock`: Droidian's own shell has no dock to bring it
+    if os.path.exists("/etc/sfduo/phosh-stock"):
+        print("sfduo-system-screen: the packaged phosh is kept (/etc/sfduo/phosh-stock) - "
+              "no system screen", file=sys.stderr)
+        return
     demo = "--demo" in sys.argv
     app = Gtk.Application(application_id="org.sfduo.SystemScreenApp",
                           flags=Gio.ApplicationFlags.NON_UNIQUE)
@@ -340,6 +413,7 @@ def main():
         def acquired(conn, _name):
             conn.register_object(BUS_PATH, node.interfaces[0],
                                  screen.on_method, screen.on_property, None)
+            screen.conn = conn
         Gio.bus_own_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameOwnerFlags.NONE,
                          acquired, None, None)
         if demo:

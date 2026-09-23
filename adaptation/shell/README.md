@@ -299,6 +299,28 @@ is lit to be glanced at. What the bar said went where it belongs:
   #102). A low battery was already gsd-power's notification, at UPower's
   20 % and 5 %.
 
+### The system screen (#109)
+
+Left of the left panel there is one more page, as on the Surface Duo 2: a
+swipe right anywhere on the left panel's desktop brings it, a swipe left on
+it takes it away. It is light (#F2F2F2), to break the black - nobody stays
+there long - and coming in its background goes from the desktop's black to
+light with the finger, the content appearing over the last third. It shows
+the time as the shade's head does; the desktop's large clock slides off the
+right edge as it comes, and the dock's left half moves to the right panel as
+it does for the grid. Only from the desktop: not over a window, not locked.
+What it holds is still to come.
+
+It is a program of its own, `sfduo-system-screen`, because the colour change
+is a new frame every step: GTK4 draws through the GPU here, GTK3 (the dock)
+does not. Measured: 16.6-16.8 ms a frame (median), with ~80 ms before the
+first frames after idle - the dock wakes it at the touch (`Begin`), before
+the finger has moved. On the session bus as `org.sfduo.SystemScreen`: `Open`,
+`Close`, `Begin`, `SetProgress(d)` and a `Progress` it says as it moves,
+which the dock follows. The swipe is caught by a transparent surface of the
+dock's over the free left panel (`SwipeCatcher`), clear of the shades' strip
+along the top and the dock's along the bottom.
+
 ### Back, from the edge
 
 A window's back arrow is at its top, far from a thumb. As on Android, a
