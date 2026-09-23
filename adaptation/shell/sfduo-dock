@@ -59,6 +59,13 @@ except ImportError:
     print(SETUP_HINT % "python3-cairo", file=sys.stderr)
     sys.exit(0)
 from gi.repository import Gdk, Gio, GLib, Gtk, GtkLayerShell  # noqa: E402
+# The clock's weather line (#98) is GNOME Weather's library; without it the
+# clock simply has no weather.
+try:
+    gi.require_version("GWeather", "4.0")
+    from gi.repository import GWeather  # noqa: E402
+except (ValueError, ImportError):
+    GWeather = None
 
 # The hinge as a fraction of the panel span: 84 physical pixels of 2784. Taken
 # as a fraction on purpose - the logical size changes with rotation and with
@@ -240,6 +247,7 @@ scrollbar { opacity: 0; }
    in the same place is what burns into an AMOLED panel. */
 .sfduo-clock-time { color: rgba(255,255,255,0.62); font-size: 88px; font-weight: 200; }
 .sfduo-clock-date { color: rgba(255,255,255,0.45); font-size: 20px; }
+.sfduo-clock-weather { color: rgba(255,255,255,0.45); font-size: 18px; }
 """
 
 
@@ -857,6 +865,17 @@ class DesktopClock(Gtk.Window):
         self.date.get_style_context().add_class("sfduo-clock-date")
         box.add(self.time)
         box.add(self.date)
+        self.weather = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER)
+        self.weather.get_style_context().add_class("sfduo-clock-weather")
+        self.weather.set_no_show_all(True)
+        self.sky = Gtk.Image()
+        self.sky.set_pixel_size(20)
+        self.forecast = Gtk.Label()
+        self.weather.add(self.sky)
+        self.weather.add(self.forecast)
+        self.sky.show()
+        self.forecast.show()
+        box.add(self.weather)
         self.add(box)
         self.connect("map", lambda *_a: self.get_window().input_shape_combine_region(
             cairo.Region(), 0, 0))
@@ -869,6 +888,60 @@ class DesktopClock(Gtk.Window):
         self.dx = self.dy = 0     # the step aside
         self._show()
         self._tick_at_minute()
+        self.info = None
+        self._follow_weather()
+
+    WEATHER_EVERY = 30 * 60   # s: how often the weather is asked for again
+
+    def _follow_weather(self):
+        """The weather in the first city chosen in GNOME Weather - where a
+        city is chosen on this phone - asked for every half hour. No city, no
+        library or no answer, and the line is simply not there (#101 is the
+        design this is a first plain step towards)."""
+        if GWeather is None:
+            return
+        try:
+            self.weather_settings = Gio.Settings.new("org.gnome.Weather")
+        except (GLib.Error, TypeError):
+            return
+        self.weather_settings.connect("changed::locations", lambda *_a: self._weather_city())
+        self._weather_city()
+        GLib.timeout_add_seconds(self.WEATHER_EVERY, self._weather_update)
+
+    def _weather_city(self):
+        cities = self.weather_settings.get_value("locations")
+        if cities.n_children() == 0:
+            self.info = None
+            self.weather.hide()
+            return
+        location = GWeather.Location.get_world().deserialize(
+            cities.get_child_value(0).get_variant())
+        if location is None:
+            return
+        self.city = location.get_city_name() or location.get_name()
+        self.info = GWeather.Info.new(location)
+        self.info.set_application_id("org.sfduo.Dock")
+        self.info.set_contact_info("https://github.com/iverbovoy/surfaceduo-droidian")
+        # GWeather's own default is METAR and IWIN: an airport's report, often
+        # empty (Kyiv's was), and a service for the United States only. met.no
+        # is what GNOME Weather asks as well.
+        self.info.set_enabled_providers(GWeather.Provider.METAR | GWeather.Provider.MET_NO)
+        self.info.connect("updated", self._on_weather)
+        self.info.update()
+
+    def _weather_update(self):
+        if self.info is not None:
+            self.info.update()
+        return True
+
+    def _on_weather(self, info):
+        if not info.is_valid():
+            debug("weather: no answer")
+            return              # the last one shown stays until one comes
+        self.sky.set_from_icon_name(info.get_symbolic_icon_name(), Gtk.IconSize.MENU)
+        self.sky.set_pixel_size(20)
+        self.forecast.set_text(f"{info.get_temp_summary()}  {self.city}")
+        self.weather.show()
 
     def _show(self):
         now = GLib.DateTime.new_now_local()
