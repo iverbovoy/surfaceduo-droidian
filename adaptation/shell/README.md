@@ -315,7 +315,14 @@ It is a program of its own, `sfduo-system-screen`, because the colour change
 is a new frame every step: GTK4 draws through the GPU here, GTK3 (the dock)
 does not. Measured: 16.6-16.8 ms a frame (median), with ~80 ms before the
 first frames after idle - the dock wakes it at the touch (`Begin`), before
-the finger has moved. On the session bus as `org.sfduo.SystemScreen`: `Open`,
+the finger has moved. That held only with nothing else moving: with the
+dock's half and the clock moving along, a quarter of the slides ran at 33 ms
+a frame. phoc sent frame done after hwcomposer's swap, which blocks ~5 ms,
+leaving a client ~10 ms of its 16.6; the system screen, drawing a whole panel
+in 5-10 ms, missed now and then, and with another surface keeping phoc on its
+own clock it stayed a frame behind. `phoc-patches/0013` sends frame done
+before the repaint (#123): every slide at 16.6 since, the dock following
+frame by frame. On the session bus as `org.sfduo.SystemScreen`: `Open`,
 `Close`, `Begin`, `SetProgress(d)` and a `Progress` it says as it moves,
 which the dock follows. The swipe is caught by a transparent surface of the
 dock's over the free left panel (`SwipeCatcher`), clear of the shades' strip

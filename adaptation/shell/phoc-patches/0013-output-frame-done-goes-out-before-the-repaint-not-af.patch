@@ -1,0 +1,47 @@
+From a0ec89fbd54d0fef6d79ce5daf3d4d8d997ed1b5 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Wed, 23 Sep 2026 15:57:06 +0300
+Subject: [PATCH] output: frame done goes out before the repaint, not after the
+ swap
+
+On hwcomposer the swap blocks for ~5 ms, and frame done sent after it
+left a client ~10 ms of its 16.6 to draw its next frame. A client that
+took longer missed the next frame and, whenever another surface kept
+the output busy on its own clock, fell into step at 33 ms.
+
+Send frame done first and flush it to the clients, then repaint: what
+a client draws now is for the next frame either way.
+---
+ src/output.c | 14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/src/output.c b/src/output.c
+index 85b1e13..a957e1e 100644
+--- a/src/output.c
++++ b/src/output.c
+@@ -699,12 +699,18 @@ phoc_output_handle_frame (struct wl_listener *listener, void *data)
+ 
+   build_debug_damage_tracking (self);
+ 
+-  /* Repaint the output */
+-  phoc_output_draw (self);
+-
+-  /* Send frame done events to all visible surfaces */
++  /* Send frame done events to all visible surfaces, and out of the door,
++   * before the repaint: on hwcomposer the swap blocks for ~5 ms, and done
++   * sent after it left a client ~10 ms of its 16.6 to draw the next frame.
++   * One that took longer missed the next frame and fell into step at 33 ms
++   * whenever another surface kept the output busy. What the client draws
++   * now is for the next frame either way - this one draws what is in. */
+   clock_gettime (CLOCK_MONOTONIC, &now);
+   phoc_output_for_each_surface (self, surface_send_frame_done_iterator, &now, true);
++  wl_display_flush_clients (phoc_server_get_wl_display (phoc_server_get_default ()));
++
++  /* Repaint the output */
++  phoc_output_draw (self);
+ 
+   /* Want frame clock ticking as long as we have frame callbacks */
+   if (priv->frame_callbacks)
+-- 
+2.43.0
+
