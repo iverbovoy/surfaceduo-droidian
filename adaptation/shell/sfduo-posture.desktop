@@ -6,4 +6,3 @@ Exec=/usr/local/bin/sfduo-posture
 Icon=phone-symbolic
 Terminal=false
 NoDisplay=true
-X-GNOME-Autostart-Phase=Applications

@@ -854,6 +854,16 @@ chmod 755 "$PKG/usr/local/sbin/sfduo-lid-daemon"
 install -Dm644 "$SYSTEM/50-sfduo-lid.conf" \
     "$PKG/etc/systemd/logind.conf.d/50-sfduo-lid.conf"
 
+# Droidian 102 (#217): lxc-android 1:40 waits for apexd through droidian-apex,
+# whose lxc-attach loses its last argument on this device - the container's
+# start never completed and the phone stayed dark. sfduo-lxc-notify waits the
+# same way with the argument padded, and runs lxc-android's own notify as it
+# is where it does not wait that way (101).
+install -Dm755 "$SYSTEM/sfduo-lxc-notify" "$PKG/usr/local/sbin/sfduo-lxc-notify"
+mkdir -p "$PKG/usr/lib/systemd/system/lxc@android.service.d"
+printf '[Service]\nExecStart=\nExecStart=/usr/local/sbin/sfduo-lxc-notify\n' \
+    > "$PKG/usr/lib/systemd/system/lxc@android.service.d/10-sfduo-notify.conf"
+
 cat > "$PKG/usr/lib/systemd/system/sfduo-lid.service" <<'UNIT'
 [Unit]
 Description=sfduo: fold sensor (GPIO 121) to SW_LID bridge
@@ -1061,7 +1071,7 @@ Architecture: arm64
 Maintainer: Ivan Verbovoy <ivanverbovoy@gmail.com>
 Section: misc
 Priority: optional
-Recommends: python3-gi, python3-gi-cairo, python3-cairo, gir1.2-gtk-3.0, gir1.2-gtklayershell-0.1, wlrctl, wtype, dconf-cli, gir1.2-gtk-4.0, gir1.2-adw-1, gir1.2-ecal-2.0, gir1.2-edataserver-1.2
+Recommends: python3-gi, python3-gi-cairo, python3-cairo, gir1.2-gtk-3.0, gir1.2-gtklayershell-0.1, wlrctl, wtype, dconf-cli, gir1.2-gtk-4.0, gir1.2-gtk4layershell-1.0, gir1.2-adw-1, gir1.2-ecal-2.0, gir1.2-edataserver-1.2
 Description: Surface Duo 1 adaptation for Droidian (sfduo)
  USB RNDIS gadget access (172.16.42.1, telnet fallback) and, as bring-up
  progresses, touch / wifi / sensor plumbing for the Microsoft Surface Duo 1.

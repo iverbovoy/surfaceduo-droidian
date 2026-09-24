@@ -6,4 +6,3 @@ Exec=/usr/local/bin/sfduo-system-screen
 Icon=view-grid-symbolic
 Terminal=false
 NoDisplay=true
-X-GNOME-Autostart-Phase=Applications
