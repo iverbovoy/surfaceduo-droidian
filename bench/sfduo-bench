@@ -76,6 +76,10 @@ def motion_metrics(frames, start, end=None):
 
 class Target:
     name = "?"
+    only = None                 # --apps: the kinds to run, all when None
+
+    def selected(self, apps):
+        return {k: v for k, v in apps.items() if not self.only or k in self.only}
 
     def __init__(self, reps):
         self.reps = reps
@@ -93,7 +97,8 @@ class Target:
 
 # ---- the port ---------------------------------------------------------------
 
-# What the port offers for each kind of app: its desktop id, its process,
+# What the port offers for each kind of app: its desktop id, its window's
+# app_id, its process,
 # and whether that process runs all the time by design. Clock (alarms),
 # Phone (incoming calls) and Messages (incoming texts) are started with the
 # session and stay; their "launch" is a window from a running process, as
@@ -101,16 +106,17 @@ class Target:
 # exact process name before each launch - Calendar and Camera stay behind
 # when their window closes, and a launch then would be warm.
 LINUX_APPS = {
-    "settings": ("org.gnome.Settings", "gnome-control-center", False),
-    "calculator": ("org.gnome.Calculator", "gnome-calculator", False),
-    "clock": ("org.gnome.clocks", "gnome-clocks", True),
-    "contacts": ("org.gnome.Contacts", "gnome-contacts", False),
-    "phone": ("org.gnome.Calls", "gnome-calls", True),
-    "messages": ("sm.puri.Chatty", "chatty", True),
-    "calendar": ("org.gnome.Calendar", "gnome-calendar", False),
-    "weather": ("org.gnome.Weather", "gnome-weather", False),
-    "browser": ("firefox", "firefox", False),
-    "camera": ("droidian-camera", "droidian-camera", False),
+    "settings": ("org.gnome.Settings", "org.gnome.Settings", "gnome-control-center", False),
+    "calculator": ("org.gnome.Calculator", "org.gnome.Calculator", "gnome-calculator", False),
+    "clock": ("org.gnome.clocks", "org.gnome.clocks", "gnome-clocks", True),
+    "contacts": ("org.gnome.Contacts", "org.gnome.Contacts", "gnome-contacts", False),
+    "phone": ("org.gnome.Calls", "org.gnome.Calls", "gnome-calls", True),
+    "messages": ("sm.puri.Chatty", "sm.puri.Chatty", "chatty", True),
+    "calendar": ("org.gnome.Calendar", "org.gnome.Calendar", "gnome-calendar", False),
+    "weather": ("org.gnome.Weather", "org.gnome.Weather", "gnome-weather", False),
+    "browser": ("firefox", "firefox", "firefox", False),
+    # its window is not named after its desktop file
+    "camera": ("droidian-camera", "org.Droidian.droidian-camera", "droidian-camera", False),
 }
 SESSION = ("XDG_RUNTIME_DIR=/run/user/32011 WAYLAND_DISPLAY=wayland-0 "
            "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/32011/bus")
@@ -122,6 +128,17 @@ SESSION = ("XDG_RUNTIME_DIR=/run/user/32011 WAYLAND_DISPLAY=wayland-0 "
 PROBES = {
     "frame": ("/usr/lib/aarch64-linux-gnu/libwlroots.so.12a", "wlr_output_send_frame"),
     "map": ("/usr/bin/phoc", "phoc_view_map"),
+}
+# Named probes, with what they carry. A layer surface (the dock's curtain is
+# one, "sfduo-curtain") mapped and unmapped; a window mapped, unmapped, moved
+# and resized - the window by its address, which pairs its events.
+NAMED = {
+    "lmap": ("/usr/bin/phoc", "lmap=../src/layer-surface.c:332 ns=self->layer_surface->namespace:string"),
+    "lunmap": ("/usr/bin/phoc", "lunmap=../src/layer-surface.c:376 ns=self->layer_surface->namespace:string"),
+    "vmap": ("/usr/bin/phoc", "vmap=phoc_view_map self:x64"),
+    "vunmap": ("/usr/bin/phoc", "vunmap=phoc_view_unmap view:x64"),
+    "vpos": ("/usr/bin/phoc", "vpos=view_update_position view:x64 x:s32 y:s32"),
+    "vsize": ("/usr/bin/phoc", "vsize=view_update_size view:x64 width:s32 height:s32"),
 }
 # The app grid on the left panel, in the touch tool's logical pixels: a
 # flick up from the bottom band opens it, a flick down on it closes it. The
@@ -166,6 +183,11 @@ class Linux(Target):
         runs; returns ({probe: [ms]}, [touch output lines])."""
         adds = []
         for key in probes:
+            if key in NAMED:
+                binary, spec = NAMED[key]
+                adds.append(f"perf probe -q -x {binary} {shlex.quote(spec)} 2>/dev/null || true")
+                adds.append(f"E=\"$E -e probe_phoc:{key}\"")
+                continue
             binary, symbol = PROBES[key]
             adds.append(f"perf probe -q -x {binary} {symbol} 2>/dev/null || true")
             adds.append(f"E=\"$E $(perf probe -l 2>/dev/null | grep -v '@plt' | grep '(on {symbol}[@ ]' "
@@ -181,19 +203,23 @@ sleep 0.5
 {before}
 {touch}
 wait
-perf script -i /tmp/sfduo-bench.data -F time,event 2>/dev/null
+perf script -i /tmp/sfduo-bench.data -F time,event,trace 2>/dev/null
 perf probe -q -d 'probe_libwlroots:*' 2>/dev/null; perf probe -q -d 'probe_phoc:*' 2>/dev/null
 rm -f /tmp/sfduo-bench.data
 """
         out = self.sh(command, timeout=seconds + 60)
         found = {key: [] for key in probes}
+        self.events = []                # (ms, probe, {arg: value}) in order
         lines = []
         for line in out.splitlines():
-            m = re.match(r"\s*([\d.]+):\s+(\S+):", line)
+            m = re.match(r"\s*([\d.]+):\s+(\S+):(.*)", line)
             if m:
+                t, name = float(m.group(1)) * 1000, m.group(2).split(":")[-1]
+                args = dict(re.findall(r'(\w+)=("[^"]*"|\S+)', m.group(3)))
                 for key in probes:
-                    if m.group(2).split(":")[-1].startswith(PROBES[key][1]):
-                        found[key].append(float(m.group(1)) * 1000)
+                    if name == key if key in NAMED else name.startswith(PROBES[key][1]):
+                        found[key].append(t)
+                        self.events.append((t, key, {k: v.strip('"') for k, v in args.items()}))
             elif line.startswith(("mark ", "swipe ")):
                 lines.append(line.split())
         return found, lines
@@ -216,7 +242,7 @@ rm -f /tmp/sfduo-bench.data
     def launch(self):
         rows = []
         session = f"sudo -u droidian {SESSION}"
-        for kind, (app, process, resident) in LINUX_APPS.items():
+        for kind, (desktop, app, process, resident) in self.selected(LINUX_APPS).items():
             for rep in range(self.reps):
                 # from nothing: the window closed, and the process gone
                 # unless it is one that always runs
@@ -224,7 +250,7 @@ rm -f /tmp/sfduo-bench.data
                 self.sh(f"{session} wlrctl toplevel close app_id:{app} 2>/dev/null; sleep 1; "
                         f"{kill}sleep 2", check=False)
                 before = (f"T=$(python3 -c 'import time;print(time.monotonic())'); echo mark request $T; "
-                          f"echo '{app}.desktop left' > /run/user/32011/sfduo-launch; "
+                          f"echo '{desktop}.desktop left' > /run/user/32011/sfduo-launch; "
                           "pkill -USR2 -x sfduo-dock")
                 found, lines = self.capture(["map", "frame"], seconds=8, before=before)
                 request = next(float(l[2]) * 1000 for l in lines if l[:2] == ["mark", "request"])
@@ -239,6 +265,143 @@ rm -f /tmp/sfduo-bench.data
                 rows.append(self.record("launch", **row))
                 self.sh(f"{session} wlrctl toplevel close app_id:{app} 2>/dev/null; sleep 1", check=False)
         return rows
+
+    def look(self):
+        """Each app launched as `launch` does, recorded on screen and with the
+        window's and the curtain's comings and goings, and judged against
+        what every launch must do (bench/README.md)."""
+        rows = []
+        session = f"sudo -u droidian {SESSION}"
+        clips = os.path.join(RESULTS, "clips")
+        os.makedirs(clips, exist_ok=True)
+        for kind, (desktop, app, process, resident) in self.selected(LINUX_APPS).items():
+            for rep in range(self.reps):
+                kill = "" if resident else f"pkill -x {process}; "
+                self.sh(f"{session} wlrctl toplevel close app_id:{app} 2>/dev/null; sleep 1; "
+                        f"{kill}sleep 2", check=False)
+                before = ("rm -f /tmp/sfduo-look.mp4; "
+                          f"{session} wf-recorder -r 60 -F scale=iw/{VIDEO_SCALE}:ih/{VIDEO_SCALE} "
+                          "-f /tmp/sfduo-look.mp4 >/dev/null 2>&1 & W=$!; sleep 1; "
+                          "T=$(python3 -c 'import time;print(time.monotonic())'); echo mark request $T; "
+                          f"echo '{desktop}.desktop left' > /run/user/32011/sfduo-launch; "
+                          "pkill -USR2 -x sfduo-dock; sleep 5; kill -INT $W; wait $W")
+                found, lines = self.capture(["frame", "lmap", "lunmap", "vmap", "vunmap", "vpos", "vsize"],
+                                            seconds=8, before=before)
+                request = next(float(l[2]) * 1000 for l in lines if l[:2] == ["mark", "request"])
+                clip = os.path.join(clips, f"{datetime.date.today().isoformat()}-{kind}-{rep}.mp4")
+                subprocess.run(["scp", "-q", f"{self.host}:/tmp/sfduo-look.mp4", clip], check=False)
+                rows.append(self.record("look", app=kind, id=app, rep=rep, resident=resident,
+                                        **self._judge(request, clip)))
+                self.sh(f"{session} wlrctl toplevel close app_id:{app} 2>/dev/null; sleep 1", check=False)
+        return rows
+
+    def _judge(self, request, clip):
+        ev = [(t - request, k, a) for t, k, a in self.events if t >= request - 50]
+        curtain = [(t, k) for t, k, a in ev if k in ("lmap", "lunmap") and a.get("ns") == "sfduo-curtain"]
+        up = next((t for t, k in curtain if k == "lmap"), None)
+        down = next((t for t, k in curtain if k == "lunmap"), None)
+        mapped = next(((t, a["self_x64"]) for t, k, a in ev if k == "vmap"), None)
+        out = {"clip": os.path.basename(clip)}
+        if up is not None:
+            out["curtain_up_ms"] = round(up, 1)
+        if down is not None:
+            out["curtain_down_ms"] = round(down, 1)
+        if mapped:
+            t_map, view = mapped
+            out["map_ms"] = round(t_map, 1)
+            mine = [(t, k, a) for t, k, a in ev if a.get("view_x64") == view or a.get("self_x64") == view]
+            out["unmaps"] = sum(1 for t, k, a in mine if k == "vunmap")
+            boxes, box = [], {}
+            for t, k, a in mine:
+                if k == "vpos":
+                    box.update(x=int(a["x_s32"]), y=int(a["y_s32"]))
+                elif k == "vsize":
+                    box.update(w=int(a["width_s32"]), h=int(a["height_s32"]))
+                else:
+                    continue
+                # the probes fire on entry, also when nothing changes: only
+                # a change is kept
+                if not boxes or boxes[-1][1] != box:
+                    boxes.append((round(t, 1), dict(box)))
+            out["boxes"] = boxes
+        broken = []
+        if up is None or up > 100:
+            broken.append("1 answer")
+        if not mapped or down is None:
+            broken.append("2 finish")
+        if os.path.exists(clip) and os.path.getsize(clip) > 0:
+            left, right = panel_stats(clip, *LEFT), panel_stats(clip, *RIGHT)
+            out["empty"] = {"left": empty(left), "right": empty(right)}
+            out["flicker"] = {"left": flicker(left), "right": flicker(right)}
+            if out["empty"]["left"]:
+                broken.append("3 empty")
+            if out["flicker"]["left"] or out["flicker"]["right"]:
+                broken.append("4 flicker")
+        else:
+            broken.append("no recording")
+        if mapped and out.get("unmaps"):
+            broken.append("4 unmapped")
+        # What the curtain covered was never seen: a window laid out under it
+        # is in place when it lifts. Moved after that, the user saw it move.
+        if mapped and out["boxes"]:
+            shown = down if down is not None else out["map_ms"]
+            if any(t > shown + 1 for t, _ in out["boxes"]):
+                broken.append("5 moved")
+            placed = out["boxes"][-1][0]
+            out["curtain_after_placed_ms"] = round(down - placed, 1) if down is not None else None
+            if down is not None and down - placed > 2 * FRAME_MS:
+                broken.append("6 curtain late")
+        out["broken"] = broken
+        return out
+
+
+
+# ---- how a launch looks (#178) ---------------------------------------------------
+
+# The recording: the whole output scaled to a quarter, 696 x 450 - the left
+# panel is x < 338, the right x > 358 (the hinge's gap between them).
+VIDEO_SCALE = 4
+LEFT = (0, 337)
+RIGHT = (359, 696)
+
+
+def panel_stats(video, x0, x1):
+    """Per recorded frame of one panel: (pts s, mean luma, min, max)."""
+    width = x1 - x0
+    done = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", video, "-vf",
+         f"crop={width}:450:{x0}:0,signalstats,metadata=print:file=-", "-f", "null", "-"],
+        capture_output=True, text=True)
+    frames, cur = [], {}
+    for line in done.stdout.splitlines():
+        m = re.match(r"frame:\d+\s+pts:\d+\s+pts_time:([\d.]+)", line)
+        if m:
+            if cur:
+                frames.append(cur)
+            cur = {"t": float(m.group(1))}
+            continue
+        m = re.match(r"lavfi\.signalstats\.(YAVG|YMIN|YMAX)=([\d.]+)", line)
+        if m:
+            cur[m.group(1)] = float(m.group(2))
+    if cur:
+        frames.append(cur)
+    return frames
+
+
+def flicker(frames, threshold=12):
+    """Frames where a panel's brightness jumps and comes straight back:
+    A, B, A with B more than `threshold` away from both."""
+    hits = []
+    for a, b, c in zip(frames, frames[1:], frames[2:]):
+        if abs(b["YAVG"] - a["YAVG"]) > threshold and abs(c["YAVG"] - a["YAVG"]) < threshold / 3:
+            hits.append(round(b["t"], 3))
+    return hits
+
+
+def empty(frames):
+    """Frames with nothing on the panel: all of it one level (no icon, no
+    text), black or not."""
+    return [round(f["t"], 3) for f in frames if f.get("YMAX", 255) - f.get("YMIN", 0) < 8]
 
 
 # ---- Android ------------------------------------------------------------------
@@ -394,11 +557,13 @@ def main(argv):
     parser.add_argument("--reps", type=int, default=10)
     parser.add_argument("--host", default="root@172.16.42.1")
     parser.add_argument("--serial")
+    parser.add_argument("--apps", help="comma-separated kinds, e.g. settings,camera")
     args = parser.parse_args(argv)
     if args.target == "report":
         report(args.what)
         return
     target = Linux(args.reps, args.host) if args.target == "linux" else Android(args.reps, args.serial)
+    target.only = set(args.apps.split(",")) if args.apps else None
     target.preflight()
     for scenario in args.what:
         if not hasattr(target, scenario) or scenario.startswith("_"):
