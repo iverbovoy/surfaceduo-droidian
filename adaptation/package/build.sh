@@ -261,24 +261,12 @@ printf '[Service]\nTimeoutStartSec=180\n' > "$PKG/etc/systemd/system/bluebinder.
 
 # GPS (2026-07-12): the vendor GNSS stack works out of the box and the
 # droidian geoclue hybris source delivers ~4m fixes (TTFF ~100s cold, no
-# xtra assistance - container has no DNS). geoclue idle-exits after 60s,
-# so every fix pays DBus-activation startup again; keep it resident.
-# (The 40s sandbox stall that once made activation time out entirely is
-# fixed at the root by kernel patch 0004 - see docs/FREEZE-FORENSICS.md.)
-mkdir -p "$PKG/etc/systemd/system/geoclue.service.d"
-cat > "$PKG/etc/systemd/system/geoclue.service.d/99-sfduo-keepalive.conf" <<'GCLUE'
-[Unit]
-StartLimitIntervalSec=0
-
-[Service]
-Restart=on-success
-RestartSec=2
-# (with kernel patch 0004 the old 40s mount-ns sandbox stall is gone -
-# a resident geoclue is now just a GPS-latency nicety, not a bug fix)
-
-[Install]
-WantedBy=multi-user.target
-GCLUE
+# xtra assistance - container has no DNS). geoclue is started on demand
+# (D-Bus activation) and leaves after 60 s unused. It used to be kept
+# resident by a drop-in restarting it - which geoclue answered by leaving
+# again a minute later: a start every ~95 s all day and night, GNSS set up
+# at each, and the modem writing 2 MB to its file system after each one,
+# ~460 MB a night on the flash (#160). The postinst removes the drop-in.
 
 mkdir -p "$PKG/etc/systemd/sleep.conf.d"
 # SuspendState=mem ONLY: systemd's default list (mem standby freeze) falls
@@ -1005,6 +993,11 @@ set -e
 # migrate off the hand-injected copies (shadow the packaged unit if left)
 rm -f /etc/systemd/system/sfduo-usb.service \
       /etc/systemd/system/multi-user.target.wants/sfduo-usb.service
+# geoclue on demand again (#160): the keepalive drop-in of 0.17 and earlier,
+# left behind by dpkg as an obsolete conffile, and its enable link
+rm -f /etc/systemd/system/geoclue.service.d/99-sfduo-keepalive.conf \
+      /etc/systemd/system/multi-user.target.wants/geoclue.service
+rmdir /etc/systemd/system/geoclue.service.d 2>/dev/null || true
 # hinge adaptor mapping: sensorfwd reads ONLY the file given by -c=
 if [ -f /etc/sensorfw/sensord-hybris.conf ] && \
    ! grep -q hingeadaptor /etc/sensorfw/sensord-hybris.conf; then
@@ -1171,8 +1164,6 @@ if [ -d /run/systemd/system ]; then
     en_now sfduo-wakeup.service || true
     udevadm control --reload 2>/dev/null || true
     udevadm trigger -s backlight -s leds 2>/dev/null || true
-    # geoclue is a static unit; the drop-in adds [Install] so it can start at boot
-    en_now geoclue.service 2>/dev/null || START="$START geoclue.service"
     [ -d /usr/lib/sfduo/modules ] && en_now sfduo-wlan.service || true
     # sfduo-tame-vendor kills adsprpcd, and sfduo-audio.service is what
     # boots the ADSP afterwards. Measured on hardware: adsprpcd cannot
