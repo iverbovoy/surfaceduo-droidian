@@ -6,4 +6,3 @@ Exec=/usr/local/bin/sfduo-fold
 Icon=view-dual-symbolic
 Terminal=false
 NoDisplay=true
-X-GNOME-Autostart-Phase=Applications

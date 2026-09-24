@@ -1,0 +1,42 @@
+#!/bin/bash
+# sfduo-lxc-notify - lxc@android's readiness, for lxc-android 1:40 and later
+# (Droidian 102, #217). Run in place of /usr/lib/lxc-android/lxc-android-notify
+# by the drop-in lxc@android.service.d/10-sfduo-notify.conf.
+#
+# lxc-android 1:40 waits for Android's apexd with
+#     droidian-apex --timeout 90 wait ready
+# which reads apexd.status by `lxc-attach -n android -- getprop apexd.status`.
+# On the Surface Duo lxc-attach drops its last argument: getprop printed
+# every property, never "ready", the container's start timed out after 90 s,
+# and nothing after it came up - two dark panels, a dead power key. The
+# same property asked for with an empty argument padded after it is read
+# right. 101's wait, waitforservice, hangs on 102's libhybris.
+#
+# An lxc-android that does not wait through droidian-apex (Droidian 101,
+# whose notify also replicates the APEX bind-mounts) is run as it is.
+UP=/usr/lib/lxc-android/lxc-android-notify
+if ! grep -q 'droidian-apex --timeout' "$UP"; then
+	exec "$UP"
+fi
+
+LXC_ROOTFS="/var/lib/lxc/android/rootfs"
+ANDROID_SDK_VERSION=$(grep ro.build.version.sdk= ${LXC_ROOTFS}/system/build.prop | cut -d "=" -f2)
+
+lxc-wait -n android -t 10 -s "RUNNING"
+
+if [ "$ANDROID_SDK_VERSION" -ge 29 ]; then
+	status=
+	for i in $(seq 180); do
+		status=$(lxc-attach -n android -- /system/bin/getprop apexd.status "" 2>/dev/null)
+		[ "$status" = "ready" ] && break
+		sleep 0.5
+	done
+	if [ "$status" != "ready" ]; then
+		echo "sfduo-lxc-notify: apexd.status is '$status' after 90 s" >&2
+		exit 1
+	fi
+	echo "sfduo-lxc-notify: apexd ready after $i tries"
+fi
+
+systemd-notify --ready --status="Container ready"
+lxc-wait -n android -s "STOPPED"

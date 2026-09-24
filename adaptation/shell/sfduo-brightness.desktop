@@ -5,4 +5,3 @@ Comment=Restore the backlight level after the panels are powered on
 Exec=/usr/local/bin/sfduo-brightness
 Terminal=false
 NoDisplay=true
-X-GNOME-Autostart-Phase=Applications
