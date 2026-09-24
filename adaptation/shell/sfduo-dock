@@ -1624,6 +1624,9 @@ class Dock(Gtk.Window):
     def _watch_windows(self):
         """Ask, on a beat, which panels have a window on them."""
         while True:
+            while self.dark:                  # nothing is seen: wait for the light
+                self.watch_wake.wait()
+                self.watch_wake.clear()
             try:
                 out = subprocess.run(["wlrctl", "toplevel", "list"],
                                      capture_output=True, text=True,
@@ -2745,6 +2748,25 @@ class Dock(Gtk.Window):
             Gio.DBusSignalFlags.NONE,
             lambda _c, _s, _p, _i, _sig, params: GLib.timeout_add(
                 WINDOW_GONE_MS.get(params[0], 0), lambda: self.watch_wake.set() or False))
+        # The beat started two wlrctl processes a second, and more with every
+        # window open, whether anyone could see the result or not: 2-3 % of a
+        # core all night with the phone closed (#168). While the display is
+        # off it stops; lit again, the windows are looked at at once. phosh
+        # says which: PowerSaveMode on org.gnome.Mutter.DisplayConfig, 0 on.
+        self.dark = False
+        self.session_bus.signal_subscribe(
+            "org.gnome.Mutter.DisplayConfig", "org.freedesktop.DBus.Properties",
+            "PropertiesChanged", "/org/gnome/Mutter/DisplayConfig", None,
+            Gio.DBusSignalFlags.NONE,
+            lambda _c, _s, _p, _i, _sig, params: self._display_changed(
+                params.unpack()[1].get("PowerSaveMode")))
+
+    def _display_changed(self, mode):
+        if mode is None:
+            return
+        self.dark = mode != 0
+        if not self.dark:
+            self.watch_wake.set()
 
     def _follow_shade(self):
         """Know which half has its shade pulled down.
