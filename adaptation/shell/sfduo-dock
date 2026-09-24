@@ -1529,6 +1529,20 @@ class Dock(Gtk.Window):
         if not shown:
             subprocess.run(["wlrctl", "toplevel", "focus", f"app_id:{app_id}"], check=False)
 
+    def _expect(self, app_id, side):
+        """Tell the port's phoc where the app's next window goes: it is put
+        there as it maps, rather than once this dock has found it (#194).
+        _place tiles it all the same, which does nothing to a window already
+        there - and is what places it on a phoc without Expect, or when the
+        window turns out to be called something else."""
+        try:
+            self.session_bus.call_sync(
+                "org.sfduo.Phoc", "/org/sfduo/Phoc", "org.sfduo.Phoc", "Expect",
+                GLib.Variant("(ss)", (app_id, side)), None,
+                Gio.DBusCallFlags.NO_AUTO_START, 500, None)
+        except GLib.Error:
+            pass
+
     def _tile(self, app_id, side):
         """Ask the port's phoc to put an app's windows on a panel.
 
@@ -3304,6 +3318,7 @@ class Dock(Gtk.Window):
                          args=(info, app_id, side), daemon=True).start()
 
     def _launch_and_place(self, info, app_id, side):
+        self._expect(app_id, side)
         before = toplevel_ids()
         try:
             # An app that is already running is raised rather than started

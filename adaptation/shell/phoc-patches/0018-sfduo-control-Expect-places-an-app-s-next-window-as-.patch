@@ -1,0 +1,108 @@
+From 6d0436ce964bd7101629872ce3b750dcfeaf3a34 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Thu, 24 Sep 2026 17:53:19 +0300
+Subject: [PATCH 18/19] sfduo-control: Expect places an app's next window as it
+ maps
+
+A launched window waited 85-220 ms between its map and its first frame at
+its panel's size: the dock found the new window by polling for it, then
+asked for it to be tiled, and only then was the client asked for the
+panel's size - with the launch curtain waiting on all of it.
+
+org.sfduo.Phoc gains Expect(app_id, side): the dock says where the next
+window of an app goes as it launches the app, and the window is tiled as
+it maps, while it is held out of sight. An expectation lasts 10 s. Tile
+is unchanged, and does nothing to a window already on that panel.
+---
+ src/sfduo-control.c | 54 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 54 insertions(+)
+
+diff --git a/src/sfduo-control.c b/src/sfduo-control.c
+index d6d7770..abe01b4 100644
+--- a/src/sfduo-control.c
++++ b/src/sfduo-control.c
+@@ -92,6 +92,10 @@ static const char introspection_xml[] =
+   "      <arg name='app_id' type='s' direction='in'/>"
+   "      <arg name='restored' type='u' direction='out'/>"
+   "    </method>"
++  "    <method name='Expect'>"
++  "      <arg name='app_id' type='s' direction='in'/>"
++  "      <arg name='side' type='s' direction='in'/>"
++  "    </method>"
+   "    <signal name='Shown'>"
+   "      <arg name='app_id' type='s'/>"
+   "    </signal>"
+@@ -124,6 +128,21 @@ typedef struct {
+ static GSList *waking;
+ static GDBusConnection *bus;       /* for Shown */
+ 
++/*
++ * Expect: the next window of an app goes to a panel. The dock says so as it
++ * launches the app, and the window is put there as it maps - it used to be
++ * put there by the dock's Tile once the dock had seen the window, polling
++ * for it: 85-220 ms of the window held out of sight before its client was
++ * even asked for the panel's size (#194). Kept for a while only: an app that
++ * never opens a window leaves nothing waiting for the next one.
++ */
++#define SFDUO_EXPECT_MS 10000
++typedef struct {
++  PhocViewTileDirection dir;
++  gint64                until;
++} PhocExpected;
++static GHashTable *expected;       /* app_id -> PhocExpected */
++
+ 
+ /* Whether this window is being held out of sight until it is placed. */
+ static gboolean
+@@ -486,6 +505,21 @@ phoc_sfduo_control_hold_new_view (PhocView *view)
+   wake->from_hold = TRUE;
+   wake->fade = TRUE;
+   wake->last_scale = -1.0f;         /* unknown until the first frame */
++
++  /* expected on a panel: put there now, not when the dock gets to it */
++  if (expected && phoc_view_get_app_id (view)) {
++    PhocExpected *e = g_hash_table_lookup (expected, phoc_view_get_app_id (view));
++
++    if (e && e->until > g_get_monotonic_time ()) {
++      PhocViewTileDirection dir = e->dir;
++
++      g_hash_table_remove (expected, phoc_view_get_app_id (view));
++      g_debug ("placing %s as expected", phoc_view_get_app_id (view));
++      tile_view (view, dir);
++    } else if (e) {
++      g_hash_table_remove (expected, phoc_view_get_app_id (view));
++    }
++  }
+ }
+ 
+ 
+@@ -565,6 +599,26 @@ handle_method_call (GDBusConnection       *connection,
+     return;
+   }
+ 
++  if (g_strcmp0 (method_name, "Expect") == 0) {
++    PhocExpected *e;
++
++    g_variant_get (parameters, "(&s&s)", &app_id, &side);
++    if (g_strcmp0 (side, "left") != 0 && g_strcmp0 (side, "right") != 0) {
++      g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
++                                             "side is left or right, not %s", side);
++      return;
++    }
++    if (expected == NULL)
++      expected = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
++    e = g_new0 (PhocExpected, 1);
++    e->dir = g_strcmp0 (side, "left") == 0 ? PHOC_VIEW_TILE_LEFT : PHOC_VIEW_TILE_RIGHT;
++    e->until = g_get_monotonic_time () + SFDUO_EXPECT_MS * 1000;
++    g_hash_table_replace (expected, g_strdup (app_id), e);
++    g_debug ("Expect %s %s", app_id, side);
++    g_dbus_method_invocation_return_value (invocation, NULL);
++    return;
++  }
++
+   if (g_strcmp0 (method_name, "Tile") != 0) {
+     g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR, G_DBUS_ERROR_UNKNOWN_METHOD,
+                                            "No method %s", method_name);
+-- 
+2.43.0
+
