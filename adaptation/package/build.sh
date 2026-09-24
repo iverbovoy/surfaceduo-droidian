@@ -431,12 +431,20 @@ SFW
 # 4.14 kernel does not implement, flooding dmesg ~40 msg/s. ctl.stop is
 # ignored; killing them works and they stay down. aDSP compute offload
 # is not used by our stack.
+# Android's mdnsd (#161) comes up with the container and shares the host's
+# network: a second mDNS responder beside avahi, which lost its host name to
+# it every 20 s all day - 1098 renames a night, every address withdrawn and
+# announced again each time, SurfaceDuo-2489 by morning. Nothing on the
+# Android side uses it (it serves the framework's NsdService). ctl.stop
+# leaves it "stopping" for good; it is oneshot, so killed it stays down.
 cat > "$PKG/usr/local/sbin/sfduo-tame-vendor.sh" <<'TAME'
 #!/bin/sh
 # wait for the android container services to come up, then kill spinners
 sleep 25
+setprop ctl.stop mdnsd 2>/dev/null
 for i in 1 2 3; do
     pkill -9 -x adsprpcd 2>/dev/null
+    pkill -9 -x mdnsd 2>/dev/null
     sleep 5
 done
 exit 0
@@ -445,7 +453,7 @@ chmod 755 "$PKG/usr/local/sbin/sfduo-tame-vendor.sh"
 
 cat > "$PKG/usr/lib/systemd/system/sfduo-tame-vendor.service" <<'UNIT'
 [Unit]
-Description=sfduo: kill vendor daemons that spin on unsupported fastrpc ioctls
+Description=sfduo: kill vendor daemons that spin on unsupported fastrpc ioctls, and Android's mdnsd
 After=lxc@android.service
 
 [Service]
