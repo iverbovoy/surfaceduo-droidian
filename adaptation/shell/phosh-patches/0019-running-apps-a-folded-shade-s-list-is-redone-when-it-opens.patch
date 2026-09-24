@@ -1,0 +1,107 @@
+From: The Surface Duo port <none@invalid>
+Subject: [PATCH 19/19] running-apps: a folded shade's list is redone when it opens
+
+The shade is folded by sliding it off the top of the screen, not by hiding
+it, so its widgets stay mapped and every change redraws them. The port's
+dock changes its Placed property with each window it puts on a panel, and
+the far shade's list of open windows (patch 0009) was redone for it at
+once: moving an app to the other panel redrew the folded shade - 720x240
+as the move started and 128x1472 and 594x1670 as it ended, a 61 ms frame
+of the slide.
+
+While the shade is folded, a change from the dock only marks the rows;
+they are redone as the shade starts to open (its drag-state leaves
+folded).
+---
+--- a/src/running-apps.c
++++ b/src/running-apps.c
+@@ -8,6 +8,8 @@
+ 
+ #include "phosh-config.h"
+ 
++#include "drag-surface.h"
++
+ #include "phosh-wayland.h"
+ #include "running-apps.h"
+ #include "running-apps-filter.h"
+@@ -50,6 +52,8 @@
+   GDBusProxy   *dock;
+   GCancellable *cancel;
+   GHashTable   *open_apps;
++  gboolean      stale;         /* rows to redo once the shade is opened */
++  GtkWidget    *shade;         /* the drag surface the list is in, watched */
+ };
+ 
+ G_DEFINE_TYPE (PhoshRunningApps, phosh_running_apps, GTK_TYPE_BOX)
+@@ -288,6 +292,53 @@
+  * each time the grid rose or fell: 414x1472 and 552x1670 of the shade uploaded
+  * inside the grid's slide, which lost frames to it (#148).
+  */
++/*
++ * The shade is folded by sliding it off the top of the screen, not by
++ * hiding it: its widgets stay mapped and every change redraws them. The
++ * dock's Placed changes with each window it puts on a panel, and a move of
++ * an app to the other panel redrew the folded shade's list - 720x240 at
++ * the move's start and 128x1472 and 594x1670 at its end, a 61 ms frame of
++ * the slide (#200). While the shade is folded the rows are only marked,
++ * and redone as it starts to open.
++ */
++static gboolean
++shade_folded (PhoshRunningApps *self)
++{
++  GtkWidget *top = gtk_widget_get_toplevel (GTK_WIDGET (self));
++
++  return PHOSH_IS_DRAG_SURFACE (top) &&
++    phosh_drag_surface_get_drag_state (PHOSH_DRAG_SURFACE (top)) == PHOSH_DRAG_SURFACE_STATE_FOLDED;
++}
++
++
++static void
++on_shade_state (PhoshRunningApps *self)
++{
++  if (self->stale && !shade_folded (self)) {
++    self->stale = FALSE;
++    update_all_rows (self);
++  }
++}
++
++
++static void
++refresh_rows (PhoshRunningApps *self)
++{
++  GtkWidget *top = gtk_widget_get_toplevel (GTK_WIDGET (self));
++
++  if (top != self->shade && PHOSH_IS_DRAG_SURFACE (top)) {
++    self->shade = top;
++    g_signal_connect_object (top, "notify::drag-state", G_CALLBACK (on_shade_state), self,
++                             G_CONNECT_SWAPPED);
++  }
++  if (shade_folded (self)) {
++    self->stale = TRUE;
++    return;
++  }
++  update_all_rows (self);
++}
++
++
+ static void
+ on_dock_properties_changed (PhoshRunningApps *self,
+                             GVariant         *changed,
+@@ -298,7 +349,7 @@
+   g_autoptr (GVariant) follows = g_variant_lookup_value (changed, "Follows", NULL);
+ 
+   if (placed || follows || (invalidated && invalidated[0]))
+-    update_all_rows (self);
++    refresh_rows (self);
+ }
+ 
+ 
+@@ -318,7 +369,7 @@
+   g_signal_connect_object (proxy, "g-properties-changed", G_CALLBACK (on_dock_properties_changed),
+                            self, G_CONNECT_SWAPPED);
+   /* the dock coming or going changes what is known */
+-  g_signal_connect_object (proxy, "notify::g-name-owner", G_CALLBACK (update_all_rows), self,
++  g_signal_connect_object (proxy, "notify::g-name-owner", G_CALLBACK (refresh_rows), self,
+                            G_CONNECT_SWAPPED);
+   update_all_rows (self);
+ }
