@@ -412,6 +412,69 @@ OnUnitActiveSec=5min
 WantedBy=timers.target
 UNIT
 
+# The root filesystem is a file, /userdata/rootfs.img, made 8 GB by the
+# installer - and everything the user keeps (/home, flatpak, apt's cache)
+# lives inside it, with the rest of /userdata free beside it: 80 % full on
+# the phone in use with 72 GB free around it (#157). Grown once, at the first
+# boot with this package, to all of /userdata's free space but RESERVE_GIB
+# (for a second image or a backup), while mounted: ext4 grows online. The
+# space is allocated at once (fallocate), so a /userdata filling up later
+# cannot turn into write errors inside the root filesystem. Growing is one
+# way: shrinking takes an unmounted filesystem, from recovery. Partitions
+# are never touched - only the file inside /userdata grows.
+cat > "$PKG/usr/local/sbin/sfduo-grow-rootfs" <<'GROW'
+#!/bin/sh
+# sfduo-grow-rootfs [MOUNTPOINT] - grow the loop-backed filesystem at
+# MOUNTPOINT (default /) into its image file's free space, less a reserve.
+# Safe to run again: a file already grown is only resized into (a run cut
+# short between the two steps finishes here), and too little free space is
+# a reason to stop, not an error.
+set -eu
+MNT=${1:-/}
+RESERVE_GIB=${RESERVE_GIB:-10}
+MIN_GROW_GIB=1
+say() { echo "sfduo-grow-rootfs: $*"; }
+
+dev=$(findmnt -n -o SOURCE --target "$MNT")
+case "$dev" in
+    /dev/loop*) ;;
+    *) say "$MNT is on $dev, not a loop device: nothing to do"; exit 0 ;;
+esac
+img=$(losetup -n -O BACK-FILE "$dev" | sed 's/[[:space:]]*$//')
+[ -f "$img" ] || { say "$dev has no image file behind it: nothing to do"; exit 0; }
+
+size=$(stat -c %s "$img")
+free=$(df -B1 --output=avail "$(dirname "$img")" | tail -1 | tr -d ' ')
+grow=$(( free - RESERVE_GIB * 1073741824 ))
+if [ "$grow" -ge $(( MIN_GROW_GIB * 1073741824 )) ]; then
+    target=$(( (size + grow) / 1048576 * 1048576 ))
+    say "growing $img from $(( size / 1073741824 )) to $(( target / 1073741824 )) GiB (keeping $RESERVE_GIB GiB of $(dirname "$img") free)"
+    fallocate -l "$target" "$img"
+else
+    say "$(( free / 1073741824 )) GiB free beside $img: not growing the file (reserve $RESERVE_GIB GiB)"
+fi
+losetup -c "$dev"
+resize2fs "$dev"
+say "$MNT now $(df -h --output=size "$MNT" | tail -1 | tr -d ' ')"
+GROW
+chmod 755 "$PKG/usr/local/sbin/sfduo-grow-rootfs"
+cat > "$PKG/usr/lib/systemd/system/sfduo-grow-rootfs.service" <<'UNIT'
+[Unit]
+Description=sfduo: grow the root filesystem image into /userdata's free space, once
+ConditionPathExists=!/var/lib/sfduo/rootfs-grown
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sfduo-grow-rootfs /
+ExecStartPost=/bin/sh -c 'mkdir -p /var/lib/sfduo && touch /var/lib/sfduo/rootfs-grown'
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 # Hinge (posture) sensor: our patched sensorfw adds hybrishingeadaptor +
 # hingesensor (android.sensor.hinge_angle, type 36, degrees 0..360, via
 # the MS sns_fold sensor on the SLPI). Map the adaptor here; the patched
@@ -1180,6 +1243,8 @@ if [ -d /run/systemd/system ]; then
     en_now sfduo-lid.service || true
     en_now sfduo-writeback.timer || true
     en_now sfduo-wakeup.service || true
+    # at the next boot, not in the middle of an install (#157)
+    en sfduo-grow-rootfs.service || true
     udevadm control --reload 2>/dev/null || true
     udevadm trigger -s backlight -s leds 2>/dev/null || true
     [ -d /usr/lib/sfduo/modules ] && en_now sfduo-wlan.service || true
@@ -1207,6 +1272,8 @@ else
        /etc/systemd/system/multi-user.target.wants/sfduo-usb.service
     ln -sf /usr/lib/systemd/system/sfduo-slot-guard.service \
        /etc/systemd/system/multi-user.target.wants/sfduo-slot-guard.service
+    ln -sf /usr/lib/systemd/system/sfduo-grow-rootfs.service \
+       /etc/systemd/system/multi-user.target.wants/sfduo-grow-rootfs.service
     ln -sf /usr/lib/systemd/system/sfduo-modem.service \
        /etc/systemd/system/multi-user.target.wants/sfduo-modem.service
     mkdir -p /etc/systemd/system/graphical.target.wants
