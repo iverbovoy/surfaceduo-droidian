@@ -8,3 +8,6 @@ surface-duo-oss-kernel.msm-4.14/
 common_fragments/
 wlan/
 packages/
+# screen recordings of launches: 1 MB each, kept on the computer; the ones a ticket
+# cites are added by hand (git add -f)
+bench/results/clips/
