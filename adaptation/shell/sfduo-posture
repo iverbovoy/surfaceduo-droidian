@@ -27,6 +27,9 @@ session bus, as org.sfduo.Posture at /org/sfduo/Posture:
 
 PropertiesChanged carries every change. The dock, the fold effect and the
 phone mode read these instead of talking to sensorfw themselves (#55).
+
+While the display is off it reads nothing: the sensor is stopped and the
+polling with it, and both start again as the display lights up (#159).
 """
 import math
 import sys
@@ -45,6 +48,10 @@ HINGE_IFACE = "local.HingeSensor"
 BUS_NAME = "org.sfduo.Posture"
 OBJECT_PATH = "/org/sfduo/Posture"
 IFACE = "org.sfduo.Posture"
+
+# phosh says when the display goes dark and comes back: 0 on, anything else off
+DISPLAY_CONFIG = "org.gnome.Mutter.DisplayConfig"
+DISPLAY_CONFIG_PATH = "/org/gnome/Mutter/DisplayConfig"
 
 POLL_MS = 40                  # faster than the sensor changes: notice a change sooner
 FRAME_MS = 16                 # the estimate's own clock while it moves
@@ -125,6 +132,9 @@ class Posture:
         self.moving = False
         self.props = {}
         self.registration = None
+        self.poller = None
+        self.dark = False             # the display is off: nothing is read
+        self.fresh = False            # the first reading after the dark stands as it is
 
         node = Gio.DBusNodeInfo.new_for_xml(INTROSPECTION)
         self.registration = self.session.register_object(
@@ -136,8 +146,30 @@ class Posture:
                                      "NameOwnerChanged", "/org/freedesktop/DBus", SENSORFW,
                                      Gio.DBusSignalFlags.NONE,
                                      lambda *_a: GLib.timeout_add(1500, self._connect))
+        # 25 readings a second through the system bus, three processes woken
+        # for each and the SLPI sensor running: all night long with the phone
+        # closed, 14 % of a core and no deep idle for the CPUs (#159). Nothing
+        # needs the hinge while the display is off - the lid switch wakes the
+        # phone - so the reading stops with the display and starts with it.
+        self.session.signal_subscribe(DISPLAY_CONFIG, "org.freedesktop.DBus.Properties",
+                                      "PropertiesChanged", DISPLAY_CONFIG_PATH, None,
+                                      Gio.DBusSignalFlags.NONE, self._on_display_changed)
+        # a shell that comes (back) up has its display on
+        self.session.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus",
+                                      "NameOwnerChanged", "/org/freedesktop/DBus", DISPLAY_CONFIG,
+                                      Gio.DBusSignalFlags.NONE,
+                                      lambda *_a: self._set_dark(False))
+        try:
+            mode = self.session.call_sync(DISPLAY_CONFIG, DISPLAY_CONFIG_PATH,
+                                          "org.freedesktop.DBus.Properties", "Get",
+                                          GLib.Variant("(ss)", (DISPLAY_CONFIG, "PowerSaveMode")),
+                                          None, Gio.DBusCallFlags.NONE, 1000, None)[0]
+            self.dark = mode != 0
+        except GLib.Error:
+            pass                      # no shell yet: taken as on
         self._connect()
-        GLib.timeout_add(POLL_MS, self._poll)
+        if not self.dark:
+            self.poller = GLib.timeout_add(POLL_MS, self._poll)
 
     # ---- sensorfw --------------------------------------------------------
 
@@ -150,14 +182,50 @@ class Posture:
                                           "requestSensor", GLib.Variant("(sx)", ("hingesensor", 0)),
                                           None, Gio.DBusCallFlags.NONE, 3000, None)
             self.sensor_session = reply[0]
-            self.system.call_sync(SENSORFW, HINGE_PATH, HINGE_IFACE, "start",
-                                  GLib.Variant("(i)", (self.sensor_session,)), None,
-                                  Gio.DBusCallFlags.NONE, 3000, None)
+            if not self.dark:
+                self._sensor("start")
             log(f"hinge sensor session {self.sensor_session}")
         except GLib.Error as err:
             self.sensor_session = None
             log(f"no hinge sensor yet: {err.message} (is the rebuilt sensorfw installed? sudo sfduo-sensorfw-install)")
         return False
+
+    def _sensor(self, method):
+        """Start or stop the hinge sensor on the SLPI."""
+        if self.sensor_session is None:
+            return
+        try:
+            self.system.call_sync(SENSORFW, HINGE_PATH, HINGE_IFACE, method,
+                                  GLib.Variant("(i)", (self.sensor_session,)), None,
+                                  Gio.DBusCallFlags.NONE, 3000, None)
+        except GLib.Error as err:
+            log(f"{method}: {err.message}")
+
+    # ---- the display ---------------------------------------------------------
+
+    def _on_display_changed(self, conn, sender, path, iface, signal, params):
+        mode = params[1].get("PowerSaveMode")
+        if mode is not None:
+            self._set_dark(mode != 0)
+
+    def _set_dark(self, dark):
+        if dark == self.dark:
+            return
+        self.dark = dark
+        if dark:
+            if self.poller is not None:
+                GLib.source_remove(self.poller)
+                self.poller = None
+            self._sensor("stop")
+            log("display off: not reading the hinge")
+            return
+        # The hinge may have turned any distance in the dark: the first
+        # reading is where it is, not a place to glide to from the old one.
+        self.fresh = True
+        self._sensor("start")
+        self._poll()
+        self.poller = GLib.timeout_add(POLL_MS, self._poll)
+        log("display on: reading the hinge")
 
     def _poll(self):
         if self.sensor_session is None:
@@ -179,6 +247,26 @@ class Posture:
         reading = value[0]
         degrees = int(reading[1]) if isinstance(reading, tuple) else int(reading)
         now = time.monotonic()
+        if self.dark:
+            return                            # a reading asked for before the dark
+        if self.fresh:                        # the first since the dark: at rest, where it is
+            self.fresh = False
+            if self.clock is not None:
+                GLib.source_remove(self.clock)
+                self.clock = None
+            self.raw, self.raw_at = degrees, now
+            self.angle, self.velocity = float(degrees), 0.0
+            changed = {"Angle": self.angle, "Raw": degrees}
+            name = posture_for(degrees, self.posture)
+            if name != self.posture:
+                self.posture = name
+                changed["Posture"] = name
+            self.candidate = (self.posture, 0)
+            if self.moving:
+                self.moving = False
+                changed.update({"Moving": False, "Velocity": 0.0})
+            self._publish(changed)
+            return
         if degrees == self.raw:
             return
         if self.raw is None:                  # the first reading: nothing to travel from
