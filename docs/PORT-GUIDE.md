@@ -93,7 +93,7 @@ release) and inject it with `adaptation/ssh/inject-ssh-twrp.sh`: USB RNDIS acces
 sshd (the nightly ships none), the touch udev rule, bluetooth fixes
 (start timeout + board-address), vendor-daemon taming with early ADSP
 boot (without it the system I/O-deadlocks ~2 minutes after boot), the
-suspend hooks and the geoclue/GPS drop-in. Loop-mount the rootfs image from TWRP
+suspend hooks. Loop-mount the rootfs image from TWRP
 (`e2fsck -fy` first - the journal is usually dirty) and run the inject
 script.
 
