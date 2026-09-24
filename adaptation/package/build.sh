@@ -1221,8 +1221,43 @@ else
            /etc/systemd/system/multi-user.target.wants/sfduo-tame-vendor.service
     fi
 fi
+# What the phone has no use for (#163), turned off - left installed - and
+# once only: a service turned back on by hand stays on through upgrades.
+# Printing (cups, and gnome-settings-daemon's print notifications), IPsec
+# (strongswan; WireGuard and OpenVPN are separate), vnstat (traffic counts
+# nothing reads, its database written every 5 min), drawing tablets and
+# smart cards. The session lists the gsd plugins as required components; a
+# masked one's target is reached all the same (checked on the device).
+if [ ! -e /var/lib/sfduo/trimmed-163 ]; then
+    now=; [ -d /run/systemd/system ] && now=--now
+    for u in cups.service cups.socket cups.path strongswan-starter.service vnstat.service; do
+        systemctl disable $now "$u" >/dev/null 2>&1 || true
+    done
+    for u in Wacom Smartcard PrintNotifications; do
+        systemctl --global mask "org.gnome.SettingsDaemon.$u.service" >/dev/null 2>&1 || true
+    done
+    mkdir -p /var/lib/sfduo && touch /var/lib/sfduo/trimmed-163
+fi
+# The session's PulseAudio autostart, start-pulseaudio-x11, loads three X11
+# modules that hold a connection to Xwayland: the lazy Xwayland never left,
+# 73 MB with no X application open (#163). PulseAudio itself is started by
+# its systemd socket, not by this. The postrm gives the file back.
+dpkg-divert --package adaptation-droidian-surfaceduo --rename \
+    --divert /etc/xdg/autostart/pulseaudio.desktop.sfduo-off \
+    --add /etc/xdg/autostart/pulseaudio.desktop >/dev/null
 EOF
 chmod 755 "$PKG/DEBIAN/postinst"
+
+cat > "$PKG/DEBIAN/postrm" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+    dpkg-divert --package adaptation-droidian-surfaceduo --rename \
+        --divert /etc/xdg/autostart/pulseaudio.desktop.sfduo-off \
+        --remove /etc/xdg/autostart/pulseaudio.desktop >/dev/null || true
+fi
+EOF
+chmod 755 "$PKG/DEBIAN/postrm"
 
 mkdir -p "$OUT"
 dpkg-deb --build --root-owner-group "$PKG" \
