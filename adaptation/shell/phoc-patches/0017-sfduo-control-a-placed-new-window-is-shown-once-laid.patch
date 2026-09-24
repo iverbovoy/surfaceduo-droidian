@@ -1,0 +1,124 @@
+From f3b0bd309bb5964bc896653a3de5d0b7d442f26e Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Thu, 24 Sep 2026 15:40:11 +0300
+Subject: [PATCH] sfduo-control: a placed new window is shown once laid out,
+ without a fade
+
+A new window held out of sight (patch 0010) was let go once its client had
+drawn nothing for 200 ms at its panel's size, or when the hold's cap ran
+out at 700 ms, and faded in over 150 ms. Under the dock's launch curtain,
+which now waits for Shown (patch 0016), that was 500-900 ms of a window
+long ready (#191):
+
+- a client that animates as it opens - Calculator, Messages, Weather,
+  Camera - never fell quiet, and waited for the cap;
+- a quiet one waited 200 ms at the least;
+- the fade ran on output frames nothing asked for: the window stayed
+  invisible until something else redrew the output, 200 to 420 ms;
+- and it was a fade under a curtain, which nobody sees.
+
+A window the dock has put on a panel is now shown 100 ms after the first
+frame its client draws for the placing - once the client has acknowledged
+the configure that placed it (a window already at the panel's size, as
+Firefox maps, redraws itself tiled a quarter of a second later), and at
+the panel's size - however much it draws meanwhile, and without a fade.
+A fade still started elsewhere damages the view, so its frames come.
+
+Measured over 30 launches of 10 apps: the curtain lifts 213-490 ms after
+the window maps, down from 500-940, with nothing moving after it and no
+flicker or empty frame.
+---
+ src/sfduo-control.c | 38 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/src/sfduo-control.c b/src/sfduo-control.c
+index 5d5978a..d6d7770 100644
+--- a/src/sfduo-control.c
++++ b/src/sfduo-control.c
+@@ -69,6 +69,12 @@
+ #define SFDUO_WAKE_CAP_MS 700      /* ... and this is as long as it is ever waited for */
+ #define SFDUO_HOLD_CAP_MS 700      /* a new window is never held longer than this */
+ #define SFDUO_HOLD_FADE_MS 150     /* ... and fades in when it is let go */
++/* A new window put on a panel is shown this long after its first frame at
++ * the panel's size: the frames a client takes to lay its contents out for
++ * the size. Waiting for it to fall quiet instead waited 200 ms at the least
++ * and, for a client that animates as it opens, until the cap - up to 600 ms
++ * of a window long ready (#191). */
++#define SFDUO_HOLD_SETTLE_MS 100
+ 
+ static const char introspection_xml[] =
+   "<node>"
+@@ -107,6 +113,7 @@ typedef struct {
+   gboolean           at_first;       /* restored: shown at its first frame */
+   gboolean           wait_placed;    /* new: shown once placed and drawn there */
+   gboolean           placed;
++  uint32_t           placed_serial;  /* the configure that put it on its panel */
+   guint32            want_width;     /* ... at this size, which is the panel's */
+   guint32            want_height;
+   float              last_scale;     /* a window fitted into a panel settles over a frame or two */
+@@ -258,6 +265,10 @@ show_view (PhocView *view, gboolean fade, gboolean announce)
+     g_signal_connect_data (anim, "done", G_CALLBACK (on_fade_done), g_strdup (app_id),
+                            (GClosureNotify) g_free, 0);
+   phoc_timed_animation_play (anim);
++  /* The fade runs on the output's frames, and nothing asked for one: a
++   * window let go by a quiet client sat invisible until something else
++   * redrew the output - 200 to 420 ms (#191). */
++  phoc_view_damage_whole (view);
+ }
+ 
+ 
+@@ -364,6 +375,16 @@ on_wake_commit (struct wl_listener *listener, void *data)
+   if (wake->wait_placed) {
+     if (!wake->placed)
+       return;
++    /* Not before the client has answered the placing: a window already at
++     * the panel's size - Firefox maps at it - drew its frame for a window
++     * nobody had tiled, and redrew itself tiled, its frame 15 px in, a
++     * quarter of a second later (#191). */
++    if (wake->placed_serial && wake->view) {
++      struct wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface (wake->view->wlr_surface);
++
++      if (xdg && (int32_t) (xdg->current.configure_serial - wake->placed_serial) < 0)
++        return;
++    }
+     /* Drawn as large as the panel it was put on. The size alone is not it:
+      * a window is scaled down to fit its panel, and the panel is shorter
+      * while the shell's bar is still on it - the bar moves to the free one
+@@ -386,6 +407,14 @@ on_wake_commit (struct wl_listener *listener, void *data)
+     return;
+   }
+ 
++  /* A new window at its panel's size: shown SFDUO_HOLD_SETTLE_MS after the
++   * first such frame, however much it draws meanwhile. */
++  if (wake->from_hold && wake->placed) {
++    if (!wake->quiet_id)
++      wake->quiet_id = g_timeout_add (SFDUO_HOLD_SETTLE_MS, on_wake_quiet, wake);
++    return;
++  }
++
+   /* one woken for a page: still drawing, the page is on its way */
+   g_clear_handle_id (&wake->quiet_id, g_source_remove);
+   wake->quiet_id = g_timeout_add (SFDUO_WAKE_QUIET_MS, on_wake_quiet, wake);
+@@ -475,10 +504,19 @@ phoc_sfduo_control_view_placed (PhocView *view)
+     if (wake->view != view)
+       continue;
+     wake->placed = TRUE;
++    /* Put on a panel by the dock, which covers the panel with its curtain
++     * until Shown: a fade there is 150 ms nobody sees (#191). */
++    wake->fade = FALSE;
+     /* what the placing asked the client for; zero when it was already
+      * that size and there is nothing to wait for */
+     wake->want_width = view->pending_move_resize.width;
+     wake->want_height = view->pending_move_resize.height;
++    if (view->wlr_surface) {
++      struct wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface (view->wlr_surface);
++
++      if (xdg)
++        wake->placed_serial = xdg->scheduled_serial;
++    }
+     g_debug ("placed %s, waiting for %ux%u", phoc_view_get_app_id (view),
+              wake->want_width, wake->want_height);
+   }
+-- 
+2.43.0
+
