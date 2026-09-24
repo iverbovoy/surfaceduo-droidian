@@ -1,0 +1,39 @@
+From: The Surface Duo port <none@invalid>
+Subject: [PATCH 18/18] overview: no thumbnail for an activity nobody can see
+
+The overview asks the compositor for a thumbnail of a window whenever the
+window changes, so that its activity is ready when the overview is opened.
+On a display with a seam the overview is never shown - the home surface is
+hidden there (patch 0016) - and the thumbnails were taken all the same: 53
+in 20 launches from the dock, each a 675x898 window read back from the GPU,
+in the middle of the launch. Now and then one of them was a buffer the
+compositor would not take ("Unsupported format", wl_shm.invalid_format),
+and it disconnected the shell, which restarted the whole session.
+
+A thumbnail is asked for only when the activity can be seen. An activity
+shown again asks again: phosh_overview_refresh, or its window's next
+change. On a phone without a seam the home is always there and nothing
+changes.
+---
+--- a/src/overview.c
++++ b/src/overview.c
+@@ -251,6 +251,19 @@
+   int scale;
+   g_return_if_fail (PHOSH_IS_ACTIVITY (activity));
+   g_return_if_fail (PHOSH_IS_TOPLEVEL (toplevel));
++
++  /*
++   * A thumbnail nobody can see is a window read back from the GPU for
++   * nothing. The overview asks for one whenever a window changes, and on a
++   * display with a seam it is never shown (the home surface is hidden,
++   * patch 0016): 53 thumbnails in 20 launches, in the middle of each. One
++   * of them, now and then, was a buffer phoc would not take, and phoc
++   * disconnected the shell (#196). An activity that can be seen again
++   * asks again - phosh_overview_refresh, or the window's next change.
++   */
++  if (!gtk_widget_is_visible (GTK_WIDGET (activity)))
++    return;
++
+   scale = gtk_widget_get_scale_factor (GTK_WIDGET (activity));
+   phosh_activity_get_thumbnail_allocation (activity, &allocation);
+   thumbnail = phosh_toplevel_thumbnail_new_from_toplevel (toplevel, allocation.width * scale, allocation.height * scale);
