@@ -523,13 +523,20 @@ class GridPanel(Gtk.Window):
 class CurtainPanel(Gtk.Window):
     """The launch curtain of one panel: black, the app's icon in the middle.
 
-    A window of its own, one panel wide and the stage tall, shown for the
-    second a new window spends in the wrong place and hidden again. Only the
-    panel the app was launched onto is covered; the other stays what it was
-    and stays touchable. (A new window maps across both panels before it is
-    tiled, so its other half shows through for that second - the price of a
-    responsive panel until phoc places new windows on a panel, #32.)
+    A window of its own, one panel wide and the screen tall, up for the
+    moment a new window spends being placed. Only the panel the app was
+    launched onto is covered; the other stays what it was and stays
+    touchable.
+
+    It stays mapped, parked below the screen, and is raised and lowered by
+    its margin - moved, not drawn. Shown from unmapped, as it used to be,
+    it was realized and drawn whole for every launch, 1350x1800 in
+    software: 80-100 ms between the tap and its first frame (#180). The
+    icon is drawn when the curtain is already up, a frame later, and
+    cleared when it is down again, out of sight.
     """
+
+    PARKED = -(SCREEN_HEIGHT + 16)          # its bottom margin when down
 
     def __init__(self, side):
         super().__init__()
@@ -548,6 +555,7 @@ class CurtainPanel(Gtk.Window):
                                  else GtkLayerShell.Edge.RIGHT, True)
         GtkLayerShell.set_exclusive_zone(self, -1)
         GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, self.PARKED)
         box = Gtk.Box()
         box.get_style_context().add_class("curtain")
         self.box = box
@@ -571,10 +579,24 @@ class CurtainPanel(Gtk.Window):
             self.icon.set_from_gicon(gicon, Gtk.IconSize.DIALOG)
         else:
             self.icon.clear()
-        self.show_all()
+        if self.get_mapped():
+            raw_margin_bottom(self, 0)
+        else:                               # not parked yet: the old way
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, 0)
+            self.show_all()
+
+    def park(self):
+        """Mapped below the screen, ready to be raised."""
+        if not self.get_mapped():
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, self.PARKED)
+            self.show_all()
 
     def lower(self):
-        self.hide()
+        if self.get_mapped():
+            raw_margin_bottom(self, self.PARKED)
+            self.icon.clear()               # drawn where nobody sees it
+        else:
+            self.hide()
 
 
 class BackStrip(Gtk.Window):
@@ -3209,6 +3231,7 @@ class Dock(Gtk.Window):
         # window lay under the curtain through the launch (#181)
         for curtain in self.curtains.values():
             curtain.set_size_request(half, SCREEN_HEIGHT)
+            curtain.park()
         if self.move is None:
             self._place_panes()
 
@@ -3267,6 +3290,20 @@ class Dock(Gtk.Window):
                 return
             self._present(app_id)
             return
+        # The curtain first: it is the tap's answer. Asking which windows
+        # there are (a wlrctl run) and starting the app came before it, 70-90
+        # ms of the main loop the curtain's first frame waited for (#180);
+        # they go to the thread that places the window.
+        if self.shell_places is not False:
+            self._raise_curtain(info, side)
+        self.placing += 1
+        self.launching = getattr(self, "launching", {})
+        self.launching[app_id] = side
+        self._apply_mode()
+        threading.Thread(target=self._launch_and_place,
+                         args=(info, app_id, side), daemon=True).start()
+
+    def _launch_and_place(self, info, app_id, side):
         before = toplevel_ids()
         try:
             # An app that is already running is raised rather than started
@@ -3274,15 +3311,11 @@ class Dock(Gtk.Window):
             info.launch([], None)
         except GLib.Error as err:
             print(f"sfduo-dock: {info.get_id()}: {err.message}", file=sys.stderr)
+            self.placing -= 1
+            self.launching.pop(app_id, None)
+            GLib.idle_add(self._lift_curtain)
             return
-        if self.shell_places is not False:
-            self._raise_curtain(info, side)
-        self.placing += 1
-        self.launching = getattr(self, "launching", {})
-        self.launching[app_id] = side
-        self._apply_mode()
-        threading.Thread(target=self._place_and_reveal,
-                         args=(info, app_id, side, before), daemon=True).start()
+        self._place_and_reveal(info, app_id, side, before)
 
     # ---- the launch curtain ------------------------------------------------
     #

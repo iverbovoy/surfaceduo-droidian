@@ -141,6 +141,10 @@ NAMED = {
     "vsize": ("/usr/bin/phoc", "vsize=view_update_size view:x64 width:s32 height:s32"),
     # phoc letting a held new window go (phoc-patches/0010): its client fell
     # quiet at its panel's size, or the hold's cap ran out
+    # a layer surface's commit with its bottom margin: the dock's curtain
+    # stays mapped and is raised and lowered by its margin (#180)
+    "lcommit": ("/usr/bin/phoc", "lcommit=../src/layer-surface.c:226 "
+                "ns=wlr_layer_surface->namespace:string mb=wlr_layer_surface->current.margin.bottom:s32"),
     "hquiet": ("/usr/bin/phoc", "hquiet=on_wake_quiet"),
     "hcap": ("/usr/bin/phoc", "hcap=on_wake_cap"),
 }
@@ -257,12 +261,14 @@ rm -f /tmp/sfduo-bench.data
             for rep in range(self.reps):
                 # from nothing: the window closed, and the process gone
                 # unless it is one that always runs
-                kill = "" if resident else f"pkill -x {process}; "
+                # the kernel keeps 15 characters of a process's name, and pkill -x
+                # compares with those: gnome-calculator was never killed
+                kill = "" if resident else f"pkill -x {process[:15]}; "
                 self.sh(f"{session} wlrctl toplevel close app_id:{app} 2>/dev/null; sleep 1; "
                         f"{kill}sleep 2", check=False)
-                before = (f"T=$(python3 -c 'import time;print(time.monotonic())'); echo mark request $T; "
+                before = (f"D=$(pgrep -x sfduo-dock); T=$(python3 -c 'import time;print(time.monotonic())'); echo mark request $T; "
                           f"echo '{desktop}.desktop left' > /run/user/32011/sfduo-launch; "
-                          "pkill -USR2 -x sfduo-dock")
+                          "kill -USR2 $D")
                 found, lines = self.capture(["map", "frame"], seconds=8, before=before)
                 request = next(float(l[2]) * 1000 for l in lines if l[:2] == ["mark", "request"])
                 maps = [t for t in found["map"] if t > request]
@@ -288,18 +294,20 @@ rm -f /tmp/sfduo-bench.data
         for kind, (desktop, app, process, resident) in self.selected(LINUX_APPS).items():
             for rep in range(self.reps):
                 self.check_unlocked()
-                kill = "" if resident else f"pkill -x {process}; "
+                # the kernel keeps 15 characters of a process's name, and pkill -x
+                # compares with those: gnome-calculator was never killed
+                kill = "" if resident else f"pkill -x {process[:15]}; "
                 self.sh(f"{session} wlrctl toplevel close app_id:{app} 2>/dev/null; sleep 1; "
                         f"{kill}sleep 2", check=False)
                 # bounded: a recorder given no frames (a locked screen) never ends
                 before = ("rm -f /tmp/sfduo-look.mp4; "
                           f"timeout -s INT 8 {session} wf-recorder -r 60 -F scale=iw/{VIDEO_SCALE}:ih/{VIDEO_SCALE} "
                           "-f /tmp/sfduo-look.mp4 >/dev/null 2>&1 & W=$!; sleep 1; "
-                          "T=$(python3 -c 'import time;print(time.monotonic())'); echo mark request $T; "
+                          "D=$(pgrep -x sfduo-dock); T=$(python3 -c 'import time;print(time.monotonic())'); echo mark request $T; "
                           f"echo '{desktop}.desktop left' > /run/user/32011/sfduo-launch; "
-                          "pkill -USR2 -x sfduo-dock; sleep 5; kill -INT $W; wait $W")
-                found, lines = self.capture(["frame", "lmap", "lunmap", "vmap", "vunmap", "vpos", "vsize",
-                                             "hquiet", "hcap"],
+                          "kill -USR2 $D; sleep 5; kill -INT $W; wait $W")
+                found, lines = self.capture(["frame", "lmap", "lunmap", "lcommit", "vmap", "vunmap",
+                                             "vpos", "vsize", "hquiet", "hcap"],
                                             seconds=8, before=before)
                 request = next(float(l[2]) * 1000 for l in lines if l[:2] == ["mark", "request"])
                 clip = os.path.join(clips, f"{datetime.datetime.now():%Y-%m-%d-%H%M%S}-{kind}-{rep}.mp4")
@@ -311,9 +319,17 @@ rm -f /tmp/sfduo-bench.data
 
     def _judge(self, request, clip):
         ev = [(t - request, k, a) for t, k, a in self.events if t >= request - 50]
-        curtain = [(t, k) for t, k, a in ev if k in ("lmap", "lunmap") and a.get("ns") == "sfduo-curtain"]
-        up = next((t for t, k in curtain if k == "lmap"), None)
-        down = next((t for t, k in curtain if k == "lunmap"), None)
+        # up: mapped, or moved on screen; down: unmapped, or parked below it
+        curtain = []
+        for t, k, a in ev:
+            if a.get("ns") != "sfduo-curtain":
+                continue
+            if k == "lmap" or (k == "lcommit" and int(a.get("mb", -1)) > -8):
+                curtain.append((t, "up"))
+            elif k == "lunmap" or (k == "lcommit" and int(a.get("mb", 0)) < -100):
+                curtain.append((t, "down"))
+        up = next((t for t, k in curtain if k == "up" and t >= 0), None)
+        down = next((t for t, k in curtain if k == "down" and up is not None and t > up), None)
         mapped = next(((t, a["self_x64"]) for t, k, a in ev if k == "vmap"), None)
         out = {"clip": os.path.basename(clip)}
         if up is not None:
