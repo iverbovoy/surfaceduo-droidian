@@ -18,6 +18,9 @@
 # a second, as this did, meant the screen was at full for up to a second every
 # time the device was opened - long enough to be the first thing seen. The
 # beat stays as a net underneath, slow, for whatever the notification misses.
+# It stops while the display is off (#171): each beat is a round trip to the
+# settings daemon, three processes woken every 2 s all night, and nothing
+# can need restoring until the display lights - when it checks at once.
 #
 # The restoring is done twice over. The panels themselves first, written
 # straight away - the session user is in `video` and a udev rule gives that
@@ -82,7 +85,11 @@ class Keeper:
             "/org/gnome/SettingsDaemon/Power",
             "org.freedesktop.DBus.Properties", None)
 
-        GLib.timeout_add(POLL_MS, self.check)
+        self.beat = GLib.timeout_add(POLL_MS, self.check)
+        # phosh says when the display goes dark and comes back: 0 is on
+        bus.signal_subscribe("org.gnome.Mutter.DisplayConfig", "org.freedesktop.DBus.Properties",
+                             "PropertiesChanged", "/org/gnome/Mutter/DisplayConfig", None,
+                             Gio.DBusSignalFlags.NONE, self.on_display_changed)
         self.watch_panels()
         self.default_tries = 30
         if not os.path.exists(DEFAULT_DONE):
@@ -104,6 +111,18 @@ class Keeper:
         with open(DEFAULT_DONE, "w") as fp:
             fp.write(f"{DEFAULT_PERCENT}\n")
         return False
+
+    def on_display_changed(self, conn, sender, path, iface, signal, params):
+        mode = params[1].get("PowerSaveMode")
+        if mode is None:
+            return
+        if mode != 0:
+            if self.beat is not None:
+                GLib.source_remove(self.beat)
+                self.beat = None
+        elif self.beat is None:
+            self.check()
+            self.beat = GLib.timeout_add(POLL_MS, self.check)
 
     def watch_panels(self):
         """Wake on the driver's own word that a panel's level changed."""
