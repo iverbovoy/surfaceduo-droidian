@@ -1,0 +1,120 @@
+From f8af4ce06860088227d023eafa835ed731fa1198 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Thu, 24 Sep 2026 13:48:41 +0300
+Subject: [PATCH] sfduo-control: Shown says a new window is on its panel, drawn
+ in full
+
+A new window is held out of sight until it has been placed and its client
+has stopped drawing (patch 0010), and is then faded in. The port's dock
+covers the panel with a curtain through a launch and lifted it on a timer
+of its own, 250 ms after placing the window. A client still drawing then -
+one animating something as it opens - was still held, at zero alpha, and
+the panel showed whatever lay under it, another app or the desktop, for up
+to half a second; a window let go after the timer grew or moved in sight.
+
+org.sfduo.Phoc now emits Shown(app_id) for a held new window once it is
+shown in full: at the end of its fade, or when it is let go if there is
+no fade. The dock lifts the curtain on it.
+---
+ src/sfduo-control.c | 42 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 40 insertions(+), 2 deletions(-)
+
+diff --git a/src/sfduo-control.c b/src/sfduo-control.c
+index 21a34c1..5d5978a 100644
+--- a/src/sfduo-control.c
++++ b/src/sfduo-control.c
+@@ -86,6 +86,9 @@ static const char introspection_xml[] =
+   "      <arg name='app_id' type='s' direction='in'/>"
+   "      <arg name='restored' type='u' direction='out'/>"
+   "    </method>"
++  "    <signal name='Shown'>"
++  "      <arg name='app_id' type='s'/>"
++  "    </signal>"
+   "  </interface>"
+   "</node>";
+ 
+@@ -112,6 +115,7 @@ typedef struct {
+ } PhocWake;
+ 
+ static GSList *waking;
++static GDBusConnection *bus;       /* for Shown */
+ 
+ 
+ /* Whether this window is being held out of sight until it is placed. */
+@@ -198,15 +202,44 @@ views_of (const char *app_id)
+ 
+ 
+ 
++/*
++ * Shown: a new window held out of sight is on the panel now, drawn in full.
++ * The dock's launch curtain waits for this. It used to lift on a timer of
++ * its own, 250 ms after placing the window - while the window was still
++ * held here, at zero alpha, for a client that was still drawing: the curtain
++ * went and the panel showed whatever lay under the window, another app or
++ * the desktop, until the hold ran out; and a window let go after the timer
++ * moved or grew in sight.
++ */
++static void
++announce_shown (const char *app_id)
++{
++  if (bus == NULL || app_id == NULL)
++    return;
++  g_dbus_connection_emit_signal (bus, NULL, SFDUO_OBJECT_PATH, SFDUO_BUS_NAME, "Shown",
++                                 g_variant_new ("(s)", app_id), NULL);
++}
++
++
++static void
++on_fade_done (PhocTimedAnimation *anim, gpointer data)
++{
++  announce_shown (data);
++}
++
++
+ static void
+-show_view (PhocView *view, gboolean fade)
++show_view (PhocView *view, gboolean fade, gboolean announce)
+ {
+   g_autoptr (PhocTimedAnimation) anim = NULL;
+   g_autoptr (PhocPropertyEaser) easer = NULL;
++  const char *app_id = phoc_view_get_app_id (view);
+ 
+   if (!fade) {
+     g_object_set (view, "alpha", 1.0f, NULL);
+     phoc_view_damage_whole (view);
++    if (announce)
++      announce_shown (app_id);
+     return;
+   }
+ 
+@@ -221,6 +254,9 @@ show_view (PhocView *view, gboolean fade)
+                        "property-easer", easer,
+                        "dispose-on-done", TRUE,
+                        NULL);
++  if (announce && app_id)
++    g_signal_connect_data (anim, "done", G_CALLBACK (on_fade_done), g_strdup (app_id),
++                           (GClosureNotify) g_free, 0);
+   phoc_timed_animation_play (anim);
+ }
+ 
+@@ -239,7 +275,7 @@ wake_finish (PhocWake *wake)
+            wake->view ? "" : " (the window went)");
+ 
+   if (wake->view) {
+-    show_view (wake->view, wake->fade);
++    show_view (wake->view, wake->fade, wake->from_hold);
+     if (wake->focus_at_end) {
+       PhocSeat *seat = phoc_server_get_last_active_seat (phoc_server_get_default ());
+ 
+@@ -540,6 +576,8 @@ on_bus_acquired (GDBusConnection *connection, const char *name, gpointer data)
+   if (g_dbus_connection_register_object (connection, SFDUO_OBJECT_PATH, node->interfaces[0],
+                                          &vtable, NULL, NULL, &err) == 0)
+     g_warning ("Cannot publish %s: %s", SFDUO_OBJECT_PATH, err->message);
++  else
++    g_set_object (&bus, connection);
+ }
+ 
+ 
+-- 
+2.43.0
+
