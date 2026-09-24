@@ -139,6 +139,10 @@ NAMED = {
     "vunmap": ("/usr/bin/phoc", "vunmap=phoc_view_unmap view:x64"),
     "vpos": ("/usr/bin/phoc", "vpos=view_update_position view:x64 x:s32 y:s32"),
     "vsize": ("/usr/bin/phoc", "vsize=view_update_size view:x64 width:s32 height:s32"),
+    # phoc letting a held new window go (phoc-patches/0010): its client fell
+    # quiet at its panel's size, or the hold's cap ran out
+    "hquiet": ("/usr/bin/phoc", "hquiet=on_wake_quiet"),
+    "hcap": ("/usr/bin/phoc", "hcap=on_wake_cap"),
 }
 # The app grid on the left panel, in the touch tool's logical pixels: a
 # flick up from the bottom band opens it, a flick down on it closes it. The
@@ -294,7 +298,8 @@ rm -f /tmp/sfduo-bench.data
                           "T=$(python3 -c 'import time;print(time.monotonic())'); echo mark request $T; "
                           f"echo '{desktop}.desktop left' > /run/user/32011/sfduo-launch; "
                           "pkill -USR2 -x sfduo-dock; sleep 5; kill -INT $W; wait $W")
-                found, lines = self.capture(["frame", "lmap", "lunmap", "vmap", "vunmap", "vpos", "vsize"],
+                found, lines = self.capture(["frame", "lmap", "lunmap", "vmap", "vunmap", "vpos", "vsize",
+                                             "hquiet", "hcap"],
                                             seconds=8, before=before)
                 request = next(float(l[2]) * 1000 for l in lines if l[:2] == ["mark", "request"])
                 clip = os.path.join(clips, f"{datetime.datetime.now():%Y-%m-%d-%H%M%S}-{kind}-{rep}.mp4")
@@ -333,6 +338,14 @@ rm -f /tmp/sfduo-bench.data
                 if not boxes or boxes[-1][1] != box:
                     boxes.append((round(t, 1), dict(box)))
             out["boxes"] = boxes
+            # the phases of the launch after the map (#191)
+            full = next((t for t, b in boxes if b.get("w") == 675 and b.get("h") in (898, 900)), None)
+            if full is not None:
+                out["full_size_ms"] = full
+            release = next(((t, k) for t, k, a in ev if k in ("hquiet", "hcap") and t >= t_map), None)
+            if release:
+                out["release_ms"] = round(release[0], 1)
+                out["release_by"] = "quiet" if release[1] == "hquiet" else "cap"
         broken = []
         if up is None or up > 100:
             broken.append("1 answer")
@@ -358,7 +371,12 @@ rm -f /tmp/sfduo-bench.data
                 broken.append("5 moved")
             placed = out["boxes"][-1][0]
             out["curtain_after_placed_ms"] = round(down - placed, 1) if down is not None else None
-            if down is not None and down - placed > 2 * FRAME_MS:
+            # Late against the moment the window was shown: phoc lets a new
+            # window go once its client has laid itself out for its panel
+            # (phoc-patches/0017), and the curtain is to follow within two
+            # frames. Without the probe, against the last move.
+            shown_at = out.get("release_ms", placed)
+            if down is not None and down - shown_at > 2 * FRAME_MS:
                 broken.append("6 curtain late")
         out["broken"] = broken
         return out
