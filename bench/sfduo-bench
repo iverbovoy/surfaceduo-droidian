@@ -437,6 +437,17 @@ rm -f /tmp/sfduo-bench.data
                 cmds.append(f"pkill -x {process[:15]}")
         self.sh("; ".join(cmds) + "; sleep 2.5", check=False)
 
+    def _timed(self, action, seconds=4):
+        """The action's frame times alone, with nothing recording the
+        screen: wf-recorder copies every frame back from the GPU, and a move
+        of Settings timed under it dropped 15-17 frames where it drops 1-2
+        (#200). The recording judges what is seen; this, the frames."""
+        before = ("D=$(pgrep -x sfduo-dock); T=$(python3 -c 'import time;print(time.monotonic())'); "
+                  f"echo mark request $T; {action}; sleep {seconds - 1}")
+        found, lines = self.capture(["frame"], seconds=seconds + 1, before=before)
+        request = next(float(l[2]) * 1000 for l in lines if l[:2] == ["mark", "request"])
+        return [t - request for t in found["frame"] if t >= request]
+
     def _episode(self, name, action, seconds=6):
         """Record one action: probes on phoc and a 60 fps recording of the
         screen, the action's start marked `request`. Returns what was seen:
@@ -522,9 +533,12 @@ rm -f /tmp/sfduo-bench.data
                 self.check_unlocked()
                 self._reset([kind])
                 self._launch_now(desktop, "left")
+                go = f"echo '{desktop}.desktop {{side}}' > /run/user/32011/sfduo-launch; kill -USR2 $D"
+                frames = self._timed(go.format(side="right"))
+                self._launch_now(desktop, "left", wait=2)       # back, for the recorded pass
                 windows = self._windows()
-                seen = self._episode(f"move-{kind}-{rep}",
-                                     f"echo '{desktop}.desktop right' > /run/user/32011/sfduo-launch; kill -USR2 $D")
+                seen = self._episode(f"move-{kind}-{rep}", go.format(side="right"))
+                seen["frames"] = frames
                 after = self._windows()
                 out, broken = {"clip": os.path.basename(seen["clip"])}, []
                 self._motion(seen, out, broken)
@@ -557,11 +571,20 @@ rm -f /tmp/sfduo-bench.data
                 self.check_unlocked()
                 self._reset([kind])
                 self._launch_now(desktop, "left")
+                frames = self._timed(f"{self._session()} wlrctl toplevel close app_id:{app}")
+                self._reset([kind])
+                self._launch_now(desktop, "left")
                 seen = self._episode(f"close-{kind}-{rep}",
                                      f"{self._session()} wlrctl toplevel close app_id:{app}")
+                seen["frames"] = frames
                 out, broken = {"clip": os.path.basename(seen["clip"])}, []
                 self._motion(seen, out, broken)
                 self._panels(seen, out, broken, "left")
+                # the panel the app leaves is empty once it has gone - black,
+                # with nothing on it until the dock comes back - which is not a
+                # fault; only a flicker on it is
+                if "flicker or empty frame" in broken and not out["flicker"]["left"]:
+                    broken.remove("flicker or empty frame")
                 if any(app in w for w in self._windows()):
                     broken.append("still open")
                 out["broken"] = broken

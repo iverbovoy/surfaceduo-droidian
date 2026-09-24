@@ -1209,6 +1209,7 @@ class SwipeCatcher(Gtk.Window):
         GtkLayerShell.set_namespace(self, "sfduo-catcher")
         GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)
         edge_side = GtkLayerShell.Edge.LEFT if side == "left" else GtkLayerShell.Edge.RIGHT
+        self.edge = edge_side
         for edge in (edge_side, GtkLayerShell.Edge.TOP, GtkLayerShell.Edge.BOTTOM):
             GtkLayerShell.set_anchor(self, edge, True)
         GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, SHADE_TOP)
@@ -1235,10 +1236,19 @@ class SwipeCatcher(Gtk.Window):
         # gesture kept the touch as its own, and the next one - GTK names a
         # touch by its slot, the same for every first finger - went nowhere.
         self.drag.reset()
-        if on:
+        # Mapped once and moved beyond its outer edge when off, as the curtain
+        # is parked below the screen: hidden and shown again, it was drawn and
+        # uploaded whole, 1350x1584, in the first frame of every move of an
+        # app off its panel - a 40 ms frame of the slide (#200). Transparent
+        # and left in place it would be blended over the window every frame.
+        margin = 0 if on else -SCREEN_WIDTH
+        if not self.get_mapped():
+            GtkLayerShell.set_margin(self, self.edge, margin)
             self.show_all()
+        elif self.side == "left":
+            raw_margins(self, top=SHADE_TOP, bottom=DOCK_HEIGHT, left=margin)
         else:
-            self.hide()
+            raw_margins(self, top=SHADE_TOP, bottom=DOCK_HEIGHT, right=margin)
 
 
 class Dock(Gtk.Window):
