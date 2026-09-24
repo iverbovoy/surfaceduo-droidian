@@ -172,11 +172,18 @@ class Linux(Target):
             die("the CPU governor is powersave")
         # Locked, every swipe lands on the lock screen, which redraws all of
         # itself each frame: the first day's numbers were that (#177).
+        self.check_unlocked()
+        self.battery = int(state[1])
+
+    def check_unlocked(self):
+        """Locked, every swipe lands on the lock screen, which redraws all of
+        itself each frame (the first day's numbers were that, #177), and a
+        screen recording waits for frames that never come. Asked before every
+        launch too: the shell restarting mid-series comes back locked."""
         locked = self.sh("for s in $(loginctl list-sessions --no-legend | awk '$4==\"seat0\"{print $1}'); "
                          "do loginctl show-session $s -p LockedHint --value; done")
         if "yes" in locked.split():
             die("the phone is locked - unlock it first")
-        self.battery = int(state[1])
 
     def capture(self, probes, seconds, script="", before=""):
         """Record the probes on phoc for `seconds` while a touch script
@@ -276,11 +283,13 @@ rm -f /tmp/sfduo-bench.data
         os.makedirs(clips, exist_ok=True)
         for kind, (desktop, app, process, resident) in self.selected(LINUX_APPS).items():
             for rep in range(self.reps):
+                self.check_unlocked()
                 kill = "" if resident else f"pkill -x {process}; "
                 self.sh(f"{session} wlrctl toplevel close app_id:{app} 2>/dev/null; sleep 1; "
                         f"{kill}sleep 2", check=False)
+                # bounded: a recorder given no frames (a locked screen) never ends
                 before = ("rm -f /tmp/sfduo-look.mp4; "
-                          f"{session} wf-recorder -r 60 -F scale=iw/{VIDEO_SCALE}:ih/{VIDEO_SCALE} "
+                          f"timeout -s INT 8 {session} wf-recorder -r 60 -F scale=iw/{VIDEO_SCALE}:ih/{VIDEO_SCALE} "
                           "-f /tmp/sfduo-look.mp4 >/dev/null 2>&1 & W=$!; sleep 1; "
                           "T=$(python3 -c 'import time;print(time.monotonic())'); echo mark request $T; "
                           f"echo '{desktop}.desktop left' > /run/user/32011/sfduo-launch; "
@@ -288,7 +297,7 @@ rm -f /tmp/sfduo-bench.data
                 found, lines = self.capture(["frame", "lmap", "lunmap", "vmap", "vunmap", "vpos", "vsize"],
                                             seconds=8, before=before)
                 request = next(float(l[2]) * 1000 for l in lines if l[:2] == ["mark", "request"])
-                clip = os.path.join(clips, f"{datetime.date.today().isoformat()}-{kind}-{rep}.mp4")
+                clip = os.path.join(clips, f"{datetime.datetime.now():%Y-%m-%d-%H%M%S}-{kind}-{rep}.mp4")
                 subprocess.run(["scp", "-q", f"{self.host}:/tmp/sfduo-look.mp4", clip], check=False)
                 rows.append(self.record("look", app=kind, id=app, rep=rep, resident=resident,
                                         **self._judge(request, clip)))

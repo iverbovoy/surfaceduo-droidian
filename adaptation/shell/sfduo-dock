@@ -170,6 +170,11 @@ WAIT_TIMEOUT = 20         # seconds to wait for a window before giving up
 FOCUS_TIMEOUT = 4         # seconds a mapped window gets to take the focus
 CURTAIN_ICON = 96         # the app's icon on the launch curtain
 CURTAIN_SETTLE = 250      # ms between the tiling chord and lifting the curtain
+# With the port's phoc the curtain lifts when phoc says the new window is
+# shown (org.sfduo.Phoc Shown, phoc-patches/0016) - and at the latest this
+# long after it was placed: phoc's hold of a new window (700 ms) and its
+# fade-in (150 ms), with room to spare.
+CURTAIN_SHOWN_CAP = 1200
 
 # The shell's binary and the patched one the package carries: same file, and
 # windows can be placed; see Dock._shell_places.
@@ -1293,6 +1298,8 @@ class Dock(Gtk.Window):
         self.add(strip)
         self.curtain_up = False
         self.curtain_timer = None
+        self.awaiting_shown = None    # the window whose Shown lifts the curtain
+        self.shown = {}               # window -> when phoc last said it was shown
 
         self.progress = 0.0       # 0 closed .. 1 open
         self.animation = None     # tick id of the grid's motion
@@ -1317,6 +1324,10 @@ class Dock(Gtk.Window):
         self.watch_wake = threading.Event()
         self._follow_windows()
         threading.Thread(target=self._watch_windows, daemon=True).start()
+        self.session_bus.signal_subscribe(
+            "org.sfduo.Phoc", "org.sfduo.Phoc", "Shown", "/org/sfduo/Phoc", None,
+            Gio.DBusSignalFlags.NONE,
+            lambda _c, _s, _p, _i, _sig, params: self._on_shown(params.unpack()[0]))
 
         # The finger drives the grid. In the capture phase, so that the
         # sequence can be claimed once it is a swipe and taken away from the
@@ -1681,7 +1692,9 @@ class Dock(Gtk.Window):
             return
         strangers = [a for a in ids if a not in self.placed and a not in self.adopted]
         if not strangers:
-            if self.curtain_up and not self.placing:    # held for nothing
+            # held for nothing - unless it waits for phoc to show the window
+            # it was raised for, which is what it is there for (#182)
+            if self.curtain_up and not self.placing and not self.awaiting_shown:
                 GLib.idle_add(self._lift_curtain)
             return
         # It is already on the screen, across both panels; the move to one of
@@ -3296,7 +3309,36 @@ class Dock(Gtk.Window):
         if not hold:
             self.curtain_timer = GLib.timeout_add_seconds(WAIT_TIMEOUT + 2, self._lift_curtain)
 
+    def _on_shown(self, app_id):
+        """phoc has a new window on its panel, drawn in full."""
+        self.shown[app_id] = time.monotonic()
+        if self.curtain_up and self.awaiting_shown == app_id:
+            debug(f"{app_id} shown: the curtain lifts")
+            self._lift_curtain()
+
+    def _await_shown(self, app_id, since):
+        """Lift the curtain when phoc shows the launched window - at once if
+        it already has - and at the latest after CURTAIN_SHOWN_CAP.
+
+        The curtain used to lift CURTAIN_SETTLE after the window was placed,
+        on a timer. phoc holds a new window out of sight until its client has
+        stopped drawing (phoc-patches/0010), and a client still drawing was
+        held past the timer: the curtain went and the panel showed whatever
+        lay under the window - another app, or the desktop - for up to half
+        a second (#182); a window let go after the timer grew or moved in
+        sight, and one ready long before it waited under the curtain for
+        nothing (#183)."""
+        if self.shown.get(app_id, 0) >= since:
+            self._lift_curtain()
+            return False
+        self.awaiting_shown = app_id
+        if self.curtain_timer is not None:
+            GLib.source_remove(self.curtain_timer)
+        self.curtain_timer = GLib.timeout_add(CURTAIN_SHOWN_CAP, self._lift_curtain)
+        return False
+
     def _lift_curtain(self):
+        self.awaiting_shown = None
         if self.curtain_timer is not None:
             GLib.source_remove(self.curtain_timer)
             self.curtain_timer = None
@@ -3308,15 +3350,26 @@ class Dock(Gtk.Window):
         return False
 
     def _place_and_reveal(self, info, app_id, side, before):
+        since = time.monotonic()
+        self.placed_as = app_id
         try:
             placed = self._place(info, app_id, side, before)
         except Exception as err:          # noqa: BLE001 - the curtain must lift
             print(f"sfduo-dock: placing {info.get_id()}: {err}", file=sys.stderr)
             placed = False
+        waits = placed and self.compositor_holds
+        if waits:
+            # set before the launch is over, or the window beat takes the
+            # curtain for one held for nothing and lifts it (_adopt_strangers)
+            self.awaiting_shown = self.placed_as
         self.placing -= 1
         self.launching.pop(app_id, None)
-        # A tiled window needs a moment to lay itself out at its new size.
-        GLib.timeout_add(CURTAIN_SETTLE if placed else 0, self._lift_curtain)
+        if waits:
+            # the window as it is really called, which _place learned
+            GLib.idle_add(self._await_shown, self.placed_as, since)
+        else:
+            # A tiled window needs a moment to lay itself out at its new size.
+            GLib.timeout_add(CURTAIN_SETTLE if placed else 0, self._lift_curtain)
 
     def _place(self, info, app_id, side, before):
         """Wait for the window, then hand it to the panel it was asked for.
@@ -3344,6 +3397,7 @@ class Dock(Gtk.Window):
         if found != app_id:
             learn_app_id(info, found)
         app_id = found
+        self.placed_as = found
         # The port's phoc places it outright, a frame after the window
         # appears - and it holds the window out of sight until then, so the
         # placing is never seen. Waiting for the window to take the focus
