@@ -1,0 +1,64 @@
+From 354e0c05654fffde00925e99ccd3f11738bdea16 Mon Sep 17 00:00:00 2001
+From: Ivan Verbovoy <ivanverbovoy@gmail.com>
+Date: Thu, 24 Sep 2026 17:53:19 +0300
+Subject: [PATCH 19/19] xdg-toplevel: a tiled window is put at its tile when
+ its geometry moves
+
+A client that changes its geometry's offset - a window whose shadow
+shrinks as it is tiled - was moved by the change, as a floating window is.
+When the same commit also answered the configure that tiled it, the tile's
+position had been worked out for the new offset already, and the change
+was added on top: Contacts, whose shadow goes from 61 to 20 px, stood
+40 px into the hinge, with the window beneath showing above and beside it.
+
+A tiled window is now put at its tile outright - the tile's corner less
+the geometry's offset, or centred in it while it is still scaled down to
+fit - whatever the order its commits came in.
+---
+ src/xdg-toplevel.c | 30 ++++++++++++++++++++++++++----
+ 1 file changed, 26 insertions(+), 4 deletions(-)
+
+diff --git a/src/xdg-toplevel.c b/src/xdg-toplevel.c
+index 3416193..c6ee0d8 100644
+--- a/src/xdg-toplevel.c
++++ b/src/xdg-toplevel.c
+@@ -448,10 +448,32 @@ handle_surface_commit (struct wl_listener *listener, void *data)
+   phoc_xdg_toplevel_get_geometry (self, &geometry);
+   if (self->saved_geometry.x != geometry.x || self->saved_geometry.y != geometry.y) {
+     float scale = phoc_view_get_scale (view);
+-
+-    view_update_position (view,
+-                          view->box.x + (self->saved_geometry.x - geometry.x) * scale,
+-                          view->box.y + (self->saved_geometry.y - geometry.y) * scale);
++    struct wlr_box tile;
++
++    /* A tiled window's place is its tile, less its own geometry's offset -
++     * put there outright. Moved by the change of the offset, as a floating
++     * window is, it was moved twice whenever the same commit also answered
++     * the configure that tiled it: the tile's position was worked out for
++     * the new offset already, and the change was added on top - Contacts,
++     * whose shadow shrinks from 61 to 20 px as it is tiled, stood 40 px
++     * into the hinge (#184). */
++    if (phoc_view_is_tiled (view) &&
++        phoc_view_get_tiled_box (view, phoc_view_get_tile_direction (view), NULL, &tile)) {
++      if (scale >= 1.0f) {
++        view_update_position (view, tile.x - geometry.x, tile.y - geometry.y);
++      } else {
++        /* fitted into the tile, scaled down and centred in it, as
++         * view_place_fitted puts it - it is still scaled when the commit
++         * that brings its new size is not yet the one it is drawn at */
++        view_update_position (view,
++                              tile.x + (tile.width - geometry.width) / 2.0 - geometry.x,
++                              tile.y + (tile.height - geometry.height) / 2.0 - geometry.y);
++      }
++    } else {
++      view_update_position (view,
++                            view->box.x + (self->saved_geometry.x - geometry.x) * scale,
++                            view->box.y + (self->saved_geometry.y - geometry.y) * scale);
++    }
+   }
+   self->saved_geometry = geometry;
+ }
+-- 
+2.43.0
+
