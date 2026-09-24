@@ -1,0 +1,412 @@
+#!/usr/bin/python3
+"""sfduo-bench: the same measurements on the port and on stock Android.
+
+    sfduo-bench linux   [--host root@172.16.42.1] SCENARIO... [--reps N]
+    sfduo-bench android [--serial SERIAL]         SCENARIO... [--reps N]
+    sfduo-bench report  RESULTS.jsonl...
+
+Runs on the computer and drives the phone: over ssh when it runs the port,
+over adb when it runs Android. Every run appends its raw measurements, one
+JSON object a line, to bench/results/<date>-<target>.jsonl, and prints the
+medians. `report` reads any number of those files and prints them side by
+side. The protocol - the conditions, what each scenario measures and where
+the two systems' tools differ - is bench/README.md.
+
+Scenarios:
+    launch   each app of the target's list started from nothing: the
+             request to the app's first frame, cold (its process not
+             running; the page cache is left as it is on both systems)
+    grid     the app list opened with a swipe up and closed with a swipe
+             down (the port's app grid; Android's launcher app drawer):
+             the compositor's frame times through each motion
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import shlex
+import statistics
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+RESULTS = os.path.join(HERE, "results")
+FRAME_MS = 1000.0 / 60          # both Duos drive their panels at 60 Hz
+IDLE_GAP_MS = 150               # a pause this long ends a motion
+
+
+def die(message):
+    sys.exit("sfduo-bench: " + message)
+
+
+# ---- what every target is measured by -------------------------------------
+
+def motion_metrics(frames, start, end=None):
+    """Frame times through one motion.
+
+    `frames` are the times (ms, the target's monotonic clock) the compositor
+    put a frame on the panel. The motion is the frames from `start` (the
+    finger coming down) until the first pause of IDLE_GAP_MS after `end`
+    (the finger lifting; the motion carries on after it), or after `start`.
+    A frame late by one refresh is one dropped; by two, two."""
+    after = [t for t in frames if t >= start]
+    if not after:
+        return None
+    motion = [after[0]]
+    for t in after[1:]:
+        if t - motion[-1] > IDLE_GAP_MS and t > (end or start):
+            break
+        motion.append(t)
+    gaps = [b - a for a, b in zip(motion, motion[1:])]
+    if not gaps:
+        return None
+    gaps_sorted = sorted(gaps)
+    return {
+        "frames": len(motion),
+        "ms": round(motion[-1] - motion[0], 1),
+        "fps": round(len(gaps) * 1000 / (motion[-1] - motion[0]), 1),
+        "p50": round(statistics.median(gaps), 1),
+        "p95": round(gaps_sorted[min(len(gaps) - 1, int(len(gaps) * 0.95))], 1),
+        "max": round(max(gaps), 1),
+        "dropped": sum(max(0, round(g / FRAME_MS) - 1) for g in gaps),
+    }
+
+
+class Target:
+    name = "?"
+
+    def __init__(self, reps):
+        self.reps = reps
+        stamp = datetime.date.today().isoformat()
+        os.makedirs(RESULTS, exist_ok=True)
+        self.out = os.path.join(RESULTS, f"{stamp}-{self.name}.jsonl")
+
+    def record(self, scenario, **fields):
+        row = {"target": self.name, "scenario": scenario,
+               "time": datetime.datetime.now().isoformat(timespec="seconds"), **fields}
+        with open(self.out, "a") as fp:
+            fp.write(json.dumps(row) + "\n")
+        return row
+
+
+# ---- the port ---------------------------------------------------------------
+
+# What the port offers for each kind of app: its desktop id, its process,
+# and whether that process runs all the time by design. Clock (alarms),
+# Phone (incoming calls) and Messages (incoming texts) are started with the
+# session and stay; their "launch" is a window from a running process, as
+# on Android, and is recorded as resident. Every other app is killed by its
+# exact process name before each launch - Calendar and Camera stay behind
+# when their window closes, and a launch then would be warm.
+LINUX_APPS = {
+    "settings": ("org.gnome.Settings", "gnome-control-center", False),
+    "calculator": ("org.gnome.Calculator", "gnome-calculator", False),
+    "clock": ("org.gnome.clocks", "gnome-clocks", True),
+    "contacts": ("org.gnome.Contacts", "gnome-contacts", False),
+    "phone": ("org.gnome.Calls", "gnome-calls", True),
+    "messages": ("sm.puri.Chatty", "chatty", True),
+    "calendar": ("org.gnome.Calendar", "gnome-calendar", False),
+    "weather": ("org.gnome.Weather", "gnome-weather", False),
+    "browser": ("firefox", "firefox", False),
+    "camera": ("droidian-camera", "droidian-camera", False),
+}
+SESSION = ("XDG_RUNTIME_DIR=/run/user/32011 WAYLAND_DISPLAY=wayland-0 "
+           "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/32011/bus")
+# The functions probed in the compositor. perf puts a probe on a function's
+# PLT stub as well as on the function when both exist; only calls made from
+# outside the library pass the stub, so the stub's probe saw some frames and
+# not others - frames that looked dropped in pairs. Only the function itself
+# is recorded.
+PROBES = {
+    "frame": ("/usr/lib/aarch64-linux-gnu/libwlroots.so.12a", "wlr_output_send_frame"),
+    "map": ("/usr/bin/phoc", "phoc_view_map"),
+}
+# The app grid on the left panel, in the touch tool's logical pixels: a
+# flick up from the bottom band opens it, a flick down on it closes it. The
+# finger lifts moving - a rest before the lift is not the shell's frame.
+GRID_OPEN = "swipe 300 870 300 650 0.2 0"
+GRID_CLOSE = "swipe 300 300 300 540 0.2 0"
+
+
+class Linux(Target):
+    name = "linux"
+
+    def __init__(self, reps, host):
+        self.host = host
+        super().__init__(reps)
+
+    def sh(self, command, timeout=120, check=True):
+        done = subprocess.run(["ssh", "-o", "ConnectTimeout=5", self.host, command],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=timeout)
+        if check and done.returncode != 0:
+            die(f"on the phone: {command[:60]}...: {done.stderr.strip()[-300:]}")
+        return done.stdout
+
+    def preflight(self):
+        state = self.sh("cat /sys/class/backlight/panel0-backlight/bl_power "
+                        "/sys/class/power_supply/battery/capacity "
+                        "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor; pidof phoc").split()
+        if state[0] != "0":
+            die("the display is off - the shell throttles with it (docs/PERF.md)")
+        if state[2] == "powersave":
+            die("the CPU governor is powersave")
+        # Locked, every swipe lands on the lock screen, which redraws all of
+        # itself each frame: the first day's numbers were that (#177).
+        locked = self.sh("for s in $(loginctl list-sessions --no-legend | awk '$4==\"seat0\"{print $1}'); "
+                         "do loginctl show-session $s -p LockedHint --value; done")
+        if "yes" in locked.split():
+            die("the phone is locked - unlock it first")
+        self.battery = int(state[1])
+
+    def capture(self, probes, seconds, script="", before=""):
+        """Record the probes on phoc for `seconds` while a touch script
+        runs; returns ({probe: [ms]}, [touch output lines])."""
+        adds = []
+        for key in probes:
+            binary, symbol = PROBES[key]
+            adds.append(f"perf probe -q -x {binary} {symbol} 2>/dev/null || true")
+            adds.append(f"E=\"$E $(perf probe -l 2>/dev/null | grep -v '@plt' | grep '(on {symbol}[@ ]' "
+                        "| awk '{printf \" -e %s\", $1}')\"")
+        touch = (f"printf '%s\\n' {shlex.quote(script)} | /usr/local/sbin/sfduo-touch script"
+                 if script else "")
+        command = f"""
+E=
+{chr(10).join(adds)}
+P=$(pidof phoc)
+perf record -q -k CLOCK_MONOTONIC $E -p $P -o /tmp/sfduo-bench.data -- sleep {seconds} >/dev/null 2>&1 &
+sleep 0.5
+{before}
+{touch}
+wait
+perf script -i /tmp/sfduo-bench.data -F time,event 2>/dev/null
+perf probe -q -d 'probe_libwlroots:*' 2>/dev/null; perf probe -q -d 'probe_phoc:*' 2>/dev/null
+rm -f /tmp/sfduo-bench.data
+"""
+        out = self.sh(command, timeout=seconds + 60)
+        found = {key: [] for key in probes}
+        lines = []
+        for line in out.splitlines():
+            m = re.match(r"\s*([\d.]+):\s+(\S+):", line)
+            if m:
+                for key in probes:
+                    if m.group(2).split(":")[-1].startswith(PROBES[key][1]):
+                        found[key].append(float(m.group(1)) * 1000)
+            elif line.startswith(("mark ", "swipe ")):
+                lines.append(line.split())
+        return found, lines
+
+    # -- scenarios --
+
+    def grid(self):
+        script = ["sleep 1"]
+        for _ in range(self.reps):
+            script += [GRID_OPEN, "sleep 1.2", GRID_CLOSE, "sleep 1.2"]
+        found, lines = self.capture(["frame"], seconds=2 + self.reps * 3.4, script="\n".join(script))
+        swipes = [(float(a) * 1000, float(b) * 1000) for _, a, b in lines]
+        rows = []
+        for i, (down, up) in enumerate(swipes):
+            m = motion_metrics(found["frame"], down, up)
+            rows.append(self.record("grid", motion="open" if i % 2 == 0 else "close",
+                                    rep=i // 2, battery=self.battery, **(m or {"frames": 0})))
+        return rows
+
+    def launch(self):
+        rows = []
+        session = f"sudo -u droidian {SESSION}"
+        for kind, (app, process, resident) in LINUX_APPS.items():
+            for rep in range(self.reps):
+                # from nothing: the window closed, and the process gone
+                # unless it is one that always runs
+                kill = "" if resident else f"pkill -x {process}; "
+                self.sh(f"{session} wlrctl toplevel close app_id:{app} 2>/dev/null; sleep 1; "
+                        f"{kill}sleep 2", check=False)
+                before = (f"T=$(python3 -c 'import time;print(time.monotonic())'); echo mark request $T; "
+                          f"echo '{app}.desktop left' > /run/user/32011/sfduo-launch; "
+                          "pkill -USR2 -x sfduo-dock")
+                found, lines = self.capture(["map", "frame"], seconds=8, before=before)
+                request = next(float(l[2]) * 1000 for l in lines if l[:2] == ["mark", "request"])
+                maps = [t for t in found["map"] if t > request]
+                row = {"app": kind, "id": app, "rep": rep, "resident": resident,
+                       "battery": self.battery}
+                if maps:
+                    row["to_map_ms"] = round(maps[0] - request, 1)
+                    shown = [t for t in found["frame"] if t >= maps[0]]
+                    if shown:
+                        row["to_frame_ms"] = round(shown[0] - request, 1)
+                rows.append(self.record("launch", **row))
+                self.sh(f"{session} wlrctl toplevel close app_id:{app} 2>/dev/null; sleep 1", check=False)
+        return rows
+
+
+# ---- Android ------------------------------------------------------------------
+
+# Candidates for each kind, the first one installed is used. The Duos ship
+# Microsoft's and Google's apps; which is there differs by model and update.
+ANDROID_APPS = {
+    "settings": ["com.android.settings"],
+    "calculator": ["com.google.android.calculator", "com.android.calculator2",
+                   "com.microsoft.math"],
+    "clock": ["com.google.android.deskclock", "com.android.deskclock"],
+    "contacts": ["com.google.android.contacts", "com.android.contacts"],
+    "phone": ["com.google.android.dialer", "com.android.dialer"],
+    "messages": ["com.google.android.apps.messaging", "com.android.messaging"],
+    "calendar": ["com.google.android.calendar", "com.microsoft.office.outlook"],
+    "weather": ["com.microsoft.amp.apps.bingweather"],
+    "browser": ["com.microsoft.emmx", "com.android.chrome"],
+    "camera": ["com.microsoft.surface.camera", "com.android.camera2",
+               "com.google.android.GoogleCamera"],
+}
+ANDROID_RESIDENT = {"clock", "phone", "messages"}      # as on the port
+
+class Android(Target):
+    name = "android"
+
+    def __init__(self, reps, serial):
+        self.serial = serial
+        super().__init__(reps)
+
+    def adb(self, *args, timeout=120):
+        command = ["adb"] + (["-s", self.serial] if self.serial else []) + list(args)
+        done = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        if done.returncode != 0:
+            die(f"adb {' '.join(args)[:60]}: {done.stderr.strip()[-300:]}")
+        return done.stdout
+
+    def preflight(self):
+        model = self.adb("shell", "getprop", "ro.product.model").strip()
+        self.name = "android-" + re.sub(r"\W+", "-", model.lower()).strip("-")
+        self.out = os.path.join(RESULTS, f"{datetime.date.today().isoformat()}-{self.name}.jsonl")
+        self.battery = int(re.search(r"level: (\d+)", self.adb("shell", "dumpsys", "battery")).group(1))
+
+    def sh(self, command, timeout=120):
+        return self.adb("shell", command, timeout=timeout)
+
+    def installed(self):
+        if not hasattr(self, "_packages"):
+            self._packages = {line.split(":", 1)[1].strip()
+                              for line in self.sh("pm list packages").splitlines() if ":" in line}
+        return self._packages
+
+    def apps(self):
+        """Each kind's app on this device: the first candidate installed."""
+        found = {}
+        for kind, candidates in ANDROID_APPS.items():
+            for package in candidates:
+                if package in self.installed():
+                    found[kind] = package
+                    break
+        return found
+
+    def component(self, package):
+        out = self.sh(f"cmd package resolve-activity --brief -c android.intent.category.LAUNCHER {package}")
+        lines = [l.strip() for l in out.splitlines() if "/" in l]
+        if not lines:
+            die(f"{package} has no launcher activity")
+        return lines[-1]
+
+    def launch(self):
+        rows = []
+        for kind, package in self.apps().items():
+            component = self.component(package)
+            resident = kind in ANDROID_RESIDENT
+            for rep in range(self.reps):
+                self.sh("input keyevent KEYCODE_HOME; sleep 1")
+                if not resident:
+                    self.sh(f"am force-stop {package}")
+                running = bool(self.sh(f"pidof {package} || true").strip())
+                self.sh("sleep 2")
+                out = self.sh(f"am start -W -n {component}")
+                total = re.search(r"TotalTime: (\d+)", out)
+                rows.append(self.record("launch", app=kind, id=package, rep=rep,
+                                        resident=running, battery=self.battery,
+                                        to_frame_ms=int(total.group(1)) if total else None))
+            self.sh("input keyevent KEYCODE_HOME")
+        return rows
+
+    def layer_frames(self, match):
+        """SurfaceFlinger's present times (ms) of the layer whose name
+        contains `match`, for the frames since the last clear."""
+        layers = [l for l in self.sh("dumpsys SurfaceFlinger --list").splitlines() if match in l]
+        frames = []
+        for layer in layers:
+            out = self.sh(f"dumpsys SurfaceFlinger --latency {shlex.quote(layer)}")
+            for line in out.splitlines()[1:]:
+                parts = line.split()
+                if len(parts) == 3 and parts[1] != "0" and int(parts[1]) < 2 ** 62:
+                    frames.append(int(parts[1]) / 1e6)
+        return sorted(set(frames))
+
+    def grid(self):
+        width, height = (int(v) for v in re.search(r"(\d+)x(\d+)",
+                                                     self.sh("wm size")).groups()[-2:])
+        x = width // 4                  # the middle of the left screen
+        launcher = self.sh("cmd package resolve-activity --brief -c android.intent.category.HOME "
+                           "android.intent.action.MAIN").splitlines()[-1].split("/")[0].strip()
+        rows = []
+        self.sh("input keyevent KEYCODE_HOME; sleep 1")
+        for rep in range(self.reps):
+            for motion, (y0, y1) in (("open", (int(height * 0.85), int(height * 0.45))),
+                                     ("close", (int(height * 0.35), int(height * 0.75)))):
+                self.sh("dumpsys SurfaceFlinger --latency-clear")
+                self.sh(f"input swipe {x} {y0} {x} {y1} 200; sleep 1.2")
+                frames = self.layer_frames(launcher)
+                m = motion_metrics(frames, frames[0]) if frames else None
+                rows.append(self.record("grid", motion=motion, rep=rep, battery=self.battery,
+                                        launcher=launcher, **(m or {"frames": 0})))
+        return rows
+
+
+# ---- reading results back ------------------------------------------------------
+
+def report(paths):
+    rows = []
+    for path in paths:
+        with open(path) as fp:
+            rows += [json.loads(line) for line in fp if line.strip()]
+    groups = {}
+    for row in rows:
+        if row["scenario"] == "launch":
+            key = ("launch", row["app"])
+            value = row.get("to_frame_ms")
+        else:
+            key = (row["scenario"], row.get("motion", ""))
+            value = row.get("dropped")
+        groups.setdefault(key, {}).setdefault(row["target"], []).append(value)
+    targets = sorted({row["target"] for row in rows})
+    print("%-24s" % "" + "".join("%22s" % t for t in targets))
+    for key in sorted(groups):
+        label = " ".join(key) + ("  (ms)" if key[0] == "launch" else "  (dropped)")
+        cells = []
+        for t in targets:
+            values = [v for v in groups[key].get(t, []) if v is not None]
+            cells.append("%22s" % (f"{statistics.median(values):.0f} [{min(values):.0f}-{max(values):.0f}] n={len(values)}"
+                                   if values else "-"))
+        print("%-24s" % label + "".join(cells))
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="sfduo-bench", description=__doc__.split("\n")[0])
+    parser.add_argument("target", choices=("linux", "android", "report"))
+    parser.add_argument("what", nargs="+", help="scenarios, or result files for report")
+    parser.add_argument("--reps", type=int, default=10)
+    parser.add_argument("--host", default="root@172.16.42.1")
+    parser.add_argument("--serial")
+    args = parser.parse_args(argv)
+    if args.target == "report":
+        report(args.what)
+        return
+    target = Linux(args.reps, args.host) if args.target == "linux" else Android(args.reps, args.serial)
+    target.preflight()
+    for scenario in args.what:
+        if not hasattr(target, scenario) or scenario.startswith("_"):
+            die(f"no scenario {scenario}")
+        rows = getattr(target, scenario)()
+        print(f"{scenario}: {len(rows)} measurements -> {target.out}")
+    report([target.out])
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

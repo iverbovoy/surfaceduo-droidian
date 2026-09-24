@@ -3,7 +3,17 @@
 
     sfduo-touch tap   X Y
     sfduo-touch swipe X0 Y0 X1 Y1 [SECONDS]
+    sfduo-touch script               gestures from stdin, one device for all
     sfduo-touch size                 the logical size it assumes
+
+A script is one command a line - `tap X Y`, `swipe X0 Y0 X1 Y1 SECONDS
+[HOLD]`, `sleep SECONDS`, `mark TEXT` - played on one synthetic touchscreen,
+so that a series of gestures pays the device's 3 s setup once. It prints
+`mark TEXT T` and `swipe T_DOWN T_UP` with CLOCK_MONOTONIC times, the clock
+perf and the compositor's own timestamps use. HOLD is how long the finger
+rests at the end of a swipe before it lifts: 0.05 s by default, as a single
+swipe has always done; 0 for a fling, which lifts moving - measurements of
+motion want 0, or the rest reads as a frame the shell dropped (#148).
 
 Coordinates are logical pixels of the one output both panels share, at
 the output scale phoc.ini sets: 1392 x 900 at scale 2 (the left panel is
@@ -113,8 +123,49 @@ class Finger:
         os.close(self.fd)
 
 
+def swipe(finger, x0, y0, x1, y1, seconds, hold=0.05):
+    steps = max(8, int(seconds * 60))
+    started = time.monotonic()
+    finger.down(x0, y0)
+    for i in range(1, steps + 1):
+        time.sleep(seconds / steps)
+        finger.move(x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps)
+    if hold > 0:
+        time.sleep(hold)
+    finger.up()
+    return started, time.monotonic()
+
+
+def script(lines):
+    finger = Finger()
+    try:
+        for line in lines:
+            words = line.split()
+            if not words or words[0].startswith("#"):
+                continue
+            verb, args = words[0], words[1:]
+            if verb == "tap":
+                finger.down(float(args[0]), float(args[1]))
+                time.sleep(0.08)
+                finger.up()
+            elif verb == "swipe":
+                numbers = [float(a) for a in args]
+                down, up = swipe(finger, *numbers[:5], *numbers[5:6])
+                print("swipe %.6f %.6f" % (down, up), flush=True)
+            elif verb == "sleep":
+                time.sleep(float(args[0]))
+            elif verb == "mark":
+                print("mark %s %.6f" % (" ".join(args), time.monotonic()), flush=True)
+            else:
+                sys.exit(f"sfduo-touch: not a script command: {line.strip()}")
+    finally:
+        finger.close()
+
+
 def main(argv):
-    if len(argv) >= 4 and argv[1] == "tap":
+    if len(argv) >= 2 and argv[1] == "script":
+        script(sys.stdin)
+    elif len(argv) >= 4 and argv[1] == "tap":
         x, y = float(argv[2]), float(argv[3])
         finger = Finger()
         finger.down(x, y)
@@ -124,16 +175,10 @@ def main(argv):
     elif len(argv) >= 6 and argv[1] == "swipe":
         x0, y0, x1, y1 = (float(a) for a in argv[2:6])
         seconds = float(argv[6]) if len(argv) > 6 else 0.4
-        steps = max(8, int(seconds * 60))
         finger = Finger()
-        started = time.time()
-        finger.down(x0, y0)
-        for i in range(1, steps + 1):
-            time.sleep(seconds / steps)
-            finger.move(x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps)
-        time.sleep(0.05)
-        finger.up()
-        print("swipe %.3f %.3f" % (started, time.time()))     # when it moved, for whoever measures
+        wall = time.time()
+        swipe(finger, x0, y0, x1, y1, seconds)
+        print("swipe %.3f %.3f" % (wall, time.time()))     # when it moved, for whoever measures
         finger.close()
     elif len(argv) >= 2 and argv[1] == "size":
         print(WIDTH, HEIGHT)
