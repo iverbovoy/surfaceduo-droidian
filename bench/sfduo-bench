@@ -19,6 +19,12 @@ Scenarios:
     grid     the app list opened with a swipe up and closed with a swipe
              down (the port's app grid; Android's launcher app drawer):
              the compositor's frame times through each motion
+    look     each launch recorded and judged against what a launch must do
+    move     an open app called to the other panel from that panel's dock
+    close    an open app closed
+    beside   an app launched with another app open on the other panel
+    restore  a running app, put away, brought back from the dock
+             (these four: bench/README.md, "Beyond the launch", #209)
 """
 import argparse
 import datetime
@@ -79,7 +85,9 @@ class Target:
     only = None                 # --apps: the kinds to run, all when None
 
     def selected(self, apps):
-        return {k: v for k, v in apps.items() if not self.only or k in self.only}
+        if isinstance(apps, dict):
+            return {k: v for k, v in apps.items() if not self.only or k in self.only}
+        return [k for k in apps if not self.only or k in self.only]
 
     def __init__(self, reps):
         self.reps = reps
@@ -118,6 +126,10 @@ LINUX_APPS = {
     # its window is not named after its desktop file
     "camera": ("droidian-camera", "org.Droidian.droidian-camera", "droidian-camera", False),
 }
+# The apps the scenarios beyond the launch use: one with pages that follow it
+# (Settings), one plain, one always running.
+MOVE_APPS = ("settings", "calculator", "clock")
+SCREEN_LOGICAL_WIDTH = 1392         # both panels and the hinge, at scale 2
 SESSION = ("XDG_RUNTIME_DIR=/run/user/32011 WAYLAND_DISPLAY=wayland-0 "
            "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/32011/bus")
 # The functions probed in the compositor. perf puts a probe on a function's
@@ -375,6 +387,8 @@ rm -f /tmp/sfduo-bench.data
                 broken.append("3 empty")
             if out["flicker"]["left"] or out["flicker"]["right"]:
                 broken.append("4 flicker")
+            if out["empty"]["right"]:
+                broken.append("O other panel")
         else:
             broken.append("no recording")
         if mapped and out.get("unmaps"):
@@ -397,6 +411,227 @@ rm -f /tmp/sfduo-bench.data
         out["broken"] = broken
         return out
 
+    # -- beyond the launch (#209) --
+
+    def _session(self):
+        return f"sudo -u droidian {SESSION}"
+
+    def _launch_now(self, desktop, side, wait=4):
+        """Start an app on a panel through the dock, outside any recording."""
+        self.sh(f"echo '{desktop}.desktop {side}' > /run/user/32011/sfduo-launch; "
+                f"kill -USR2 $(pgrep -x sfduo-dock); sleep {wait}", check=False)
+
+    def _windows(self):
+        """app_id: title of every window, as wlrctl lists them."""
+        out = self.sh(f"{self._session()} wlrctl toplevel list", check=False)
+        return sorted(line.strip() for line in out.splitlines() if ":" in line)
+
+    def _reset(self, apps):
+        """Every window of these apps closed, and their processes gone
+        unless they always run."""
+        cmds = []
+        for kind in apps:
+            desktop, app, process, resident = LINUX_APPS[kind]
+            cmds.append(f"{self._session()} wlrctl toplevel close app_id:{app} 2>/dev/null")
+            if not resident:
+                cmds.append(f"pkill -x {process[:15]}")
+        self.sh("; ".join(cmds) + "; sleep 2.5", check=False)
+
+    def _episode(self, name, action, seconds=6):
+        """Record one action: probes on phoc and a 60 fps recording of the
+        screen, the action's start marked `request`. Returns what was seen:
+        the events (ms from the request), both panels' frames on the
+        recording, and the clip."""
+        clips = os.path.join(RESULTS, "clips")
+        os.makedirs(clips, exist_ok=True)
+        before = ("rm -f /tmp/sfduo-look.mp4; "
+                  f"timeout -s INT {seconds + 2} {self._session()} wf-recorder -r 60 "
+                  f"-F scale=iw/{VIDEO_SCALE}:ih/{VIDEO_SCALE} -f /tmp/sfduo-look.mp4 >/dev/null 2>&1 & W=$!; "
+                  "sleep 1; D=$(pgrep -x sfduo-dock); "
+                  "T=$(python3 -c 'import time;print(time.monotonic())'); echo mark request $T; "
+                  f"{action}; sleep {seconds - 1}; kill -INT $W; wait $W")
+        found, lines = self.capture(["frame", "lmap", "lunmap", "lcommit", "vmap", "vunmap",
+                                     "vpos", "vsize", "hquiet", "hcap"],
+                                    seconds=seconds + 2, before=before)
+        request = next(float(l[2]) * 1000 for l in lines if l[:2] == ["mark", "request"])
+        clip = os.path.join(clips, f"{datetime.datetime.now():%Y-%m-%d-%H%M%S}-{name}.mp4")
+        subprocess.run(["scp", "-q", f"{self.host}:/tmp/sfduo-look.mp4", clip], check=False)
+        seen = {"request": request, "clip": clip,
+                "events": [(t - request, k, a) for t, k, a in self.events if t >= request - 50],
+                "frames": [t - request for t in found["frame"] if t >= request]}
+        if os.path.exists(clip) and os.path.getsize(clip) > 0:
+            seen["left"], seen["right"] = panel_stats(clip, *LEFT), panel_stats(clip, *RIGHT)
+        return seen
+
+    @staticmethod
+    def _views(ev):
+        """Each window's changes of place and size (only real changes), its
+        maps and its unmaps, by its address."""
+        views = {}
+        for t, k, a in ev:
+            view = a.get("view_x64") or a.get("self_x64")
+            if view is None or k not in ("vpos", "vsize", "vmap", "vunmap"):
+                continue
+            v = views.setdefault(view, {"boxes": [], "box": {}, "maps": [], "unmaps": []})
+            if k == "vmap":
+                v["maps"].append(round(t, 1))
+            elif k == "vunmap":
+                v["unmaps"].append(round(t, 1))
+            else:
+                if k == "vpos":
+                    v["box"].update(x=int(a["x_s32"]), y=int(a["y_s32"]))
+                else:
+                    v["box"].update(w=int(a["width_s32"]), h=int(a["height_s32"]))
+                if not v["boxes"] or v["boxes"][-1][1] != v["box"]:
+                    v["boxes"].append((round(t, 1), dict(v["box"])))
+        for v in views.values():
+            del v["box"]
+        return views
+
+    @staticmethod
+    def _panels(seen, out, broken, acting):
+        """The recording's verdict: flicker on either panel, an empty frame
+        on either - the panel the action is on (`acting`) and the other."""
+        if "left" not in seen:
+            broken.append("no recording")
+            return
+        other = "right" if acting == "left" else "left"
+        out["flicker"] = {side: flicker(seen[side]) for side in ("left", "right")}
+        out["empty"] = {side: empty(seen[side]) for side in ("left", "right")}
+        if out["flicker"][acting] or out["empty"][acting]:
+            broken.append("flicker or empty frame")
+        if out["flicker"][other] or out["empty"][other]:
+            broken.append("O other panel")
+
+    def _motion(self, seen, out, broken):
+        m = motion_metrics([t for t in seen["frames"]], 0)
+        if m:
+            out["motion"] = m
+            if m["dropped"]:
+                broken.append("frames dropped")
+
+    def move(self):
+        """An open app called to the other panel from that panel's dock
+        (#200, #201): the slide's frames, no window hidden or shown twice,
+        the window at its new panel's corner, and the same windows - the
+        pages that follow it - with the same titles afterwards."""
+        rows = []
+        for kind in self.selected(MOVE_APPS):
+            desktop, app, process, resident = LINUX_APPS[kind]
+            for rep in range(self.reps):
+                self.check_unlocked()
+                self._reset([kind])
+                self._launch_now(desktop, "left")
+                windows = self._windows()
+                seen = self._episode(f"move-{kind}-{rep}",
+                                     f"echo '{desktop}.desktop right' > /run/user/32011/sfduo-launch; kill -USR2 $D")
+                after = self._windows()
+                out, broken = {"clip": os.path.basename(seen["clip"])}, []
+                self._motion(seen, out, broken)
+                self._panels(seen, out, broken, "right")
+                views = self._views(seen["events"])
+                out["unmaps"] = sum(len(v["unmaps"]) for v in views.values())
+                if out["unmaps"]:
+                    broken.append("window hidden")
+                finals = [v["boxes"][-1][1] for v in views.values() if v["boxes"]]
+                out["finals"] = finals
+                # the right panel starts past the hinge: a window's surface
+                # there, shadow and all, starts well right of the middle
+                if finals and not all(b.get("x", 0) > SCREEN_LOGICAL_WIDTH // 2 - 60 for b in finals):
+                    broken.append("not on the other panel")
+                out["windows_before"], out["windows_after"] = windows, after
+                if windows != after:
+                    broken.append("windows changed")
+                out["broken"] = broken
+                rows.append(self.record("move", app=kind, rep=rep, **out))
+                self._reset([kind])
+        return rows
+
+    def close(self):
+        """An open app closed (#202): its going's frames, the other panel
+        steady, the dock back."""
+        rows = []
+        for kind in self.selected(MOVE_APPS):
+            desktop, app, process, resident = LINUX_APPS[kind]
+            for rep in range(self.reps):
+                self.check_unlocked()
+                self._reset([kind])
+                self._launch_now(desktop, "left")
+                seen = self._episode(f"close-{kind}-{rep}",
+                                     f"{self._session()} wlrctl toplevel close app_id:{app}")
+                out, broken = {"clip": os.path.basename(seen["clip"])}, []
+                self._motion(seen, out, broken)
+                self._panels(seen, out, broken, "left")
+                if any(app in w for w in self._windows()):
+                    broken.append("still open")
+                out["broken"] = broken
+                rows.append(self.record("close", app=kind, rep=rep, **out))
+                self._reset([kind])
+        return rows
+
+    def beside(self):
+        """An app launched onto the left panel with Clock open on the right:
+        Clock's window neither moved nor hidden, the right panel steady."""
+        rows = []
+        neighbour = LINUX_APPS["clock"]
+        for kind in self.selected(MOVE_APPS):
+            if kind == "clock":
+                continue
+            desktop, app, process, resident = LINUX_APPS[kind]
+            for rep in range(self.reps):
+                self.check_unlocked()
+                self._reset([kind, "clock"])
+                self._launch_now(neighbour[0], "right")
+                seen = self._episode(f"beside-{kind}-{rep}",
+                                     f"echo '{desktop}.desktop left' > /run/user/32011/sfduo-launch; kill -USR2 $D")
+                out, broken = {"clip": os.path.basename(seen["clip"])}, []
+                self._panels(seen, out, broken, "left")
+                views = self._views(seen["events"])
+                mapped = {a["self_x64"] for t, k, a in seen["events"] if k == "vmap"}
+                others = {v: d for v, d in views.items() if v not in mapped}
+                # a window seen for the first time here has one box that is
+                # only where it already was; a second one is a move
+                out["other_changes"] = sum(max(0, len(d["boxes"]) - 1) + len(d["unmaps"])
+                                           for d in others.values())
+                if out["other_changes"]:
+                    broken.append("the other app touched")
+                out["broken"] = broken
+                rows.append(self.record("beside", app=kind, rep=rep, **out))
+                self._reset([kind, "clock"])
+        return rows
+
+    def restore(self):
+        """A running app, minimized, brought back by its icon in the dock:
+        the time to its first frame on the panel, and no empty frame."""
+        rows = []
+        for kind in self.selected(MOVE_APPS):
+            desktop, app, process, resident = LINUX_APPS[kind]
+            for rep in range(self.reps):
+                self.check_unlocked()
+                self._reset([kind])
+                self._launch_now(desktop, "left")
+                self.sh(f"{self._session()} wlrctl toplevel minimize app_id:{app}; sleep 2", check=False)
+                seen = self._episode(f"restore-{kind}-{rep}",
+                                     f"echo '{desktop}.desktop left' > /run/user/32011/sfduo-launch; kill -USR2 $D")
+                out, broken = {"clip": os.path.basename(seen["clip"])}, []
+                self._panels(seen, out, broken, "left")
+                # back on the panel when phoc lets it go (Restore shows it at
+                # its first frame, phoc-patches/0015), and the output frame
+                # that carries it
+                shown = next((t for t, k, a in seen["events"] if k in ("hquiet", "hcap") and t >= 0), None)
+                if shown is not None:
+                    out["shown_ms"] = round(shown, 1)
+                    frame = next((t for t in seen["frames"] if t >= shown), None)
+                    if frame is not None:
+                        out["to_frame_ms"] = round(frame, 1)
+                else:
+                    broken.append("no release seen")
+                if not any(app in w for w in self._windows()):
+                    broken.append("not back")
+                out["broken"] = broken
+                rows.append(self.record("restore", app=kind, rep=rep, **out))
+                self._reset([kind])
+        return rows
 
 
 # ---- how a launch looks (#178) ---------------------------------------------------
@@ -574,17 +809,24 @@ def report(paths):
             rows += [json.loads(line) for line in fp if line.strip()]
     groups = {}
     for row in rows:
-        if row["scenario"] == "launch":
-            key = ("launch", row["app"])
+        if row["scenario"] in ("launch", "restore"):
+            key = (row["scenario"], row["app"])
             value = row.get("to_frame_ms")
-        else:
-            key = (row["scenario"], row.get("motion", ""))
+        elif row["scenario"] == "grid":
+            key = ("grid", row.get("motion", ""))
             value = row.get("dropped")
+        elif isinstance(row.get("motion"), dict):
+            key = (row["scenario"], row["app"])
+            value = row["motion"].get("dropped")
+        else:
+            key = (row["scenario"], row.get("app", ""))
+            value = len(row.get("broken", []))
         groups.setdefault(key, {}).setdefault(row["target"], []).append(value)
     targets = sorted({row["target"] for row in rows})
     print("%-24s" % "" + "".join("%22s" % t for t in targets))
     for key in sorted(groups):
-        label = " ".join(key) + ("  (ms)" if key[0] == "launch" else "  (dropped)")
+        unit = {"launch": "ms", "restore": "ms", "look": "broken", "beside": "broken"}.get(key[0], "dropped")
+        label = " ".join(key) + f"  ({unit})"
         cells = []
         for t in targets:
             values = [v for v in groups[key].get(t, []) if v is not None]

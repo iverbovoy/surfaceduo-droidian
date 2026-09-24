@@ -98,6 +98,29 @@ Checked with a 60 fps screen recording of each launch (1, 3, 4, 5) and
 probes in the compositor on the window's map and unmap and its geometry
 (1, 2, 4, 5, 6).
 
+### Beyond the launch: move, close, beside, restore
+
+The same probes and recording, on what else is done with an app (#209).
+Run on Settings (whose pages follow it as windows of their own), Calculator
+and Clock (always running). In every one of them the **other panel** - the
+one the action is not on - is watched too: no flicker, no empty frame, and a
+window on it neither moved nor hidden.
+
+- **move**: an app open on the left panel is called to the right one by its
+  icon in the right panel's dock. The slide's frame times (`dropped`, from
+  the request until the first pause of 150 ms), no window hidden, every
+  window it has at the right panel's corner afterwards, and the same windows
+  with the same titles as before - a page it had open is still open.
+- **close**: an app open on the left panel is closed, as the shade's list of
+  open windows closes it (a toplevel close). Its going's frame times, and
+  the other panel steady while the dock comes back.
+- **beside**: an app launched onto the left panel with Clock open on the
+  right. Clock's window must not move or be hidden, and the right panel must
+  not flicker.
+- **restore**: an app minimized and brought back by its icon in the dock.
+  The time from the tap to phoc showing it (it is shown at its first frame,
+  phoc-patches/0015) and to the frame that carries it, and no empty frame.
+
 ### grid - the app list opened and closed
 
 A swipe up opens the list of all apps and a swipe down closes it: the port's
@@ -129,7 +152,10 @@ shell had dropped (#148).
 - **boot**: from the power key to a usable screen.
 - **wake**: from the power key and from opening the lid to the first frame.
 - **scroll**: a long list in Settings, flung.
-- **switch**: an app in the background brought back.
+- **the page kept through a move** (#201): the windows' titles are compared
+  before and after a move, and Settings titles every page "Settings", so a
+  page lost in the move is not seen yet; the page has to be read some other
+  way.
 
 ## What not to trust
 
