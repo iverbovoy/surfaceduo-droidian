@@ -3191,8 +3191,11 @@ class Dock(Gtk.Window):
             grid.set_size_request(half, STAGE_HEIGHT)
         for catcher in self.catchers.values():
             catcher.set_size_request(half, -1)
+        # the whole panel, top to bottom: STAGE_HEIGHT stops at phosh's top
+        # bar, which is gone (#96), and the strip above it showed whatever
+        # window lay under the curtain through the launch (#181)
         for curtain in self.curtains.values():
-            curtain.set_size_request(half, STAGE_HEIGHT)
+            curtain.set_size_request(half, SCREEN_HEIGHT)
         if self.move is None:
             self._place_panes()
 
