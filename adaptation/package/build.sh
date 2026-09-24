@@ -1045,6 +1045,8 @@ echo "$VER" > "$PKG/usr/share/sfduo/version"
 # whatever phoc.ini is in place by then. A conffile: a user's edit survives
 # an upgrade.
 install -Dm644 "$SHELLDIR/phoc.ini"        "$PKG/etc/phosh/phoc.ini"
+# the same file, for the postinst to put in place over Droidian's (#215)
+install -Dm644 "$SHELLDIR/phoc.ini"        "$PKG/usr/share/sfduo/phoc.ini"
 install -Dm644 "$SHELLDIR/gtk.css.in"      "$PKG/usr/share/sfduo/gtk.css.in"
 install -m755  "$SHELLDIR/sfduo-shell-css" "$PKG/usr/local/sbin/"
 SHELL_SCALE=$(sed -n '/^\[output:HWCOMPOSER-1\]/,/^\[/{s/^scale = //p}' "$SHELLDIR/phoc.ini" | head -1)
@@ -1168,6 +1170,18 @@ command -v dconf >/dev/null 2>&1 && dconf update || true
 /usr/local/sbin/sfduo-phosh-install || true
 /usr/local/sbin/sfduo-phoc-install || true
 /usr/local/sbin/sfduo-osk-install || true
+# Droidian's own phoc.ini (scale 3, no seam between the panels) is replaced by
+# the port's (#215). It is in place on a fresh Droidian, and dpkg, finding a
+# conffile it did not install, keeps it by default - so a fresh install came
+# up at scale 3 with windows tiled across the hinge. A file without the
+# port's `tiling-seam` line was never the port's; one with it is, perhaps
+# changed by its user, and stays.
+if [ -f /etc/phosh/phoc.ini ] && [ -f /usr/share/sfduo/phoc.ini ] && \
+   ! grep -q '^tiling-seam' /etc/phosh/phoc.ini; then
+    cp -p /etc/phosh/phoc.ini /etc/phosh/phoc.ini.droidian
+    cp /usr/share/sfduo/phoc.ini /etc/phosh/phoc.ini
+    echo "sfduo: /etc/phosh/phoc.ini was Droidian's (kept as phoc.ini.droidian); the port's is in place - restart the shell" >&2
+fi
 # the shell's CSS for the output scale actually configured (a user may have
 # changed /etc/phosh/phoc.ini - it is a conffile and theirs to change)
 /usr/local/sbin/sfduo-shell-css || true
