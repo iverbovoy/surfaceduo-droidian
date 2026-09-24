@@ -437,10 +437,17 @@ SFW
 # announced again each time, SurfaceDuo-2489 by morning. Nothing on the
 # Android side uses it (it serves the framework's NsdService). ctl.stop
 # leaves it "stopping" for good; it is oneshot, so killed it stays down.
+# Android's logd (#167) keeps 16 MiB per buffer, and once they are full it
+# spends its time pruning them: 16 % of a core with the display off after a
+# day's uptime, 0.1 % with 1 MiB buffers full. The size is read when logd
+# starts, so this takes effect at the next boot (the postinst sets it too).
+# 1 MiB holds about half an hour of the main buffer; `setprop
+# persist.logd.size 16M` and a reboot bring the long history back.
 cat > "$PKG/usr/local/sbin/sfduo-tame-vendor.sh" <<'TAME'
 #!/bin/sh
 # wait for the android container services to come up, then kill spinners
 sleep 25
+[ "$(getprop persist.logd.size)" ] || setprop persist.logd.size 1M
 setprop ctl.stop mdnsd 2>/dev/null
 for i in 1 2 3; do
     pkill -9 -x adsprpcd 2>/dev/null
@@ -1026,6 +1033,9 @@ rm -f /etc/systemd/system/bluebinder.service \
 # no units, nothing (found by installing on a clean Droidian 101 image).
 # The script is safe to run early; bluebinder runs it again before it starts.
 /usr/local/sbin/sfduo-bt-address || true
+# small logd buffers from the next boot (#167, see sfduo-tame-vendor); only
+# when nobody chose a size, and harmless when the container is not up
+[ "$(getprop persist.logd.size 2>/dev/null)" ] || setprop persist.logd.size 1M 2>/dev/null || true
 # Index the audio modules now rather than on the audio unit's first run. The
 # kernel autoloads them early in boot (~37 s) once depmod knows them, and they
 # have to be loaded BEFORE the ADSP comes up: loaded after it, they miss
